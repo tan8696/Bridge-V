@@ -184,11 +184,6 @@ enum Command {
         /// Guest executable.
         elf: PathBuf,
     },
-    /// Run a benchmark suite across engine configurations.
-    Bench {
-        /// Suite name (e.g. `coremark`).
-        suite: String,
-    },
 }
 
 /// Exit status for subcommands that are not implemented yet.
@@ -363,7 +358,6 @@ fn main() -> ExitCode {
         }
         Command::Boot { .. } => return not_implemented("boot", 9),
         Command::Disasm { elf } => disasm_file(&elf),
-        Command::Bench { .. } => return not_implemented("bench", 5),
     };
     result.unwrap_or_else(|e| {
         eprintln!("bridgev: error: {e:#}");
