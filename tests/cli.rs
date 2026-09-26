@@ -13,15 +13,9 @@ fn version_exits_zero() {
 
 #[test]
 fn unimplemented_subcommands_exit_two() {
-    for args in [vec!["boot", "--kernel", "Image"]] {
-        let out = run_bridgev(&args);
-        assert_eq!(out.code, Some(2), "{args:?}: stderr: {}", out.stderr);
-        assert!(
-            out.stderr.contains("not implemented yet"),
-            "{args:?}: {}",
-            out.stderr
-        );
-    }
+    let out = run_bridgev(["boot", "--kernel", "Image"]);
+    assert_eq!(out.code, Some(2), "stderr: {}", out.stderr);
+    assert!(out.stderr.contains("not implemented yet"), "{}", out.stderr);
 }
 
 #[test]
