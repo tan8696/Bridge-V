@@ -10,7 +10,7 @@
 use bridgev::cpu::state::CpuState;
 use bridgev::interp::{Engine, Env, Stop, alu, aluw};
 use bridgev::isa::inst::{AluOp, AluWOp};
-use bridgev::jit::{Jit, JitOptions};
+use bridgev::jit::{Jit, JitOptions, RegAlloc};
 use bridgev::mem::direct::DirectMem;
 use bridgev::mem::{GuestVirt, prot};
 
@@ -300,40 +300,46 @@ fn tiny_code_cache_flushes_and_keeps_running() {
 #[test]
 fn exit_slots_are_aligned_and_target_their_stubs() {
     let nop = i_type(0, 0, 0, 0, 0x13);
-    let bne = 0x0063_1463; // bne x6, x6, +8
+    let bne = 0x0073_1463; // bne x6, x7, +8 (distinct registers: not folded to a jump)
     let jal = 0x0080_006F; // jal x0, +8
-    let mut rig = Rig::new(JitOptions::default());
-    let mut checked = 0;
-    for pre in 0..6 {
-        // Vary the code before the exits so every alignment case occurs.
-        let base = CODE + 0x100 * pre as u64;
-        let mut code = vec![nop; pre];
-        code.push(bne);
-        rig.mem.write_bytes(GuestVirt(base), &words(&code)).unwrap();
-        rig.mem
-            .write_bytes(GuestVirt(base + 0x80), &words(&[nop, jal]))
-            .unwrap();
-        for pc in [base, base + 0x80] {
-            let id = rig.jit.tb_for(pc, &rig.mem);
-            for (slot, ex) in rig.jit.tb(id).exits.iter().enumerate() {
-                let Some(ex) = ex else { continue };
-                assert_eq!(ex.patch_at % 4, 0, "slot {slot} of TB {pc:#x}");
-                let op = rig.jit.code_at(ex.patch_at - 2, 2);
-                if slot == 0 {
-                    assert_eq!(op[1], 0xE9);
-                } else {
-                    assert_eq!((op[0], op[1] & 0xF0), (0x0F, 0x80));
+    for regalloc in [RegAlloc::None, RegAlloc::Pinned, RegAlloc::Linear] {
+        let mut rig = Rig::new(JitOptions {
+            regalloc,
+            ..JitOptions::default()
+        });
+        let mut checked = 0;
+        for pre in 0..6 {
+            // Vary the code before the exits so every alignment case occurs.
+            let base = CODE + 0x100 * pre as u64;
+            let mut code = vec![nop; pre];
+            code.push(bne);
+            rig.mem.write_bytes(GuestVirt(base), &words(&code)).unwrap();
+            rig.mem
+                .write_bytes(GuestVirt(base + 0x80), &words(&[nop, jal]))
+                .unwrap();
+            for pc in [base, base + 0x80] {
+                let id = rig.jit.tb_for(pc, &rig.mem);
+                for (slot, ex) in rig.jit.tb(id).exits.iter().enumerate() {
+                    let Some(ex) = ex else { continue };
+                    assert_eq!(ex.patch_at % 4, 0, "slot {slot} of TB {pc:#x}");
+                    let op = rig.jit.code_at(ex.patch_at - 2, 2);
+                    if slot == 0 {
+                        assert_eq!(op[1], 0xE9);
+                    } else {
+                        assert_eq!((op[0], op[1] & 0xF0), (0x0F, 0x80));
+                    }
+                    let rel =
+                        i32::from_le_bytes(rig.jit.code_at(ex.patch_at, 4).try_into().unwrap());
+                    assert_eq!(
+                        ex.patch_at.wrapping_add(4).wrapping_add(rel as u64),
+                        ex.stub
+                    );
+                    checked += 1;
                 }
-                let rel = i32::from_le_bytes(rig.jit.code_at(ex.patch_at, 4).try_into().unwrap());
-                assert_eq!(
-                    ex.patch_at.wrapping_add(4).wrapping_add(rel as u64),
-                    ex.stub
-                );
-                checked += 1;
             }
         }
+        assert_eq!(checked, 6 * 3, "{regalloc:?}");
     }
-    assert_eq!(checked, 6 * 3);
 }
 
 /// P3.2: link A→B by running, then invalidate B: A's exit must go back to its stub (no jump

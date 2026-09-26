@@ -51,7 +51,9 @@ type EnterFn = extern "sysv64" fn(*mut CpuState, u64) -> u64;
 
 impl Trampolines {
     /// Generate the prefix into an empty code buffer and seal it (it survives flushes).
-    pub fn generate(cm: &mut CodeMem) -> Trampolines {
+    /// `pinned` lists the guest registers kept in host registers across blocks (§8.2):
+    /// `enter_jit` loads them from `CpuState`, `exit_jit` stores them back (§8.3, §8.4).
+    pub fn generate(cm: &mut CodeMem, pinned: &[(u8, Reg)]) -> Trampolines {
         let helpers: [u64; helper::COUNT] = [helper_interp_one as *const () as u64];
         let origin = cm.next_addr();
         let mut a = Asm::new(origin);
@@ -74,12 +76,17 @@ impl Trampolines {
             MEM_BASE,
             cpu_field(offset_of!(CpuState, mem_base)),
         );
-        // Phase 2 keeps every guest register in CpuState; pinned R12–R15 arrive in Phase 4.
+        for &(g, r) in pinned {
+            a.load(Size::B64, r, cpu_field(8 * g as usize));
+        }
         a.jmp_rm(Reg::Rsi);
 
         // exit_jit: restore and return RAX to enter_jit's caller.
         a.align(16, 0);
         let exit = a.here();
+        for &(g, r) in pinned {
+            a.store(Size::B64, cpu_field(8 * g as usize), r);
+        }
         a.alu_ri(Size::B64, Alu::Add, Reg::Rsp, 8);
         for r in [Reg::R15, Reg::R14, Reg::R13, Reg::R12, Reg::Rbx, Reg::Rbp] {
             a.pop(r);
@@ -197,7 +204,7 @@ mod tests {
 
     fn setup() -> (CodeMem, Trampolines) {
         let mut cm = CodeMem::new(1 << 20, WxMode::DualMap).unwrap();
-        let t = Trampolines::generate(&mut cm);
+        let t = Trampolines::generate(&mut cm, &[]);
         (cm, t)
     }
 

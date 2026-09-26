@@ -4,4 +4,5 @@ pub mod disasm;
 pub mod emit;
 pub mod features;
 pub mod lower;
+pub mod lower_ir;
 pub mod regs;

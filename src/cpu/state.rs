@@ -26,6 +26,9 @@ pub mod exit {
     pub const COUNT: usize = 7;
 }
 
+/// Spill slots for IR temporaries (§8.1, §10).
+pub const SPILL_SLOTS: usize = 64;
+
 /// Number of jump-cache entries (§13.4); a power of two.
 pub const JC_SIZE: usize = 4096;
 
@@ -100,6 +103,12 @@ pub struct CpuState {
     _pad2: [u64; 15],
     /// Inline JALR lookup table (§13.4).
     pub jmp_cache: [JcEntry; JC_SIZE],
+    /// Register-allocator spill slots for values that are not guest registers (§10).
+    pub spill: [u64; SPILL_SLOTS],
+    /// Host general-purpose registers at the last host fault in JIT code, indexed by
+    /// `backend::x86::regs::Reg` number (the SIGSEGV handler copies them from the ucontext);
+    /// the dispatcher recovers dirty cached guest registers from them (§15).
+    pub fault_regs: [u64; 16],
     pub csr: Csrs,
 }
 
@@ -129,6 +138,7 @@ const _: () = {
     assert!(offset_of!(CpuState, jc_tag) == 0x278);
     assert!(offset_of!(CpuState, prof_jalr) == 0x280);
     assert!(offset_of!(CpuState, jmp_cache) == 0x300);
+    assert!(offset_of!(CpuState, spill) == 0x10300);
     assert!(std::mem::size_of::<JcEntry>() == 16);
 };
 
@@ -162,6 +172,8 @@ impl CpuState {
             prof_jalr: 0,
             _pad2: [0; 15],
             jmp_cache: [JcEntry::EMPTY; JC_SIZE],
+            spill: [0; SPILL_SLOTS],
+            fault_regs: [0; 16],
             csr: Csrs::default(),
         })
     }

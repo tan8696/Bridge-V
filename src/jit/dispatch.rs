@@ -12,7 +12,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::backend::x86::features::{self, HostFeatures};
-use crate::backend::x86::lower::{self, LowerOptions};
+use crate::backend::x86::lower::{self, ExitInfo, LowerOptions};
+use crate::backend::x86::lower_ir::{self, FaultSite, IrOptions};
+use crate::backend::x86::regs::Reg;
+use crate::ir::lift::lift;
+use crate::ir::opt::optimize;
+use crate::regalloc::linear_scan::{DLoc, OutOfSlots};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cpu::state::{CpuState, JcEntry, exit, jc_index};
@@ -29,6 +34,18 @@ use super::chain;
 use super::code_mem::{CodeMem, Full, WxMode};
 use super::perfmap::PerfMap;
 use super::trampoline::Trampolines;
+
+/// `--regalloc` (§10): how guest registers are mapped to host registers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegAlloc {
+    /// Phase 3 lowering: every guest register in `CpuState`, no IR.
+    None,
+    /// IR without optimization passes; pinned R12–R15; every other guest register is stored
+    /// as soon as it is written.
+    Pinned,
+    /// IR + optimizer passes + linear-scan allocation with lazy write-back.
+    Linear,
+}
 
 /// JIT configuration (CLI flags of §23).
 #[derive(Clone, Debug)]
@@ -54,6 +71,12 @@ pub struct JitOptions {
     pub profile: bool,
     /// Instructions per dispatcher slice (D12).
     pub slice: u64,
+    /// `--regalloc`
+    pub regalloc: RegAlloc,
+    /// `--pin`: guest registers pinned to R12, R13, R14, R15 in order (at most 4).
+    pub pin: Vec<u8>,
+    /// `--dump-ir DIR`: write every TB's IR before and after the passes.
+    pub dump_ir: Option<PathBuf>,
 }
 
 impl Default for JitOptions {
@@ -69,6 +92,9 @@ impl Default for JitOptions {
             chain: true,
             profile: false,
             slice: 100_000,
+            regalloc: RegAlloc::Linear,
+            pin: vec![2, 1, 10, 15],
+            dump_ir: None,
         }
     }
 }
@@ -93,6 +119,13 @@ pub struct JitStats {
     pub jc_fills: u64,
     /// JALR executions (`--profile-jit` only).
     pub jalr: u64,
+    /// Register-allocator activity summed over all translations.
+    pub fills: u64,
+    pub spills: u64,
+    pub writebacks: u64,
+    pub moves: u64,
+    /// TBs retranslated shorter because they needed too many spill slots.
+    pub retranslations: u64,
     pub translate_time: Duration,
 }
 
@@ -112,12 +145,40 @@ pub struct Jit {
     jc_version: u64,
     /// The last exit, if it was an unlinked direct exit: (tb, slot, cache generation).
     last_exit: Option<(u32, u8, u64)>,
+    /// Guest register → pinned host register (empty with `RegAlloc::None`).
+    pinned: [Option<Reg>; 32],
+}
+
+/// Output of either back end.
+struct Translated {
+    code: Vec<u8>,
+    pcmap: Vec<crate::jit::cache::PcEntry>,
+    exits: [Option<ExitInfo>; 2],
+    fault_sites: Vec<FaultSite>,
+    stats: crate::regalloc::linear_scan::AllocStats,
 }
 
 impl Jit {
     pub fn new(opts: JitOptions) -> io::Result<Jit> {
         let mut cm = CodeMem::new(opts.code_cache, opts.wx)?;
-        let tr = Trampolines::generate(&mut cm);
+        const PIN_REGS: [Reg; 4] = [Reg::R12, Reg::R13, Reg::R14, Reg::R15];
+        if opts.pin.len() > 4 || opts.pin.iter().any(|&g| g == 0 || g >= 32) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--pin takes at most 4 registers from x1..x31",
+            ));
+        }
+        let mut pinned = [None; 32];
+        let mut pairs = Vec::new();
+        if opts.regalloc != RegAlloc::None {
+            for (&g, &r) in opts.pin.iter().zip(PIN_REGS.iter()) {
+                if pinned[g as usize].is_none() {
+                    pinned[g as usize] = Some(r);
+                    pairs.push((g, r));
+                }
+            }
+        }
+        let tr = Trampolines::generate(&mut cm, &pairs);
         let features = if opts.host_features {
             features::host()
         } else {
@@ -128,7 +189,7 @@ impl Jit {
         } else {
             None
         };
-        if let Some(d) = &opts.dump_x86 {
+        for d in opts.dump_x86.iter().chain(opts.dump_ir.iter()) {
             std::fs::create_dir_all(d)?;
         }
         signal::install();
@@ -143,6 +204,7 @@ impl Jit {
             id: NEXT_JIT_ID.fetch_add(1, Ordering::Relaxed),
             jc_version: 0,
             last_exit: None,
+            pinned,
         })
     }
 
@@ -176,22 +238,25 @@ impl Jit {
         }
         let t0 = Instant::now();
         let block = build_block_max(pc, mem, self.opts.max_block);
-        let lopts = LowerOptions {
-            inject_bug: self.opts.inject_bug,
-            profile: self.opts.profile,
-        };
+        let (mut insns, mut fetch_fault) = (block.insns, block.fetch_fault);
         let (host, out) = loop {
             let origin = self.cm.next_addr();
             let id = self.cache.next_id();
-            let out = lower::translate(
-                &block.insns,
-                block.fetch_fault,
-                pc,
-                origin,
-                id,
-                &self.tr,
-                lopts,
-            );
+            let out = match self.translate_insns(&insns, fetch_fault, pc, origin, id) {
+                Ok(out) => out,
+                Err(OutOfSlots) => {
+                    // Too many values live at once for the spill area: translate a shorter
+                    // prefix (one instruction always fits).
+                    assert!(
+                        insns.len() > 1,
+                        "a single instruction ran out of spill slots"
+                    );
+                    insns.truncate(insns.len() / 2);
+                    fetch_fault = None;
+                    self.stats.retranslations += 1;
+                    continue;
+                }
+            };
             match self.cm.place(origin, &out.code) {
                 Ok(host) => break (host, out),
                 Err(Full) => {
@@ -205,10 +270,14 @@ impl Jit {
                 }
             }
         };
-        let guest_bytes = block.insns.iter().map(|d| d.len as u32).sum();
+        let guest_bytes = insns.iter().map(|d| d.len as u32).sum();
         self.stats.translated += 1;
         self.stats.code_bytes += out.code.len() as u64;
-        self.stats.guest_insns_translated += block.insns.len() as u64;
+        self.stats.guest_insns_translated += insns.len() as u64;
+        self.stats.fills += out.stats.fills as u64;
+        self.stats.spills += out.stats.spills as u64;
+        self.stats.writebacks += out.stats.writebacks as u64;
+        self.stats.moves += out.stats.moves as u64;
         if let Some(p) = &mut self.perf {
             p.record(host, out.code.len() as u32, pc);
         }
@@ -216,7 +285,7 @@ impl Jit {
             let _ = std::fs::write(dir.join(format!("tb_{pc:016x}.bin")), &out.code);
             let _ = std::fs::write(
                 dir.join(format!("tb_{pc:016x}.txt")),
-                dump_tb_text(pc, &block.insns, host, &out.code),
+                dump_tb_text(pc, &insns, host, &out.code),
             );
         }
         let exits = out.exits.map(|e| {
@@ -234,8 +303,8 @@ impl Jit {
         });
         let id = self.cache.insert(TranslationBlock {
             guest_pc: pc,
-            insns: block.insns,
-            fetch_fault: block.fetch_fault,
+            insns,
+            fetch_fault,
             guest_bytes,
             host,
             host_len: out.code.len() as u32,
@@ -243,9 +312,61 @@ impl Jit {
             exits,
             incoming: Vec::new(),
             valid: true,
+            fault_sites: out.fault_sites,
         });
         self.stats.translate_time += t0.elapsed();
         id
+    }
+
+    /// Run the selected back end over `insns` for placement at `origin`.
+    fn translate_insns(
+        &self,
+        insns: &[crate::isa::Decoded],
+        fetch_fault: Option<Exception>,
+        pc: u64,
+        origin: u64,
+        id: u32,
+    ) -> Result<Translated, OutOfSlots> {
+        if self.opts.regalloc == RegAlloc::None {
+            let lopts = LowerOptions {
+                inject_bug: self.opts.inject_bug,
+                profile: self.opts.profile,
+            };
+            let o = lower::translate(insns, fetch_fault, pc, origin, id, &self.tr, lopts);
+            return Ok(Translated {
+                code: o.code,
+                pcmap: o.pcmap,
+                exits: o.exits,
+                fault_sites: Vec::new(),
+                stats: Default::default(),
+            });
+        }
+        let mut ir = lift(insns, fetch_fault, pc);
+        let before = self.opts.dump_ir.as_ref().map(|_| ir.to_string());
+        if self.opts.regalloc == RegAlloc::Linear {
+            optimize(&mut ir);
+        }
+        if let (Some(dir), Some(before)) = (&self.opts.dump_ir, before) {
+            let _ = std::fs::write(
+                dir.join(format!("tb_{pc:016x}.ir")),
+                format!("; lifted\n{before}\n; optimized\n{ir}"),
+            );
+        }
+        let iopts = IrOptions {
+            lazy: self.opts.regalloc == RegAlloc::Linear,
+            bmi2: self.features.bmi2,
+            profile: self.opts.profile,
+            pinned: self.pinned,
+            inject_bug: self.opts.inject_bug,
+        };
+        let o = lower_ir::translate(&ir, origin, id, &self.tr, iopts)?;
+        Ok(Translated {
+            code: o.code,
+            pcmap: o.pcmap,
+            exits: o.exits,
+            fault_sites: o.fault_sites,
+            stats: o.stats,
+        })
     }
 
     /// The TB to run next at guest `pc`: `tb_for`, then link the previous unlinked direct exit
@@ -381,6 +502,9 @@ impl Jit {
             .cache
             .find_host(rip)
             .unwrap_or_else(|| panic!("host fault at {rip:#x} outside any TB"));
+        if !tb.fault_sites.is_empty() {
+            return resolve_site(tb, cpu, mem, rip);
+        }
         let e = tb.entry_for(rip).expect("pcmap covers the TB");
         let d = tb.insns[e.idx as usize];
         cpu.pc = e.guest_pc;
@@ -515,6 +639,50 @@ impl Engine for Jit {
             jc,
         )
     }
+}
+
+/// Host fault in an IR-lowered TB: the fault site's state map says where every dirty guest
+/// register was (host registers from the SIGSEGV snapshot, spill slots, constants or another
+/// register's home); pinned registers were already stored by `exit_jit` (§15).
+fn resolve_site(tb: &TranslationBlock, cpu: &mut CpuState, mem: &DirectMem, rip: u64) -> Exception {
+    let off = (rip - tb.host) as u32;
+    let site = tb
+        .fault_sites
+        .iter()
+        .find(|s| s.rip_off == off)
+        .unwrap_or_else(|| {
+            panic!("host fault at {rip:#x} (TB offset {off:#x}) is not a memory access")
+        });
+    let regs = cpu.fault_regs;
+    let vals: Vec<(u8, u64)> = site
+        .dirty
+        .iter()
+        .map(|&(g, loc)| {
+            let v = match loc {
+                DLoc::Reg(r) => regs[r.num() as usize],
+                DLoc::Slot(k) => cpu.spill[k as usize],
+                DLoc::Const(c) => c,
+                DLoc::Home(h) => cpu.x[h as usize],
+            };
+            (g, v)
+        })
+        .collect();
+    for (g, v) in vals {
+        cpu.set_x(g, v);
+    }
+    cpu.pc = site.pc;
+    // Instructions idx.. were charged by the prologue but did not retire.
+    cpu.budget += (tb.insns.len() as u32 - site.idx) as i64;
+    let addr = regs[site.addr.num() as usize].wrapping_add(site.off as i64 as u64);
+    let size = site.size as u64;
+    let g = cpu.fault_addr.wrapping_sub(mem.base() as u64);
+    let tval = if g.wrapping_sub(addr) < size { g } else { addr };
+    let access = if site.store {
+        Access::Store
+    } else {
+        Access::Load
+    };
+    Exception::from(MemFault { access, addr: tval })
 }
 
 /// Guest disassembly plus host code of one TB (`--dump-x86`, lockstep reports).

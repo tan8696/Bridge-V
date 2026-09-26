@@ -116,6 +116,16 @@ fn guest_programs_match_qemu_reference_jit_mprotect_baseline() {
 }
 
 /// P1.14: parse the initial stack back and check argc/argv/envp/auxv.
+/// P4.7: every `--regalloc` level (linear is the default above), and linear without pinning.
+#[test]
+fn guest_programs_match_qemu_reference_regalloc_levels() {
+    for level in ["none", "pinned"] {
+        run_all(&["--engine", "jit", "--regalloc", level]);
+        run_all(&["--engine", "lockstep", "--regalloc", level]);
+    }
+    run_all(&["--engine", "lockstep", "--pin", ""]);
+}
+
 #[test]
 fn initial_stack_layout() {
     use bridgev::mem::{GuestVirt, prot};

@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use bridgev::elf::{Elf, PF_X};
 use bridgev::isa::{decode_parts, disasm};
 use bridgev::jit::code_mem::WxMode;
-use bridgev::jit::{EngineKind, JitOptions};
+use bridgev::jit::{EngineKind, JitOptions, RegAlloc};
 use bridgev::system::bare::{self, BareOptions, BareResult};
 use bridgev::user::{self, RunOptions};
 
@@ -41,6 +41,34 @@ enum Engine {
     Jit,
     /// JIT checked against the interpreter after every translation block.
     Lockstep,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum RegAllocArg {
+    None,
+    Pinned,
+    Linear,
+}
+
+/// `--pin` value: guest register numbers.
+#[derive(Clone, Debug)]
+struct PinList(Vec<u8>);
+
+/// Parse `x2,x1,x10,x15` (ABI names like `sp,ra,a0,a5` are not accepted, to stay unambiguous).
+fn parse_pin(s: &str) -> Result<PinList, String> {
+    if s.is_empty() {
+        return Ok(PinList(Vec::new()));
+    }
+    s.split(',')
+        .map(|t| {
+            t.trim()
+                .strip_prefix('x')
+                .and_then(|n| n.parse::<u8>().ok())
+                .filter(|&n| (1..32).contains(&n))
+                .ok_or_else(|| format!("bad register `{t}` (expected x1..x31)"))
+        })
+        .collect::<Result<Vec<u8>, String>>()
+        .map(PinList)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -112,6 +140,15 @@ enum Command {
         /// Make the `time` CSR follow the instruction count (reproducible runs).
         #[arg(long)]
         deterministic: bool,
+        /// Guest register mapping: none (all in memory), pinned (R12–R15 only), linear (full).
+        #[arg(long, value_enum, default_value = "linear")]
+        regalloc: RegAllocArg,
+        /// Guest registers pinned to R12–R15 (comma-separated, at most 4), e.g. x2,x1,x10,x15.
+        #[arg(long, default_value = "x2,x1,x10,x15", value_parser = parse_pin)]
+        pin: PinList,
+        /// Write every translation block's IR (before/after the passes) to this directory.
+        #[arg(long)]
+        dump_ir: Option<PathBuf>,
         /// Never link exits or use the jump cache: every block returns to the dispatcher.
         #[arg(long)]
         no_chain: bool,
@@ -251,6 +288,9 @@ fn main() -> ExitCode {
             inject_bug,
             no_chain,
             profile_jit,
+            regalloc,
+            pin,
+            dump_ir,
             elf,
             args,
         } => {
@@ -276,6 +316,13 @@ fn main() -> ExitCode {
                 inject_bug,
                 chain: !no_chain,
                 profile: profile_jit,
+                regalloc: match regalloc {
+                    RegAllocArg::None => RegAlloc::None,
+                    RegAllocArg::Pinned => RegAlloc::Pinned,
+                    RegAllocArg::Linear => RegAlloc::Linear,
+                },
+                pin: pin.0,
+                dump_ir,
                 ..JitOptions::default()
             };
             match mode {

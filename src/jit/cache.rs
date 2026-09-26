@@ -54,6 +54,8 @@ pub struct TranslationBlock {
     pub incoming: Vec<(u32, u8)>,
     /// False once invalidated: no longer reachable through the map or new links.
     pub valid: bool,
+    /// IR back end: every memory access with its state map (§15); empty for the naive one.
+    pub fault_sites: Vec<crate::backend::x86::lower_ir::FaultSite>,
 }
 
 impl TranslationBlock {
@@ -164,6 +166,7 @@ mod tests {
             exits: [None, None],
             incoming: Vec::new(),
             valid: true,
+            fault_sites: Vec::new(),
         }
     }
 

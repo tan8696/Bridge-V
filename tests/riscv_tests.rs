@@ -4,7 +4,7 @@
 
 mod common;
 
-use bridgev::jit::{EngineKind, JitOptions};
+use bridgev::jit::{EngineKind, JitOptions, RegAlloc};
 use bridgev::system::bare::{self, BareOptions, BareResult};
 
 /// Suites that must pass under the interpreter (`p` = physical-memory environment).
@@ -100,5 +100,33 @@ fn phase1_suites_pass_under_jit_mprotect_baseline_small_blocks() {
         max_block: 3,
         ..JitOptions::default()
     };
+    run_suites(EngineKind::Lockstep, jit);
+}
+
+/// P4.7: the naive backend (`none`) and the IR backend without optimization or caching
+/// (`pinned`), under the JIT and lockstep (`linear` is the default, covered above).
+#[test]
+fn phase1_suites_pass_at_every_regalloc_level() {
+    for regalloc in [RegAlloc::None, RegAlloc::Pinned] {
+        let jit = JitOptions {
+            regalloc,
+            ..JitOptions::default()
+        };
+        run_suites(EngineKind::Jit, jit.clone());
+        run_suites(EngineKind::Lockstep, jit);
+    }
+}
+
+/// P4.7: the linear allocator with the tiny-slice / small-block stress settings and no pinned
+/// registers (every guest register goes through the pool).
+#[test]
+fn phase1_suites_pass_linear_unpinned_small_blocks() {
+    let jit = JitOptions {
+        pin: Vec::new(),
+        max_block: 3,
+        slice: 1,
+        ..JitOptions::default()
+    };
+    run_suites(EngineKind::Jit, jit.clone());
     run_suites(EngineKind::Lockstep, jit);
 }

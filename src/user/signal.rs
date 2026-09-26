@@ -57,6 +57,26 @@ pub fn clear_jit_range() {
     JIT_RANGE.with(|c| c.set((0, 0, 0)));
 }
 
+/// ucontext `gregs` index of each host register, in `Reg` order (RAX, RCX, …, R15).
+const GREG_OF: [libc::c_int; 16] = [
+    libc::REG_RAX,
+    libc::REG_RCX,
+    libc::REG_RDX,
+    libc::REG_RBX,
+    libc::REG_RSP,
+    libc::REG_RBP,
+    libc::REG_RSI,
+    libc::REG_RDI,
+    libc::REG_R8,
+    libc::REG_R9,
+    libc::REG_R10,
+    libc::REG_R11,
+    libc::REG_R12,
+    libc::REG_R13,
+    libc::REG_R14,
+    libc::REG_R15,
+];
+
 extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut libc::c_void) {
     let (start, end, fault_exit) = JIT_RANGE.try_with(|c| c.get()).unwrap_or((0, 0, 0));
     // SAFETY: the kernel passes a valid ucontext_t for SA_SIGINFO handlers.
@@ -71,6 +91,11 @@ extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut li
         unsafe {
             (*cpu).fault_rip = rip;
             (*cpu).fault_addr = (*info).si_addr() as u64;
+            // Snapshot every GPR in `Reg` numbering: the register allocator may hold dirty
+            // guest registers in them (state maps, §15).
+            for (n, &greg) in GREG_OF.iter().enumerate() {
+                (*cpu).fault_regs[n] = gregs[greg as usize] as u64;
+            }
         }
         gregs[libc::REG_RIP as usize] = fault_exit as i64;
         return;

@@ -214,6 +214,15 @@ impl Unary {
     ];
 }
 
+/// BMI2 three-operand shifts (`VEX.LZ.pp.0F38.W F7 /r`): the count comes from a register,
+/// flags are untouched, and no register is fixed (unlike `shl r/m, cl`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShiftX {
+    Shlx,
+    Shrx,
+    Sarx,
+}
+
 /// A branch target inside the buffer being assembled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Label(u32);
@@ -670,6 +679,36 @@ impl Asm {
     pub fn shift_cl(&mut self, size: Size, op: Shift, dst: impl Into<Rm>) {
         let opc = if size == Size::B8 { 0xD2 } else { 0xD3 };
         self.emit_digit(&[], Flags::size(size), &[opc], op as u8, dst.into());
+    }
+
+    /// BMI2 `shlx/shrx/sarx dst, src, count` (§11.2). 32- or 64-bit; the count is masked to
+    /// 5/6 bits like the RISC-V shifts. The caller checks `HostFeatures::bmi2`.
+    pub fn shiftx(&mut self, size: Size, op: ShiftX, dst: Reg, src: impl Into<Rm>, count: Reg) {
+        assert!(
+            matches!(size, Size::B32 | Size::B64),
+            "shiftx is 32/64-bit only"
+        );
+        let rm = src.into();
+        // pp: 66 = 01 (SHLX), F3 = 10 (SARX), F2 = 11 (SHRX).
+        let pp = match op {
+            ShiftX::Shlx => 0b01,
+            ShiftX::Sarx => 0b10,
+            ShiftX::Shrx => 0b11,
+        };
+        let (x, b) = match rm {
+            Rm::Reg(r) => (0, r.rex_bit()),
+            Rm::Mem(m) => (
+                m.index.map_or(0, |(i, _)| i.rex_bit()),
+                m.base.map_or(0, |b| b.rex_bit()),
+            ),
+        };
+        // 3-byte VEX: C4, [~R ~X ~B m-mmmm=00010 (0F38)], [W ~vvvv L=0 pp].
+        self.byte(0xC4);
+        self.byte((dst.rex_bit() ^ 1) << 7 | (x ^ 1) << 6 | (b ^ 1) << 5 | 0b00010);
+        let w = (size == Size::B64) as u8;
+        self.byte(w << 7 | ((!count.num()) & 0xF) << 3 | pp);
+        self.byte(0xF7);
+        self.modrm_rm(dst.low3(), rm);
     }
 
     /// `imul dst, r/m` (two-operand, `0F AF /r`).

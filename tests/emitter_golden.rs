@@ -876,3 +876,42 @@ fn zz_report_count() {
         CHECKED.load(Ordering::Relaxed)
     );
 }
+
+#[test]
+fn bmi2_shifts_all_registers() {
+    let mems = some_mems();
+    for s in [Size::B32, Size::B64] {
+        for op in [ShiftX::Shlx, ShiftX::Shrx, ShiftX::Sarx] {
+            let mn = match op {
+                ShiftX::Shlx => Mnemonic::Shlx,
+                ShiftX::Shrx => Mnemonic::Shrx,
+                ShiftX::Sarx => Mnemonic::Sarx,
+            };
+            for &d in &Reg::ALL {
+                for &a in &Reg::ALL {
+                    for &c in &Reg::ALL {
+                        let b = asm(|x| x.shiftx(s, op, d, a, c));
+                        check(&b, mn, &[E::R(rs(d, s)), E::R(rs(a, s)), E::R(rs(c, s))]);
+                    }
+                }
+                for &m in mems.iter().step_by(5) {
+                    let b = asm(|x| x.shiftx(s, op, d, m, Reg::R9));
+                    check(
+                        &b,
+                        mn,
+                        &[
+                            E::R(rs(d, s)),
+                            E::M(s.bytes() as usize, m),
+                            E::R(rs(Reg::R9, s)),
+                        ],
+                    );
+                }
+            }
+        }
+    }
+    // Spot check against llvm-mc: shlx rax, rcx, rdx = c4 e2 e9 f7 c1.
+    assert_eq!(
+        asm(|x| x.shiftx(Size::B64, ShiftX::Shlx, Reg::Rax, Reg::Rcx, Reg::Rdx)),
+        [0xC4, 0xE2, 0xE9, 0xF7, 0xC1]
+    );
+}
