@@ -1,0 +1,6 @@
+len=43
+cmp=1 1
+strstr=fox jumps over the lazy dog
+buf=The The quick n fox 
+snprintf=28:fmt|   42|ab  |0003.142|beef
+argc=4 [alpha] [beta] [gamma]
