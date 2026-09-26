@@ -112,6 +112,12 @@ enum Command {
         /// Make the `time` CSR follow the instruction count (reproducible runs).
         #[arg(long)]
         deterministic: bool,
+        /// Never link exits or use the jump cache: every block returns to the dispatcher.
+        #[arg(long)]
+        no_chain: bool,
+        /// Count JALR executions in JIT code (jump-cache hit rate in --stats; adds overhead).
+        #[arg(long)]
+        profile_jit: bool,
         /// Testing only: deliberately miscompile ADDI (lockstep must catch it).
         #[arg(long, hide = true)]
         inject_bug: bool,
@@ -243,6 +249,8 @@ fn main() -> ExitCode {
             perf_map,
             deterministic,
             inject_bug,
+            no_chain,
+            profile_jit,
             elf,
             args,
         } => {
@@ -266,6 +274,9 @@ fn main() -> ExitCode {
                 dump_x86,
                 perf_map,
                 inject_bug,
+                chain: !no_chain,
+                profile: profile_jit,
+                ..JitOptions::default()
             };
             match mode {
                 Mode::Bare => {

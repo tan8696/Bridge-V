@@ -71,6 +71,26 @@ fn phase1_suites_pass_under_lockstep() {
     run_suites(EngineKind::Lockstep, JitOptions::default());
 }
 
+#[test]
+fn phase1_suites_pass_without_chaining() {
+    let jit = JitOptions {
+        chain: false,
+        ..JitOptions::default()
+    };
+    run_suites(EngineKind::Jit, jit.clone());
+    run_suites(EngineKind::Lockstep, jit);
+}
+
+/// A tiny slice makes budget exits (and chained re-entry) happen everywhere.
+#[test]
+fn phase1_suites_pass_with_tiny_slices() {
+    let jit = JitOptions {
+        slice: 3,
+        ..JitOptions::default()
+    };
+    run_suites(EngineKind::Jit, jit);
+}
+
 /// The fallback W^X mode and baseline-only host code must be just as correct.
 #[test]
 fn phase1_suites_pass_under_jit_mprotect_baseline_small_blocks() {

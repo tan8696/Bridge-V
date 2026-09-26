@@ -292,3 +292,188 @@ fn tiny_code_cache_flushes_and_keeps_running() {
     }
     assert!(rig.jit.stats.full_flushes > 0, "cache never filled");
 }
+
+// ------------------------------------------------------------------ Phase 3: chaining ----
+
+/// P3.1: every chainable exit is a `jmp rel32` (slot 0) or `jcc rel32` (slot 1) whose rel32
+/// field is 4-byte aligned and initially targets the TB's own stub.
+#[test]
+fn exit_slots_are_aligned_and_target_their_stubs() {
+    let nop = i_type(0, 0, 0, 0, 0x13);
+    let bne = 0x0063_1463; // bne x6, x6, +8
+    let jal = 0x0080_006F; // jal x0, +8
+    let mut rig = Rig::new(JitOptions::default());
+    let mut checked = 0;
+    for pre in 0..6 {
+        // Vary the code before the exits so every alignment case occurs.
+        let base = CODE + 0x100 * pre as u64;
+        let mut code = vec![nop; pre];
+        code.push(bne);
+        rig.mem.write_bytes(GuestVirt(base), &words(&code)).unwrap();
+        rig.mem
+            .write_bytes(GuestVirt(base + 0x80), &words(&[nop, jal]))
+            .unwrap();
+        for pc in [base, base + 0x80] {
+            let id = rig.jit.tb_for(pc, &rig.mem);
+            for (slot, ex) in rig.jit.tb(id).exits.iter().enumerate() {
+                let Some(ex) = ex else { continue };
+                assert_eq!(ex.patch_at % 4, 0, "slot {slot} of TB {pc:#x}");
+                let op = rig.jit.code_at(ex.patch_at - 2, 2);
+                if slot == 0 {
+                    assert_eq!(op[1], 0xE9);
+                } else {
+                    assert_eq!((op[0], op[1] & 0xF0), (0x0F, 0x80));
+                }
+                let rel = i32::from_le_bytes(rig.jit.code_at(ex.patch_at, 4).try_into().unwrap());
+                assert_eq!(
+                    ex.patch_at.wrapping_add(4).wrapping_add(rel as u64),
+                    ex.stub
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 6 * 3);
+}
+
+/// P3.2: link A→B by running, then invalidate B: A's exit must go back to its stub (no jump
+/// into stale code), and the retranslated B must be linked again.
+#[test]
+fn link_then_invalidate_unlinks() {
+    let a = [i_type(1, 7, 0, 7, 0x13), 0x0100_006F]; // addi x7,x7,1 ; jal x0,+16
+    let b_old = [i_type(10, 7, 0, 7, 0x13), ECALL]; // addi x7,x7,10 ; ecall
+    let b_new = [i_type(100, 7, 0, 7, 0x13), ECALL];
+    let mut rig = Rig::new(JitOptions::default());
+    rig.mem.write_bytes(GuestVirt(CODE), &words(&a)).unwrap();
+    rig.mem
+        .write_bytes(GuestVirt(CODE + 20), &words(&b_old))
+        .unwrap();
+    let run = |rig: &mut Rig| {
+        let mut cpu = CpuState::new_user(CODE);
+        assert_eq!(
+            rig.jit.run(&mut cpu, &mut rig.mem, &rig.env, 100),
+            Stop::Ecall
+        );
+        (cpu.x[7], cpu.icount)
+    };
+    // First run: A exits through its stub; the dispatcher then links A → B.
+    assert_eq!(run(&mut rig), (11, 3));
+    let ida = rig.jit.tb_for(CODE, &rig.mem);
+    let idb = rig.jit.tb_for(CODE + 20, &rig.mem);
+    let ex = rig.jit.tb(ida).exits[0].unwrap();
+    assert_eq!(ex.linked, Some(idb));
+    assert_eq!(rig.jit.tb(idb).incoming, vec![(ida, 0)]);
+    let rel = i32::from_le_bytes(rig.jit.code_at(ex.patch_at, 4).try_into().unwrap());
+    assert_eq!(ex.patch_at + 4 + rel as u64, rig.jit.tb(idb).host);
+    // Second run goes A → B without the dispatcher.
+    let entries = rig.jit.stats.entries;
+    assert_eq!(run(&mut rig), (11, 3));
+    assert_eq!(rig.jit.stats.entries - entries, 1);
+    // Change B's code and invalidate it.
+    rig.mem
+        .write_bytes(GuestVirt(CODE + 20), &words(&b_new))
+        .unwrap();
+    assert!(rig.jit.invalidate_pc(CODE + 20));
+    let ex = rig.jit.tb(ida).exits[0].unwrap();
+    assert_eq!(ex.linked, None);
+    let rel = i32::from_le_bytes(rig.jit.code_at(ex.patch_at, 4).try_into().unwrap());
+    assert_eq!(ex.patch_at + 4 + rel as u64, ex.stub);
+    assert_eq!(rig.jit.stats.chain_unlinks, 1);
+    // A now exits through its stub again and reaches the new B, which gets linked.
+    let entries = rig.jit.stats.entries;
+    assert_eq!(run(&mut rig), (101, 3));
+    assert_eq!(rig.jit.stats.entries - entries, 2);
+    let idb2 = rig.jit.tb_for(CODE + 20, &rig.mem);
+    assert_ne!(idb2, idb);
+    assert_eq!(rig.jit.tb(ida).exits[0].unwrap().linked, Some(idb2));
+}
+
+/// P3.3: a chained infinite loop (`jal x0, 0` linked to itself) still returns to the
+/// dispatcher every slice, so an instruction limit stops it; icount is exact.
+#[test]
+fn infinite_chained_loop_is_preempted() {
+    for slice in [1u64, 7, 1000, 100_000] {
+        let opts = JitOptions {
+            slice,
+            ..JitOptions::default()
+        };
+        let mut rig = Rig::new(opts);
+        rig.mem
+            .write_bytes(
+                GuestVirt(CODE),
+                &words(&[i_type(1, 7, 0, 7, 0x13), 0xFFDF_F06F]),
+            ) // addi; jal x0,-4
+            .unwrap();
+        let mut cpu = CpuState::new_user(CODE);
+        let limit = 1_000_001;
+        assert_eq!(
+            rig.jit.run(&mut cpu, &mut rig.mem, &rig.env, limit),
+            Stop::Limit
+        );
+        // TBs are [addi, jal] (2 insns) after the first; the limit is checked per slice.
+        assert!(
+            cpu.icount >= limit && cpu.icount < limit + 2,
+            "{}",
+            cpu.icount
+        );
+        assert_eq!(cpu.x[7], cpu.icount.div_ceil(2), "slice {slice}");
+        let budget_exits = rig.jit.stats.exits[bridgev::cpu::state::exit::BUDGET as usize];
+        assert!(
+            budget_exits >= (limit / slice.max(2)).saturating_sub(1),
+            "slice {slice}"
+        );
+        assert!(rig.jit.stats.chain_links >= 1);
+    }
+}
+
+/// P3.4: JALR through the jump cache: a call/return loop runs correctly, returns hit the jump
+/// cache after the first miss, and a full flush of a tiny code cache (which invalidates every
+/// jump-cache entry) keeps it correct.
+#[test]
+fn jump_cache_calls_and_returns_survive_flushes() {
+    // loop: jal ra, f ; addi t1, t1, -1 ; bnez t1, loop ; ecall
+    // f:    addi x7, x7, 1 ; ret                      (encodings from llvm-mc)
+    let code = [
+        0x0100_00EF,
+        0xFFF3_0313,
+        0xFE03_1CE3,
+        ECALL,
+        i_type(1, 7, 0, 7, 0x13),
+        0x0000_8067,
+    ];
+    for (cache, chain) in [(256 << 20, true), (4096, true), (256 << 20, false)] {
+        let opts = JitOptions {
+            code_cache: cache,
+            chain,
+            ..JitOptions::default()
+        };
+        let mut rig = Rig::new(opts);
+        rig.mem.write_bytes(GuestVirt(CODE), &words(&code)).unwrap();
+        for round in 0..3 {
+            let mut cpu = CpuState::new_user(CODE);
+            cpu.x[6] = 50;
+            assert_eq!(
+                rig.jit.run(&mut cpu, &mut rig.mem, &rig.env, 10_000),
+                Stop::Ecall
+            );
+            assert_eq!(cpu.x[7], 50, "cache {cache} chain {chain} round {round}");
+            assert_eq!(cpu.icount, 250);
+            if cache == 4096 {
+                // Force a full flush between rounds: fill the buffer with other TBs.
+                for k in 0..200u64 {
+                    rig.jit.tb_for(CODE + 0x800 + 4 * k, &rig.mem);
+                }
+            }
+        }
+        let misses = rig.jit.stats.exits[bridgev::cpu::state::exit::LOOKUP as usize];
+        if !chain {
+            assert_eq!(misses, 150, "no-chain: every return exits");
+        } else {
+            // One miss per round: the first return; later returns hit.
+            assert_eq!(misses, 3, "cache {cache}");
+        }
+        if cache == 4096 {
+            assert!(rig.jit.stats.full_flushes > 0);
+        }
+    }
+}

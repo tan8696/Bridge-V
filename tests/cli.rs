@@ -126,3 +126,75 @@ fn jit_host_fault_is_precise() {
         assert!(all.contains("host-fault 1"), "{engine}: {all}");
     }
 }
+
+/// Retired-instruction count and statistics from `--stats`.
+fn icount_and_stats(args: &[&str]) -> (u64, String) {
+    let out = run_bridgev(args);
+    assert!(out.code.is_some(), "{args:?}: {}", out.stderr);
+    let line = out
+        .stderr
+        .lines()
+        .find(|l| l.contains("guest instructions in"))
+        .unwrap_or_else(|| panic!("{args:?}: no stats in {}", out.stderr));
+    let n = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (n, out.stderr)
+}
+
+/// P3.3: the budget-derived instruction count is exactly the interpreter's, with and without
+/// chaining and with tiny code caches (every exit, flush and helper refund is accounted for).
+#[test]
+fn icount_is_exact_under_every_engine() {
+    for prog in [
+        "hello",
+        "qsort-O2",
+        "printf_float-O0",
+        "fib-O2",
+        "fault",
+        "setjmp-O2-nc",
+    ] {
+        let Some(elf) = common::guest_elf(prog) else {
+            return;
+        };
+        let e = elf.to_str().unwrap();
+        let (want, _) = icount_and_stats(&["run", "--stats", e]);
+        for cfg in [
+            &["--engine", "jit"][..],
+            &["--engine", "jit", "--no-chain"],
+            &["--engine", "jit", "--code-cache", "64K"],
+            &["--engine", "lockstep"],
+        ] {
+            let mut args = vec!["run", "--stats"];
+            args.extend_from_slice(cfg);
+            args.push(e);
+            assert_eq!(icount_and_stats(&args).0, want, "{prog} {cfg:?}");
+        }
+    }
+}
+
+/// P3.4: recursive fib returns through the jump cache; the hit rate must exceed 90%, and
+/// chaining must cut dispatcher entries by orders of magnitude.
+#[test]
+fn fib_jump_cache_hit_rate_and_dispatcher_entries() {
+    let Some(elf) = common::guest_elf("fib-O2") else {
+        return;
+    };
+    let e = elf.to_str().unwrap();
+    let entries = |s: &str| -> u64 {
+        let i = s.find(" dispatcher entries").unwrap();
+        s[..i].rsplit(' ').next().unwrap().parse().unwrap()
+    };
+    let (_, chained) = icount_and_stats(&["run", "--engine", "jit", "--profile-jit", "--stats", e]);
+    let rate: f64 = chained
+        .split("hit rate ")
+        .nth(1)
+        .and_then(|r| r.split('%').next())
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(rate > 90.0, "jump-cache hit rate {rate}%");
+    let (_, unchained) = icount_and_stats(&["run", "--engine", "jit", "--no-chain", "--stats", e]);
+    assert!(
+        entries(&chained) * 100 < entries(&unchained),
+        "{chained}\n{unchained}"
+    );
+}

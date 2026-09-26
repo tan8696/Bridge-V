@@ -177,6 +177,30 @@ impl CodeMem {
         self.write_at((addr - self.rx_base()) as usize, bytes);
     }
 
+    /// Retarget the `jmp`/`jcc rel32` whose rel32 field is at RX address `field` to jump to
+    /// RX address `target` (§13.3). The field must be 4-byte aligned, so the update is one
+    /// aligned 32-bit store: atomic on x86, safe even against a concurrent executor (D7).
+    pub fn patch_rel32(&mut self, field: u64, target: u64) {
+        assert!(field.is_multiple_of(4), "unaligned rel32 field {field:#x}");
+        assert!(self.contains(field) && self.contains(field + 3));
+        let rel = target.wrapping_sub(field + 4) as i64;
+        assert!(
+            rel == rel as i32 as i64,
+            "rel32 out of range: {field:#x} -> {target:#x}"
+        );
+        let off = (field - self.rx_base()) as usize;
+        match self.mode {
+            // SAFETY: `off` is in bounds and 4-byte aligned (checked above; both views are
+            // page-aligned), so this is a valid, aligned u32 in our RW mapping.
+            WxMode::DualMap => unsafe {
+                let p = self.rw.add(off) as *mut u32;
+                std::sync::atomic::AtomicU32::from_ptr(p)
+                    .store(rel as i32 as u32, std::sync::atomic::Ordering::Release);
+            },
+            WxMode::Mprotect => self.write_at(off, &(rel as i32).to_le_bytes()),
+        }
+    }
+
     /// Placed code at RX address `addr`.
     pub fn read(&self, addr: u64, len: usize) -> &[u8] {
         assert!(addr >= self.rx_base() && addr + len as u64 <= self.rx_base() + self.size as u64);

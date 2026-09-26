@@ -91,6 +91,18 @@ fn guest_programs_match_qemu_reference_lockstep() {
 }
 
 #[test]
+fn guest_programs_match_qemu_reference_no_chain() {
+    run_all(&["--engine", "jit", "--no-chain"]);
+    run_all(&["--engine", "lockstep", "--no-chain"]);
+}
+
+/// A 64 KiB code cache fills up repeatedly: full flushes must reset links and the jump cache.
+#[test]
+fn guest_programs_match_qemu_reference_small_code_cache() {
+    run_all(&["--engine", "jit", "--code-cache", "64K"]);
+}
+
+#[test]
 fn guest_programs_match_qemu_reference_jit_mprotect_baseline() {
     run_all(&[
         "--engine",

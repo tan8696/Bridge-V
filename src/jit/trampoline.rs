@@ -133,9 +133,12 @@ impl Trampolines {
 }
 
 /// Execute one instruction with the interpreter (D14). Called from JIT code with all guest
-/// state in `CpuState` and `cpu.icount` up to date. Returns 0 to continue with the next
-/// instruction, 1 to leave the block (`cpu.pc`, `cpu.exit_reason` and, for exceptions,
-/// `exc_cause`/`exc_tval` are set; `icount` counts the instruction if it retired).
+/// state in `CpuState` and the budget charge for this and later instructions of the TB
+/// refunded, so `icount + (budget_ref - budget)` is exact; the helper folds that into
+/// `icount` first (D30) so CSR reads of `cycle`/`instret` see the right value. Returns 0 to
+/// continue with the next instruction, 1 to leave the block (`cpu.pc`, `cpu.exit_reason`
+/// and, for exceptions, `exc_cause`/`exc_tval` are set; `icount` counts the instruction if
+/// it retired).
 ///
 /// `raw` holds the instruction bits (16 or 32 of them). Never unwinds into JIT code.
 ///
@@ -150,6 +153,8 @@ pub unsafe extern "sysv64" fn helper_interp_one(cpu: *mut CpuState, raw: u64, pc
         let cpu = unsafe { &mut *cpu };
         // SAFETY: see above.
         let mem = unsafe { &mut *(cpu.helper_mem as *mut DirectMem) };
+        cpu.icount += (cpu.budget_ref - cpu.budget) as u64;
+        cpu.budget_ref = cpu.budget;
         let d = decode_parts::<()>(raw as u16, || Ok((raw >> 16) as u16)).expect("infallible");
         match step(cpu, mem, &d, pc) {
             Flow::Next => 0,

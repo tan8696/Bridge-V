@@ -19,6 +19,36 @@ pub mod exit {
     pub const FLUSH: u32 = 3;
     /// Host SIGSEGV inside JIT code: `fault_rip`, `fault_addr` (resolved by the dispatcher).
     pub const HOST_FAULT: u32 = 4;
+    /// A TB prologue found the budget exhausted (D12); continue at `pc`.
+    pub const BUDGET: u32 = 5;
+    /// JALR target not in the jump cache (§13.4); continue at `pc`.
+    pub const LOOKUP: u32 = 6;
+    pub const COUNT: usize = 7;
+}
+
+/// Number of jump-cache entries (§13.4); a power of two.
+pub const JC_SIZE: usize = 4096;
+
+/// One jump-cache entry: guest pc → host address of its TB. `pc` is odd (never a valid
+/// target, which is always 2-byte aligned) when the entry is empty.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JcEntry {
+    pub pc: u64,
+    pub host: u64,
+}
+
+impl JcEntry {
+    pub const EMPTY: JcEntry = JcEntry {
+        pc: u64::MAX,
+        host: 0,
+    };
+}
+
+/// Jump-cache slot of guest `pc`: `(pc >> 1) & (JC_SIZE - 1)` (§13.4).
+#[inline]
+pub fn jc_index(pc: u64) -> usize {
+    (pc >> 1) as usize & (JC_SIZE - 1)
 }
 
 /// Architectural state of one hart. The first fields have fixed offsets that generated code
@@ -60,6 +90,16 @@ pub struct CpuState {
     pub fault_addr: u64,
     /// `*mut DirectMem` of the running guest, for JIT helpers (set by the dispatcher).
     pub helper_mem: u64,
+    /// `budget` value at which `icount` was last synchronized: retired instructions not yet in
+    /// `icount` = `budget_ref - budget` (D30).
+    pub budget_ref: i64,
+    /// Identifies the translation cache generation the jump cache belongs to (D30).
+    pub jc_tag: u64,
+    /// `--profile-jit`: JALR executions counted by JIT code.
+    pub prof_jalr: u64,
+    _pad2: [u64; 15],
+    /// Inline JALR lookup table (§13.4).
+    pub jmp_cache: [JcEntry; JC_SIZE],
     pub csr: Csrs,
 }
 
@@ -85,6 +125,11 @@ const _: () = {
     assert!(offset_of!(CpuState, fault_rip) == 0x258);
     assert!(offset_of!(CpuState, fault_addr) == 0x260);
     assert!(offset_of!(CpuState, helper_mem) == 0x268);
+    assert!(offset_of!(CpuState, budget_ref) == 0x270);
+    assert!(offset_of!(CpuState, jc_tag) == 0x278);
+    assert!(offset_of!(CpuState, prof_jalr) == 0x280);
+    assert!(offset_of!(CpuState, jmp_cache) == 0x300);
+    assert!(std::mem::size_of::<JcEntry>() == 16);
 };
 
 impl CpuState {
@@ -112,6 +157,11 @@ impl CpuState {
             fault_rip: 0,
             fault_addr: 0,
             helper_mem: 0,
+            budget_ref: 0,
+            jc_tag: 0,
+            prof_jalr: 0,
+            _pad2: [0; 15],
+            jmp_cache: [JcEntry::EMPTY; JC_SIZE],
             csr: Csrs::default(),
         })
     }
@@ -124,6 +174,11 @@ impl CpuState {
         c.csr.mcounteren = 0x7;
         c.csr.scounteren = 0x7;
         c
+    }
+
+    /// Empty the jump cache.
+    pub fn clear_jump_cache(&mut self) {
+        self.jmp_cache.fill(JcEntry::EMPTY);
     }
 
     /// Write integer register `r`, discarding writes to x0.
