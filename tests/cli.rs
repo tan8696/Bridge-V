@@ -98,3 +98,31 @@ fn jit_stats_and_dump() {
     assert!(n >= 2 && n.is_multiple_of(2), "{n} dump files");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// P2.7: a guest store to its read-only text faults on the host inside JIT code; the SIGSEGV
+/// handler and pcmap must report exactly what the interpreter reports (cause, tval, pc, and the
+/// retired-instruction count), and the JIT must have taken the host-fault path.
+#[test]
+fn jit_host_fault_is_precise() {
+    let Some(elf) = common::guest_elf("fault") else {
+        return;
+    };
+    let run = |engine: &str| {
+        let out = run_bridgev(["run", "--engine", engine, "--stats", elf.to_str().unwrap()]);
+        assert_eq!(out.code, Some(139), "{engine}: {}", out.stderr);
+        let lines: Vec<String> = out.stderr.lines().map(String::from).collect();
+        (
+            lines[0].clone(),
+            lines[1].split(" in ").next().unwrap().to_string(),
+            out.stderr,
+        )
+    };
+    let (fault_i, count_i, _) = run("interp");
+    assert!(fault_i.contains("cause 7"), "{fault_i}");
+    for engine in ["jit", "lockstep"] {
+        let (fault_j, count_j, all) = run(engine);
+        assert_eq!(fault_j, fault_i, "{engine}");
+        assert_eq!(count_j, count_i, "{engine}");
+        assert!(all.contains("host-fault 1"), "{engine}: {all}");
+    }
+}
