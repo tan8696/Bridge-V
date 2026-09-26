@@ -1,0 +1,7 @@
+# riscv-tests that fail under the *reference* emulator (qemu-system-riscv64 8.2.2, -M spike).
+# These are QEMU limitations, not bad ELFs; Bridge-V must still pass them. One name per line.
+#
+# Test case 2 expects `csrwi minstret, 0; csrr a0, minstret` to read 0 (a CSR write takes
+# precedence over the writing instruction's own retirement increment). QEMU 8.2 returns 1,
+# with or without -icount.
+rv64mi-p-instret_overflow

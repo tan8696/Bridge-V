@@ -1,0 +1,78 @@
+# Bridge-V continuous integration (P0.8). Mirrors what a contributor runs locally:
+# fmt, clippy, guest builds, reference checks, cargo test.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: build, lint, test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install host packages (tools/setup.sh)
+        run: ./tools/setup.sh
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install 1.94 --profile minimal --component rustfmt,clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build guest programs
+        run: ./tools/build-guests.sh
+
+      - name: Check guests against qemu-riscv64 reference outputs
+        run: ./tools/ref-check.sh
+
+      - name: cargo test
+        run: cargo test
+        env:
+          BRIDGEV_REQUIRE_GUESTS: "1"
+
+  riscv-tests:
+    name: riscv-tests (build + qemu reference)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install host packages (tools/setup.sh)
+        run: ./tools/setup.sh
+
+      - name: riscv-tests revision
+        id: rev
+        run: echo "rev=$(git -C third_party/riscv-tests rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: guest/build/riscv-tests
+          key: riscv-tests-${{ steps.rev.outputs.rev }}-${{ hashFiles('tools/build-riscv-tests.sh') }}
+
+      - name: Build riscv-tests
+        run: |
+          if [ ! -d guest/build/riscv-tests ]; then ./tools/build-riscv-tests.sh; fi
+          ls guest/build/riscv-tests | wc -l
+
+      - name: Run riscv-tests under qemu (reference)
+        run: ./tools/ref-riscv-tests.sh
