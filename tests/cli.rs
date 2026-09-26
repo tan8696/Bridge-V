@@ -14,9 +14,8 @@ fn version_exits_zero() {
 #[test]
 fn unimplemented_subcommands_exit_two() {
     for args in [
-        vec!["run", "x.elf"],
+        vec!["run", "--engine", "jit", "x.elf"],
         vec!["boot", "--kernel", "Image"],
-        vec!["disasm", "x.elf"],
         vec!["bench", "coremark"],
     ] {
         let out = run_bridgev(&args);
@@ -27,6 +26,24 @@ fn unimplemented_subcommands_exit_two() {
             out.stderr
         );
     }
+}
+
+#[test]
+fn missing_elf_is_an_error_not_a_panic() {
+    let out = run_bridgev(["run", "/nonexistent.elf"]);
+    assert_eq!(out.code, Some(1));
+    assert!(out.stderr.contains("bridgev: error"), "{}", out.stderr);
+}
+
+#[test]
+fn disasm_prints_the_entry_point() {
+    let Some(elf) = common::guest_elf("hello") else {
+        return;
+    };
+    let out = run_bridgev([std::ffi::OsStr::new("disasm"), elf.as_os_str()]);
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(out.stdout.contains("ecall"), "{}", out.stdout);
+    assert!(out.stdout.contains("addi a0, zero, 1"), "{}", out.stdout);
 }
 
 #[test]

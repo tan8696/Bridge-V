@@ -15,6 +15,11 @@ TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
 
 check() {  # check <expected-name> <elf>
   local key=$1 elf=$2 args=() code
+  if [[ ! -f "$elf" ]]; then
+    fail=$((fail + 1)); echo "FAIL: ${elf#"$ROOT"/} does not exist (run tools/build-guests.sh)"
+    ((update)) && exit 1
+    return
+  fi
   [[ -f "$EXP/$key.args" ]] && read -r -a args < "$EXP/$key.args"
   "$ROOT/tools/ref-run.sh" "$elf" "${args[@]}" > "$TMP"; code=$?
   if ((update)); then

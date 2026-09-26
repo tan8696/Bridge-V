@@ -44,6 +44,9 @@ jobs:
       - name: Check guests against qemu-riscv64 reference outputs
         run: ./tools/ref-check.sh
 
+      - name: Build riscv-tests (needed by tests/riscv_tests.rs)
+        run: ./tools/build-riscv-tests.sh
+
       - name: cargo test
         run: cargo test
         env:

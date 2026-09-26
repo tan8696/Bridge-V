@@ -1,0 +1,4 @@
+fstat: size=1234 reg=1 nlink=1 mode=600
+stat: same_ino=1 same_dev=1 size=1234 blksize_ok=1 mtime_ok=1
+root_is_dir=1
+missing=-1 enoent=1
