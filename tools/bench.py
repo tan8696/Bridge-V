@@ -4,7 +4,8 @@
 Runs the benchmark matrix: every workload under every configuration (bridgev interpreter,
 four JIT levels, qemu-riscv64, native x86-64). For each cell it:
   1. calibrates the amount of work so one run lasts about --target seconds (CoreMark needs
-     >= 10 s for a valid result),
+     >= 10 s for a valid result), and recalibrates from the warm-up run; a measured CoreMark
+     run that comes out under 10 s is kept on record as discarded and redone with 25% more work,
   2. does 1 warm-up run and --runs measured runs, pinned to one CPU with taskset,
   3. validates every run (CoreMark: "Correct operation validated" and >= 10 s; Dhrystone: every
      final value matches its "should be" line),
@@ -167,9 +168,13 @@ def run_once(cfg, w, n, cpu):
     score, secs, errors = w.parse(p.stdout, n)
     if p.returncode != 0:
         errors.append(f"exit status {p.returncode}")
-    if secs is not None and secs < w.min_secs:
+    too_short = secs is not None and secs < w.min_secs
+    if too_short:
         errors.append(f"ran {secs:.2f} s < {w.min_secs} s")
-    r = {"n": n, "wall": wall, "score": score, "secs": secs, "valid": not errors, "errors": errors}
+    # Too short and nothing else wrong (CoreMark's 10 s rule also withholds its "validated").
+    others = [e for e in errors if not e.startswith("ran ") and "Correct operation" not in e]
+    r = {"n": n, "wall": wall, "score": score, "secs": secs, "valid": not errors, "errors": errors,
+         "too_short": too_short and not others}
     if CONFIGS[cfg][0] == "bridgev":
         r["stats"] = bridgev_stats(p.stderr)
     if errors:
@@ -315,7 +320,7 @@ def main():
     ap.add_argument("--configs", default=",".join(CONFIGS), help="comma-separated configurations")
     ap.add_argument("--runs", type=int, default=5, help="measured runs per cell")
     ap.add_argument("--warmup", type=int, default=1, help="warm-up runs per cell (not measured)")
-    ap.add_argument("--target", type=float, default=12.0, help="seconds per run (CoreMark needs >= 10)")
+    ap.add_argument("--target", type=float, default=13.0, help="seconds per run (CoreMark needs >= 10)")
     ap.add_argument("--cpu", type=int, default=2, help="CPU for taskset (-1: no pinning)")
     ap.add_argument("--quick", action="store_true",
                     help="smoke test: 1 s runs, 1 measured run, no warm-up, CoreMark's 10 s rule off")
@@ -343,9 +348,18 @@ def main():
                 print(f"{wname}/{cfg}: qemu-riscv64 not installed, skipped", file=sys.stderr)
                 continue
             n = calibrate(cfg, w, target * w.target_factor, cpu)
-            rs = []
-            for i in range(warmup + runs):
+            rs, retried = [], []
+            i = 0
+            while i < warmup + runs:
                 r = run_once(cfg, w, n, cpu)
+                if i >= warmup and r["too_short"] and len(retried) < 3:
+                    # Only CoreMark's 10 s rule failed (the VM got faster mid-batch): keep the
+                    # run on record, redo it with 25% more work.
+                    retried.append(r)
+                    print(f"{wname:9} {cfg:10} run {i - warmup + 1}/{runs} too short "
+                          f"({r['secs']:.2f} s), redone with more work", file=sys.stderr)
+                    n = math.ceil(n * 1.25)
+                    continue
                 if i >= warmup:
                     rs.append(r)
                 elif r["score"]:
@@ -354,9 +368,12 @@ def main():
                     n = max(1, math.ceil(r["score"] * target * w.target_factor))
                 tag = "warm-up" if i < warmup else f"run {i - warmup + 1}/{runs}"
                 status = "ok" if r["valid"] else "INVALID " + "; ".join(r["errors"])
-                print(f"{wname:9} {cfg:10} {tag:9} n={n} score={r['score']} wall={r['wall']:.2f}s {status}",
+                print(f"{wname:9} {cfg:10} {tag:9} n={r['n']} score={r['score']} wall={r['wall']:.2f}s {status}",
                       file=sys.stderr, flush=True)
+                i += 1
             res["raw"][wname][cfg] = rs
+            if retried:
+                res["raw"][wname][cfg + " (discarded, too short)"] = retried
             res["results"][wname][cfg] = summarize(rs)
     os.makedirs(a.out, exist_ok=True)
     md = markdown(res)

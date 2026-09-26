@@ -534,22 +534,22 @@ IR dumps of one real block before and after the passes, the allocator decisions 
 **Entry criteria:** Phase 4 done.
 
 ### P5.1 Benchmark builds (S)
-- [ ] CoreMark: `make PORT_DIR=linux` with `CC=riscv64-linux-gnu-gcc`, `XCFLAGS="-O2 -march=rv64gc -static"` and `ITERATIONS` sized so the JIT runs for 10 s or more. Also build a native x86-64 version from the same source.
-- [ ] Dhrystone 2.1 (source provenance and license noted in the report): guest and native builds, with `-O2`.
-- [ ] Record the exact commits, flags and binary hashes.
+- [x] CoreMark: `make PORT_DIR=linux` with `CC=riscv64-linux-gnu-gcc`, `-O2 -march=rv64gc -static -DPERFORMANCE_RUN=1`; iterations are passed at run time and sized by the harness (≥ 10 s). Native x86-64 build from the same source (`tools/build-bench.sh`, D43).
+- [x] Dhrystone ("C, Version 2.2" per its source; the riscv-tests copy, BSD, unmodified + a Linux shim; provenance in the report): guest and native builds, with `-O2`.
+- [x] Record the exact commits, flags and binary hashes (`guest/build/bench/BUILDINFO.txt`, copied into the results JSON).
 
-### P5.2 Benchmark harness (M), `bridgev bench` and/or `tools/bench.sh`
-- [ ] The configuration matrix per §22: interp; jit naive; +chain; +pinned; +linear; softmmu (once Phase 7 exists, filled in later); `qemu-riscv64`; native.
-- [ ] Procedure: `taskset -c 2`, 1 warm-up run, 5 measured runs, median/min/max. Validate the CoreMark output ("Correct operation validated") on **every** run.
-- [ ] Output: a markdown table plus a JSON file with host info (CPU model, kernel, rustc version, commit, date).
+### P5.2 Benchmark harness (M), `tools/bench.py` (D43)
+- [x] The configuration matrix per §22: interp; jit naive; +chain; +pinned; +linear; softmmu (n/a until Phase 7); `qemu-riscv64`; native (`tools/bench.py`).
+- [x] Procedure: `taskset -c 2`, 1 warm-up run, 5 measured runs, median/min/max. Validate the CoreMark output ("Correct operation validated") on **every** run (Dhrystone: every self-check value).
+- [x] Output: a markdown table plus a JSON file with host info (CPU model, kernel, rustc version, commit, date).
 
 ### P5.3 Profiling and tuning pass (M)
-- [ ] Translation-time share, top TBs by execution count (a sampling counter), code size per guest instruction.
-- [ ] At least one measured tuning iteration. Keep changes that win and revert changes that don't, with before/after numbers.
+- [x] Translation-time share, top TBs by time (`--profile-tbs` sampling, D44), code size per guest instruction.
+- [x] At least one measured tuning iteration. Keep changes that win and revert changes that don't, with before/after numbers (kept: budget in R9, D46; reverted: loop-resident registers, D45).
 
 ### P5.4 Results documentation (S)
-- [ ] `docs/BENCHMARKS.md`: tables, methodology, environment and the caveat that this is a noisy cloud VM.
-- [ ] `tools/demo-milestone-a.sh`: builds, runs the interpreter and the JIT on CoreMark, and prints the speedup.
+- [x] `docs/BENCHMARKS.md`: tables, methodology, environment and the caveat that this is a noisy cloud VM.
+- [x] `tools/demo-milestone-a.sh`: builds, runs the interpreter and the JIT on CoreMark, and prints the speedup.
 
 ### Phase 5 acceptance criteria
 - CoreMark validates under every engine and configuration.
