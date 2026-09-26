@@ -348,6 +348,10 @@ def main():
                 r = run_once(cfg, w, n, cpu)
                 if i >= warmup:
                     rs.append(r)
+                elif r["score"]:
+                    # The warm-up is a full-length run: recalibrate from its steady-state rate
+                    # (short calibration runs underestimate it, e.g. cold block decoding).
+                    n = max(1, math.ceil(r["score"] * target * w.target_factor))
                 tag = "warm-up" if i < warmup else f"run {i - warmup + 1}/{runs}"
                 status = "ok" if r["valid"] else "INVALID " + "; ".join(r["errors"])
                 print(f"{wname:9} {cfg:10} {tag:9} n={n} score={r['score']} wall={r['wall']:.2f}s {status}",

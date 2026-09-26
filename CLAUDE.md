@@ -93,6 +93,10 @@ Update this table at the end of every phase.
 | D40 | `--stats=regs` | Interpreter engine only (a property of the guest program): counts integer register references (reads + writes, x0 excluded) once per decoded block (static) and once per retired instruction (dynamic), and reports the dynamic share covered by the default and by the best 4-register set. Other engines reject it. | No extra code in JIT output; exact dynamic counts. |
 | D41 | `--check-abi` dropped | Lockstep (after every TB, including chained entries per D32) and the block fuzzer compare full architectural state, which includes the pinned registers `exit_jit` writes back. A wrong pinned value is reported as a register divergence at the first TB that exposes it. | The shadow-copy check would test a subset of what lockstep already tests. |
 | D42 | Pinned set stays x2, x1, x10, x15 (P4.9) | `--stats=regs` on CoreMark ranks x15, x14, x13, x10 highest (72.1% of dynamic register uses vs 39.9% for the default set), but measured CoreMark speed with `--pin x15,x14,x13,x10` was only +2.6% (median of 5, ranges overlapping), fib was −6% (noisy), and x2,x15,x10,x14 was −1.7%. Use counts are a poor proxy: pinning pays for values live *across* blocks (sp, ra for returns through the jump cache), which the linear allocator cannot cache. Default unchanged; revisit with Dhrystone and the Phase 5 harness. | Change the default only on a clear, reproducible win. |
+| D43 | Benchmark builds and harness (Phase 5) | CoreMark (EEMBC, submodule) is built with its own Makefile (`PORT_DIR=linux`, `-O2`, static, `PERFORMANCE_RUN=1`; iterations at run time). Dhrystone is riscv-tests' `benchmarks/dhrystone` sources, **unmodified**, plus a Linux shim (`guest/bench/dhrystone`: run count from argv, `clock_gettime` timer, working `debug_printf` for Weicker's self-check); netlib is unreachable from the container. Native x86-64 builds use the same sources and flags (host gcc 13.3 = cross gcc 13.3). The harness is `tools/bench.py` (Python stdlib), not a `bridgev bench` subcommand: per-cell calibration to the target run time, `taskset`, warm-up + 5 runs, validation of every run (CoreMark's own CRC checks and 10 s rule, Dhrystone's final-value self-check), JSON + markdown. | Process control, statistics and JSON are simpler in Python; keeping bridgev free of benchmark logic. |
+| D44 | `--profile-tbs` | SIGPROF on process CPU time (1 kHz requested; the kernel delivers at its tick, about 250 Hz here) records the host RIP in a lock-free buffer (2^17 samples); `--stats` attributes samples to TBs (`find_host`), trampolines, or "elsewhere" (Rust + kernel) and lists the 12 hottest TBs. | Answers "where does time go" without `perf` (not installed in the container) and without changing the generated code. |
+| D45 | Loop-resident registers: tried, **not adopted** | Self-loop TBs kept their most-used guest registers in pool registers across iterations (loaded once, stored on exit paths, listed in fault-site state maps). It doubled `loop.elf` (3,170 → 6,225 MIPS) but moved neither CoreMark (−0.4%) nor Dhrystone (−1.4%) in same-batch A/B runs, so it was reverted (Phase 5 report §7.3). The fuzzer's self-loop blocks and multi-iteration mode stayed. | Only changes that win on the benchmarks stay (P5.3). |
+| D46 | Budget in R9 (IR back end) | The `pinned`/`linear` back end keeps the budget in R9 instead of `CpuState.budget`: prologue `sub r9, n; jl`, stubs `add r9, refund`; `enter_jit`/`exit_jit` load/store it (so every exit, fault and the dispatcher see `CpuState.budget` as before), helper calls store it before and reload it after. R9 leaves the pool (6 registers). The naive back end keeps the memory budget. Amends D30/§13.3 for the IR levels. | The memory RMW formed a store-to-load dependency chain through every TB; same-batch A/B: CoreMark +10.5%, Dhrystone +22.4%. |
 
 ---
 
@@ -244,14 +248,15 @@ Bridge-V/
 │   ├── common/mod.rs         ← guest_elf() / run_bridgev() helpers
 │   ├── common/rvgen.rs       ← random RV64 block generator + single-block harness (proptest)
 │   └── data/                 ← expected/ (qemu reference outputs), qemu-known-failures.txt
-├── benches/                  ← benchmark harness (interp vs jit vs qemu vs native)
 ├── guest/                    ← RISC-V guest sources + build scripts (outputs .gitignored)
-│   ├── asm/  c/  bench/      ← hand tests, C tests, CoreMark/Dhrystone ports
+│   ├── asm/  c/              ← hand tests, C tests
+│   ├── bench/dhrystone/      ← Linux shim (util.h, shim.c) for riscv-tests' Dhrystone (P5.1)
 │   └── linux/                ← kernel .config fragment, busybox .config, initramfs skeleton, build.sh
 ├── third_party/              ← git submodules: riscv-tests, coremark, berkeley-softfloat-3
 ├── tools/                    ← setup.sh, build-guests.sh, build-riscv-tests.sh, ref-run.sh, ref-check.sh,
 │                               ref-riscv-tests.sh (Phase 0); gen-decoder-vectors.py (Phase 1);
-│                               later: bench.sh, boot-linux.sh
+│                               build-bench.sh, bench.py (the §22 harness), demo-milestone-a.sh (Phase 5);
+│                               later: boot-linux.sh
 ├── README.md                 ← short landing page
 ├── docs/
 │   ├── ROADMAP.md            ← detailed phase-by-phase plan (task IDs P<phase>.<n>)
@@ -373,7 +378,8 @@ The offsets are illustrative. **The source of truth is the `offset_of!` compile-
 | **R14** | pinned guest **x10 (a0)** | callee-saved |
 | **R15** | pinned guest **x15 (a5)** (GCC's favourite temporary) | callee-saved |
 | R10, R11 | emitter scratch (address computation, TLB path, patch thunks). Never allocated. | caller-saved |
-| RAX, RCX, RDX, RSI, RDI, R8, R9 | **allocatable pool** (7). Fixed constraints: RAX/RDX for MUL/IMUL(1-op)/DIV/IDIV/CQO, RCX for variable shifts when BMI2 is absent | caller-saved |
+| R9 | IR back end (`--regalloc=pinned/linear`): the instruction **budget** (D46), loaded by `enter_jit`, stored by `exit_jit`, synced around helper calls. `--regalloc=none`: pool | caller-saved |
+| RAX, RCX, RDX, RSI, RDI, R8 | **allocatable pool** (6; 7 with R9 at `none`). Fixed constraints: RAX/RDX for MUL/IMUL(1-op)/DIV/IDIV/CQO, RCX for variable shifts when BMI2 is absent | caller-saved |
 | XMM0–XMM15 | FP scratch (Phase F2). All caller-saved in SysV. | caller-saved |
 
 The pinned set (x2, x1, x10, x15) is the default; `--pin` overrides it (D39). Phase 4 measured the alternatives with `--stats=regs` and CoreMark timings and kept it (D42); re-check with Dhrystone and a Linux boot.
@@ -396,9 +402,11 @@ enter_jit(rdi = CpuState*, rsi = host_code) -> rax:
     lea  rbp, [rdi + 128]
     mov  rbx, [rbp + MEM_BASE-128]
     mov  r12, [rbp + 8*2-128] ; mov r13, [rbp + 8*1-128] ; mov r14, [rbp + 8*10-128] ; mov r15, [rbp + 8*15-128]
+    mov  r9, [rbp + BUDGET-128]    ; IR back end only (D46)
     jmp  rsi
 exit_jit (rax = exit code):
     mov [rbp+8*2-128], r12 ; ... (write back pinned)
+    mov [rbp+BUDGET-128], r9       ; IR back end only (D46)
     add rsp, 8 ; pop r15 ; pop r14 ; pop r13 ; pop r12 ; pop rbx ; pop rbp ; ret
 ```
 - In Rust: `let enter: extern "sysv64" fn(*mut CpuState, *const u8) -> u64 = transmute(rx_ptr);`. This is the `void (*run_block)(CPUState*)` cast from the brief, with the block address passed as an argument.
@@ -957,11 +965,11 @@ bridgev run   [--mode=user] [--engine=interp|jit|lockstep] [--mem=direct|direct-
               [--no-chain] [--regalloc=none|pinned|linear] [--pin=x2,x1,x10,x15] [--max-block=N]
               [--tlb-size=256] [--code-cache=256M] [--wx=dualmap|mprotect] [--smc=eager|flush-on-fence]
               [--stats[=regs]] [--trace=insn|block] [--dump-ir] [--dump-x86] [--perf-map] [--deterministic]
-              <elf> [guest args…]
+              [--profile-jit] [--profile-tbs] <elf> [guest args…]
 bridgev boot  --kernel Image [--firmware fw_jump.bin] [--dtb x.dtb] [--initrd rootfs.cpio]
               [--ram 512M] [--append "console=ttyS0"] [--engine …] [--stats] [--deterministic]
 bridgev disasm <elf>                 # decoder + disassembler check
-bridgev bench  <suite>               # runs §22 matrix, prints table (markdown)
+tools/bench.py [--suite ...] [--quick] # runs the §22 matrix; markdown + JSON (D43)
 ```
 - Logging: the `BRIDGEV_LOG=debug|trace` environment variable.
 - `--stats`: guest instructions, TBs translated, bytes of code, chain patches/unlinks, jump-cache hits/misses, TLB hits/misses, exits by reason, time split (translate vs execute), MIPS.
@@ -987,7 +995,7 @@ Each phase ends with:
 | **2 Naive JIT** | x86 emitter + golden tests, dual-mapped code buffer, enter/exit trampolines, dispatcher, TB cache, per-instruction lowering with all guest regs in memory, interp-helper fallback, precise exits | same suites pass under `--engine=jit`; lockstep clean; first MIPS number vs interp recorded |
 | **3 Chaining** | exit slots, rel32 patching with alignment, incoming lists/unlink, budget prologue, jump cache for JALR | suites + lockstep pass; `--no-chain` vs chain speedup recorded |
 | **4 IR + regalloc** | IR, lift, const-fold/forwarding/dead-writeback, liveness, pinned R12–R15, linear scan, cold stubs | fuzz + lockstep clean over ≥1e6 random blocks; per-level speedup recorded |
-| **5 Milestone A** | CoreMark + Dhrystone in user mode, `bridgev bench`, `docs/BENCHMARKS.md` | CoreMark validates under all engines; report table: interp vs JIT vs qemu vs native |
+| **5 Milestone A** | CoreMark + Dhrystone in user mode, `tools/bench.py`, `docs/BENCHMARKS.md` | CoreMark validates under all engines; report table: interp vs JIT vs qemu vs native |
 | **6 FP in JIT (F2)** | inline SSE fast paths, NaN canonicalization, MXCSR→fflags, FMA3 | rv64uf/ud pass under JIT; FP-heavy bench speedup recorded |
 | **7 Privileged + SoftMMU** | M/S/U, CSRs, traps/interrupts, delegation, SV39 walker, inline TLB fast path, cold slow path, `--mem=softmmu` in user mode | `rv64mi-p-*`, `rv64si-p-*`, `rv64ui-v-*` pass under interp and JIT; TLB microbench recorded |
 | **8 SMC** | code-page tracking, TLB_CODE / mprotect+SIGSEGV, TB invalidation + unlink, FENCE.I, riscv_flush_icache | dedicated SMC tests (self-patching loop, JIT-in-guest) pass in both memory backends |
