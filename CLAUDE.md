@@ -11,8 +11,12 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Design complete, no code yet.** Next up: Phase 0 (§24). |
+| Phase | **Design complete, no code yet.** Next up: Phase 0, task P0.1 (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
+| Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `design-stage.md` |
+| Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
+| Blockers | GitHub push is blocked (HTTP 403). The Claude GitHub App needs contents-write access to `tan8696/Bridge-V`. |
 | Last updated | 2026-09-26 |
 
 Update this table at the end of every phase.
@@ -65,6 +69,7 @@ Update this table at the end of every phase.
 | D16 | Machine model | Memory map and devicetree compatible with QEMU `virt` | Stock kernel `defconfig` works unchanged. |
 | D17 | Guest software | Linux **6.6 LTS**, BusyBox **1.36.x** static, initramfs embedded in the kernel | Well-trodden on QEMU virt. |
 | D18 | Dependencies | Runtime: `libc`, `rustc-hash`, `clap` (derive), `anyhow`, `cc` (build-time, SoftFloat). Dev: `iced-x86` (decoder + fmt features), `proptest`. Anything else must be justified in this table. | Minimal attack surface and fast builds. |
+| D19 | Process | The detailed plan lives in `docs/ROADMAP.md`, and §24 here is its summary. **Every phase ends with a detailed report** at `docs/phase-reports/phase-NN-<name>.md`, based on `TEMPLATE.md`. A phase isn't done without its report. | Owner requirement: a written account of what was done, how it works and how it was verified, after every phase. |
 
 ---
 
@@ -207,7 +212,12 @@ Bridge-V/
 │   └── linux/                ← kernel .config fragment, busybox .config, initramfs skeleton, build.sh
 ├── third_party/              ← git submodules: riscv-tests, coremark, berkeley-softfloat-3
 ├── tools/                    ← setup.sh, build-guests.sh, run-riscv-tests.sh, bench.sh, boot-linux.sh
-├── docs/                     ← BENCHMARKS.md (measured results only), notes
+├── README.md                 ← short landing page
+├── docs/
+│   ├── ROADMAP.md            ← detailed phase-by-phase plan (task IDs P<phase>.<n>)
+│   ├── PROJECT_EXPLAINED.md  ← what the project is / does / is used for (plain language)
+│   ├── BENCHMARKS.md         ← measured results only
+│   └── phase-reports/        ← TEMPLATE.md + one report per completed phase (mandatory, D19)
 └── .github/workflows/ci.yml  ← fmt, clippy, test, riscv-tests
 ```
 
@@ -913,7 +923,14 @@ bridgev bench  <suite>               # runs §22 matrix, prints table (markdown)
 
 ## 24. Roadmap (phases, acceptance criteria)
 
-Each phase ends with: all tests green, `cargo fmt` + `clippy -D warnings` clean, CLAUDE.md §0 updated, committed and pushed.
+This table summarizes the roadmap. **The detailed, authoritative plan is `docs/ROADMAP.md`**, with per-task deliverables, tests, acceptance criteria and risks.
+
+Each phase ends with:
+- all tests green
+- `cargo fmt` + `clippy -D warnings` clean
+- CLAUDE.md §0 updated
+- **a phase report `docs/phase-reports/phase-NN-<name>.md` written from `TEMPLATE.md`** (D19)
+- everything committed and pushed
 
 | Phase | Scope | Acceptance |
 |---|---|---|
@@ -960,6 +977,9 @@ Each phase ends with: all tests green, `cargo fmt` + `clippy -D warnings` clean,
 - Update §0 (status) at every phase boundary.
 - Append decisions to §3, and never silently rewrite them.
 - When code diverges from a spec in this file (offsets, register map, encodings), update the file **in the same commit**.
+- Tick the task checkboxes in `docs/ROADMAP.md` as tasks complete. When scope changes, update the roadmap in the same commit.
+- **After every phase**, write the phase report (D19). It must be detailed and factual: what was built and why, a worked example, the test evidence, measured numbers, bugs found, deviations, limitations, how to reproduce, and next steps.
+- Keep `docs/PROJECT_EXPLAINED.md` in sync when the architecture or the measured results change.
 
 ---
 
