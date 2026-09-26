@@ -26,6 +26,14 @@ struct Cli {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum StatsArg {
+    /// Counters and MIPS.
+    Basic,
+    /// Also the static and dynamic guest register-use histogram (P4.9).
+    Regs,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Mode {
     /// Linux user-mode emulation (syscalls translated to the host).
     User,
@@ -113,9 +121,10 @@ enum Command {
         /// Execution trace on stderr.
         #[arg(long, value_enum)]
         trace: Option<Trace>,
-        /// Print execution statistics on stderr.
-        #[arg(long)]
-        stats: bool,
+        /// Print execution statistics on stderr; `--stats=regs` adds the guest register-use
+        /// histogram (needs --engine interp).
+        #[arg(long, value_enum, num_args = 0..=1, require_equals = true, default_missing_value = "basic")]
+        stats: Option<StatsArg>,
         /// Log every syscall on stderr (user mode).
         #[arg(long)]
         strace: bool,
@@ -303,6 +312,8 @@ fn main() -> ExitCode {
                 eprintln!("bridgev: --trace is only supported with --engine=interp");
                 return ExitCode::from(EXIT_NOT_IMPLEMENTED);
             }
+            let reg_stats = stats == Some(StatsArg::Regs);
+            let stats = stats.is_some();
             let jit = JitOptions {
                 max_block: max_block as usize,
                 code_cache,
@@ -332,6 +343,7 @@ fn main() -> ExitCode {
                         trace: trace.is_some(),
                         engine,
                         jit,
+                        reg_stats,
                     };
                     run_bare(&elf, opts, stats)
                 }
@@ -343,6 +355,7 @@ fn main() -> ExitCode {
                         engine,
                         jit,
                         deterministic,
+                        reg_stats,
                     };
                     run_user(&elf, args, opts, stats)
                 }

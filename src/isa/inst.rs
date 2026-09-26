@@ -306,6 +306,38 @@ pub struct Decoded {
 }
 
 impl Inst {
+    /// Integer registers read (up to two) and written, x0 included (register-use statistics,
+    /// P4.9). FP registers are not counted.
+    pub fn int_regs(&self) -> ([Option<Reg>; 2], Option<Reg>) {
+        use Inst::*;
+        match *self {
+            Lui { rd, .. } | Auipc { rd, .. } | Jal { rd, .. } => ([None, None], Some(rd)),
+            Jalr { rd, rs1, .. }
+            | Load { rd, rs1, .. }
+            | OpImm { rd, rs1, .. }
+            | OpImmW { rd, rs1, .. } => ([Some(rs1), None], Some(rd)),
+            Branch { rs1, rs2, .. } | Store { rs1, rs2, .. } | SfenceVma { rs1, rs2 } => {
+                ([Some(rs1), Some(rs2)], None)
+            }
+            Op { rd, rs1, rs2, .. } | OpW { rd, rs1, rs2, .. } | Amo { rd, rs1, rs2, .. } => {
+                ([Some(rs1), Some(rs2)], Some(rd))
+            }
+            Csr { rd, rs1, uimm, .. } => ([(!uimm).then_some(rs1), None], Some(rd)),
+            FLoad { rs1, .. } | FStore { rs1, .. } => ([Some(rs1), None], None),
+            Fp { op, rd, rs1, .. } => match op {
+                FpOp::Eq
+                | FpOp::Lt
+                | FpOp::Le
+                | FpOp::Class
+                | FpOp::MvToInt
+                | FpOp::CvtToInt(_) => ([None, None], Some(rd)),
+                FpOp::MvFromInt | FpOp::CvtFromInt(_) => ([Some(rs1), None], None),
+                _ => ([None, None], None),
+            },
+            _ => ([None, None], None),
+        }
+    }
+
     /// Does this instruction end a basic block (CLAUDE.md §13.2)?
     pub fn ends_block(&self) -> bool {
         matches!(

@@ -218,3 +218,32 @@ fn fib_jump_cache_hit_rate_and_dispatcher_entries() {
         "{chained}\n{unchained}"
     );
 }
+
+/// P4.9: `--stats=regs` prints the register-use histogram under the interpreter, and is
+/// rejected by engines that cannot collect it.
+#[test]
+fn stats_regs_histogram() {
+    let Some(elf) = common::guest_elf("fib-O2") else {
+        return;
+    };
+    let e = elf.to_str().unwrap();
+    let out = run_bridgev(["run", "--stats=regs", e, "22"]);
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(out.stderr.contains("| x2 (sp) |"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("dynamic share of x2,x1,x10,x15"),
+        "{}",
+        out.stderr
+    );
+    let jit = run_bridgev(["run", "--engine", "jit", "--stats=regs", e, "22"]);
+    assert_eq!(jit.code, Some(1));
+    assert!(
+        jit.stderr.contains("--stats=regs needs --engine interp"),
+        "{}",
+        jit.stderr
+    );
+    // Plain --stats still works and takes no value from the next argument.
+    let plain = run_bridgev(["run", "--stats", e, "22"]);
+    assert_eq!(plain.code, Some(0), "{}", plain.stderr);
+    assert!(!plain.stderr.contains("register uses"));
+}

@@ -483,3 +483,71 @@ fn jump_cache_calls_and_returns_survive_flushes() {
         }
     }
 }
+
+/// P4.6: sixteen guest values live at once (more than the 7-register pool), consumed in a
+/// different order, plus back-to-back DIV/REM chains that reuse their own sources (the
+/// RAX/RDX constraint). Every level must agree with the reference model; the linear allocator
+/// must actually have evicted something.
+#[test]
+fn register_pressure_and_division_chains() {
+    let mut code = Vec::new();
+    for k in 0..16u32 {
+        code.push(i_type(k as i32 * 3 + 1, 5, 0, 8 + k, 0x13)); // addi x(8+k), x5, 3k+1
+        code.push(r_type(1, 6, 8 + k, 0, 8 + k, 0x33)); // mul x(8+k), x(8+k), x6
+    }
+    code.push(r_type(0, 23, 8, 4, 7, 0x33)); // xor x7, x8, x23
+    for k in (1..15u32).rev() {
+        code.push(r_type(0, 8 + k, 7, 0, 7, 0x33)); // add x7, x7, x(8+k)
+    }
+    let divs = [
+        r_type(1, 6, 7, 4, 7, 0x33),  // div  x7, x7, x6
+        r_type(1, 7, 6, 6, 8, 0x33),  // rem  x8, x6, x7
+        r_type(1, 8, 7, 5, 7, 0x33),  // divu x7, x7, x8
+        r_type(1, 7, 7, 7, 9, 0x33),  // remu x9, x7, x7
+        r_type(1, 9, 8, 4, 10, 0x3B), // divw x10, x8, x9
+        r_type(1, 10, 7, 0, 7, 0x33), // mul  x7, x7, x10
+        r_type(0, 9, 7, 0, 7, 0x33),  // add  x7, x7, x9
+        r_type(0, 8, 7, 0, 7, 0x33),  // add  x7, x7, x8
+    ];
+    code.extend(divs);
+    let model = |a: u64, b: u64| -> u64 {
+        let v: Vec<u64> = (0..16u64)
+            .map(|k| a.wrapping_add(3 * k + 1).wrapping_mul(b))
+            .collect();
+        let mut x7 = v[0] ^ v[15];
+        for k in (1..15).rev() {
+            x7 = x7.wrapping_add(v[k]);
+        }
+        x7 = alu(AluOp::Div, x7, b);
+        let x8 = alu(AluOp::Rem, b, x7);
+        x7 = alu(AluOp::Divu, x7, x8);
+        let x9 = alu(AluOp::Remu, x7, x7);
+        let x10 = aluw(AluWOp::Divw, x8, x9);
+        x7.wrapping_mul(x10).wrapping_add(x9).wrapping_add(x8)
+    };
+    for regalloc in [RegAlloc::None, RegAlloc::Pinned, RegAlloc::Linear] {
+        for pin in [vec![2, 1, 10, 15], vec![7, 8, 6, 5], vec![]] {
+            let mut rig = Rig::new(JitOptions {
+                regalloc,
+                pin: pin.clone(),
+                ..JitOptions::default()
+            });
+            for &a in &VALS {
+                for &b in &VALS {
+                    assert_eq!(
+                        rig.run(&code, a, b),
+                        model(a, b),
+                        "{regalloc:?} pin {pin:?}: a={a:#x} b={b:#x}"
+                    );
+                }
+            }
+            if regalloc == RegAlloc::Linear {
+                let s = &rig.jit.stats;
+                assert!(
+                    s.writebacks > 0 && s.fills > 0,
+                    "{regalloc:?} {pin:?}: {s:?}"
+                );
+            }
+        }
+    }
+}

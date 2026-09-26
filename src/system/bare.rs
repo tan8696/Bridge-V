@@ -33,6 +33,8 @@ pub struct BareOptions {
     pub trace: bool,
     pub engine: EngineKind,
     pub jit: JitOptions,
+    /// `--stats=regs`: collect the register-use histogram (interpreter engine only).
+    pub reg_stats: bool,
 }
 
 impl Default for BareOptions {
@@ -42,6 +44,7 @@ impl Default for BareOptions {
             trace: false,
             engine: EngineKind::Interp,
             jit: JitOptions::default(),
+            reg_stats: false,
         }
     }
 }
@@ -75,6 +78,9 @@ pub fn run(elf_bytes: &[u8], opts: &BareOptions) -> Result<BareRun> {
         trace: opts.trace,
     };
     let mut engine = make_engine(opts.engine, &opts.jit)?;
+    if opts.reg_stats && !engine.enable_reg_stats() {
+        bail!("--stats=regs needs --engine interp");
+    }
     let result = match engine.run(&mut cpu, &mut mem, &env, opts.max_insns) {
         Stop::Tohost(1) => BareResult::Pass,
         Stop::Tohost(v) => BareResult::Fail(v >> 1),

@@ -18,6 +18,7 @@ use crate::isa::disasm::disasm;
 use crate::isa::inst::*;
 use crate::mem::MemFault;
 use crate::mem::direct::DirectMem;
+use crate::stats::RegStats;
 
 const MAX_BLOCK: usize = 64;
 
@@ -68,6 +69,11 @@ pub trait Engine {
     fn stats(&self) -> String {
         String::new()
     }
+    /// Collect the `--stats=regs` register-use histogram (reported by `stats`). Returns false
+    /// if the engine cannot.
+    fn enable_reg_stats(&mut self) -> bool {
+        false
+    }
 }
 
 /// Deliver the outcome of a block the way the environment requires: in user mode ECALLs and
@@ -109,6 +115,8 @@ pub struct Interp {
     cache: FxHashMap<u64, Rc<Block>>,
     /// Blocks decoded so far (statistics).
     pub blocks_built: u64,
+    /// `--stats=regs` histogram, when enabled.
+    pub reg_stats: Option<Box<RegStats>>,
 }
 
 /// Result of executing one instruction (`step`).
@@ -211,6 +219,9 @@ impl Interp {
         }
         let b = Rc::new(build_block(pc, mem));
         self.blocks_built += 1;
+        if let Some(r) = &mut self.reg_stats {
+            r.block(&b.insns);
+        }
         self.cache.insert(pc, b.clone());
         b
     }
@@ -233,7 +244,13 @@ impl Interp {
                 return Stop::Tohost(v);
             }
             let block = self.block(cpu.pc, mem);
+            let before = cpu.icount;
             let exit = exec_block(cpu, mem, &block.insns, block.fetch_fault, env.trace);
+            if let Some(r) = &mut self.reg_stats {
+                // An ECALL retires when the environment services it: count it here.
+                let ecall = usize::from(exit == BlockExit::Ecall);
+                r.retired(&block.insns, (cpu.icount - before) as usize + ecall);
+            }
             if exit == BlockExit::Flush {
                 self.flush();
             }
@@ -254,7 +271,17 @@ impl Engine for Interp {
     }
 
     fn stats(&self) -> String {
-        format!("interp: {} blocks decoded", self.blocks_built)
+        let mut s = format!("interp: {} blocks decoded", self.blocks_built);
+        if let Some(r) = &self.reg_stats {
+            s += "\nguest register uses (--stats=regs):\n";
+            s += &r.report();
+        }
+        s
+    }
+
+    fn enable_reg_stats(&mut self) -> bool {
+        self.reg_stats = Some(Box::default());
+        true
     }
 }
 

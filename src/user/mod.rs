@@ -24,6 +24,8 @@ pub struct RunOptions {
     pub jit: JitOptions,
     /// `--deterministic`: the `time` CSR follows icount instead of the host clock.
     pub deterministic: bool,
+    /// `--stats=regs`: collect the register-use histogram (interpreter engine only).
+    pub reg_stats: bool,
 }
 
 /// Outcome of a user-mode run.
@@ -51,6 +53,9 @@ pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> R
     let mut p = loader::load(path, args, envs)?;
     p.cpu.csr.deterministic_time = opts.deterministic;
     let mut engine = make_engine(opts.engine, &opts.jit)?;
+    if opts.reg_stats && !engine.enable_reg_stats() {
+        anyhow::bail!("--stats=regs needs --engine interp");
+    }
     let mut sys = Syscalls::default();
     sys.strace = opts.strace;
     let env = Env {

@@ -300,4 +300,37 @@ mod tests {
         let mut cpu = CpuState::new_user(0);
         assert_eq!(unsafe { t.enter(&mut cpu, b) }, 7);
     }
+
+    /// Pinned guest registers (§8.2, §8.3): `enter_jit` loads them from their `CpuState`
+    /// homes, JIT code works on the host registers only, and `exit_jit` stores them back.
+    #[test]
+    fn pinned_registers_round_trip() {
+        let mut cm = CodeMem::new(1 << 20, WxMode::DualMap).unwrap();
+        let pins = [(2, Reg::R12), (1, Reg::R13), (10, Reg::R14), (15, Reg::R15)];
+        let t = Trampolines::generate(&mut cm, &pins);
+        let mut a = Asm::new(cm.next_addr());
+        for (k, &(_, r)) in pins.iter().enumerate() {
+            // The home is stale inside the block: clobber it, the exit must overwrite it.
+            a.store_imm(Size::B64, cpu_field(8 * pins[k].0 as usize), -1);
+            a.alu_ri(Size::B64, Alu::Add, r, 0x100 * (k as i32 + 1));
+        }
+        a.mov_r32_imm(Reg::Rax, 9);
+        a.jmp_abs(t.exit);
+        let o = a.origin();
+        let b = cm.place(o, &a.finish()).unwrap();
+        let mut cpu = CpuState::new_user(0);
+        for (g, _) in pins {
+            cpu.x[g as usize] = 1000 + g as u64;
+        }
+        // SAFETY: `b` only touches the pinned registers and their homes.
+        assert_eq!(unsafe { t.enter(&mut cpu, b) }, 9);
+        for (k, (g, _)) in pins.into_iter().enumerate() {
+            assert_eq!(
+                cpu.x[g as usize],
+                1000 + g as u64 + 0x100 * (k as u64 + 1),
+                "x{g}"
+            );
+        }
+        assert_eq!(cpu.x[3], 0, "unpinned registers untouched");
+    }
 }

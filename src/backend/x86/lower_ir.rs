@@ -247,6 +247,24 @@ impl Ctx<'_> {
             Constraint::Rcx => return self.shift_cl(op, dst, x, y),
             _ => {}
         }
+        if matches!(op, BinOp::Sub | BinOp::Subw) && self.ra.const_of(x) == Some(0) {
+            // neg / negw (`sub rd, x0, rs`).
+            let rb = self.ra.get(&mut self.a, y, &[])?;
+            self.ra.release(&[y]);
+            let prefer = if is_pool(rb) { Some(rb) } else { None };
+            let d = self.ra.def(&mut self.a, dst, prefer, &[rb])?;
+            if d != rb {
+                self.a.mov_rr(Size::B64, d, rb);
+            }
+            if op == BinOp::Sub {
+                self.a.unary(Size::B64, Unary::Neg, d);
+            } else {
+                self.a.unary(Size::B32, Unary::Neg, d);
+                self.a.movsxd(d, d);
+            }
+            self.ra.release(&[dst]);
+            return Ok(());
+        }
         let ra = self.ra.get(&mut self.a, x, &[])?;
         let rb = self.ra.get(&mut self.a, y, &[ra])?;
         self.ra.release(&[x, y]);
@@ -341,13 +359,16 @@ impl Ctx<'_> {
     /// Multiply-high and division: operands to R10 (dividend) / R11 (divisor), RDX:RAX vacated.
     fn muldiv(&mut self, op: BinOp, dst: V, x: V, y: V) -> Result<()> {
         use BinOp::*;
-        let ra = self.ra.get(&mut self.a, x, &[])?;
-        let rb = self.ra.get(&mut self.a, y, &[ra])?;
+        // Free RDX:RAX first, then load the operands elsewhere: the allocator uses R11 for its
+        // own copies (write-back protection), so nothing may be parked in R10/R11 across an
+        // allocator call.
+        self.ra.vacate(&mut self.a, Rax, &[Rax, Rdx])?;
+        self.ra.vacate(&mut self.a, Rdx, &[Rax, Rdx])?;
+        let ra = self.ra.get(&mut self.a, x, &[Rax, Rdx])?;
+        let rb = self.ra.get(&mut self.a, y, &[Rax, Rdx, ra])?;
         self.a.mov_rr(Size::B64, R10, ra);
         self.a.mov_rr(Size::B64, R11, rb);
         self.ra.release(&[x, y]);
-        self.ra.vacate(&mut self.a, Rax, &[Rax, Rdx])?;
-        self.ra.vacate(&mut self.a, Rdx, &[Rax, Rdx])?;
         let a = &mut self.a;
         a.mov_rr(Size::B64, Rax, R10);
         let res = match op {
@@ -384,13 +405,14 @@ impl Ctx<'_> {
     /// Variable shifts without BMI2: the count must be in CL.
     fn shift_cl(&mut self, op: BinOp, dst: V, x: V, y: V) -> Result<()> {
         use BinOp::*;
-        let ra = self.ra.get(&mut self.a, x, &[])?;
-        let rb = self.ra.get(&mut self.a, y, &[ra])?;
-        self.a.mov_rr(Size::B64, R10, ra);
-        self.a.mov_rr(Size::B64, R11, rb);
-        self.ra.release(&[x, y]);
+        // As in `muldiv`: free RCX before loading the operands, never hold R10/R11 across an
+        // allocator call.
         self.ra.vacate(&mut self.a, Rcx, &[Rcx])?;
-        self.a.mov_rr(Size::B64, Rcx, R11);
+        let ra = self.ra.get(&mut self.a, x, &[Rcx])?;
+        let rb = self.ra.get(&mut self.a, y, &[Rcx, ra])?;
+        self.a.mov_rr(Size::B64, R10, ra);
+        self.a.mov_rr(Size::B64, Rcx, rb);
+        self.ra.release(&[x, y]);
         let (size, sh) = match op {
             Sll => (Size::B64, Shift::Shl),
             Srl => (Size::B64, Shift::Shr),
@@ -573,18 +595,42 @@ impl Ctx<'_> {
                 taken,
                 fall,
             } => {
-                let ra = self.ra.get(&mut self.a, x, &[])?;
-                let rb = self.ra.get(&mut self.a, y, &[ra])?;
-                self.ra.write_back_all(&mut self.a)?;
-                self.a.alu_rr(Size::B64, Alu::Cmp, ra, rb);
-                let cc = match cond {
-                    IrCond::Eq => Cond::E,
-                    IrCond::Ne => Cond::Ne,
-                    IrCond::Lt => Cond::L,
-                    IrCond::Ge => Cond::Ge,
-                    IrCond::Ltu => Cond::B,
-                    IrCond::Geu => Cond::Ae,
+                // A constant operand becomes an immediate (`test r, r` for 0, e.g. BNEZ):
+                // put it second, mirroring the condition if it was first.
+                let imm = |v: V| {
+                    self.ra
+                        .const_of(v)
+                        .filter(|&c| c as i64 == c as i32 as i64)
+                        .map(|c| c as i32)
                 };
+                let swap = imm(x).is_some() && imm(y).is_none();
+                let (x, y) = if swap { (y, x) } else { (x, y) };
+                let cc = match (cond, swap) {
+                    (IrCond::Eq, _) => Cond::E,
+                    (IrCond::Ne, _) => Cond::Ne,
+                    (IrCond::Lt, false) => Cond::L,
+                    (IrCond::Lt, true) => Cond::G,
+                    (IrCond::Ge, false) => Cond::Ge,
+                    (IrCond::Ge, true) => Cond::Le,
+                    (IrCond::Ltu, false) => Cond::B,
+                    (IrCond::Ltu, true) => Cond::A,
+                    (IrCond::Geu, false) => Cond::Ae,
+                    (IrCond::Geu, true) => Cond::Be,
+                };
+                let c = imm(y);
+                let ra = self.ra.get(&mut self.a, x, &[])?;
+                let rb = match c {
+                    Some(_) => None,
+                    None => Some(self.ra.get(&mut self.a, y, &[ra])?),
+                };
+                self.ra.write_back_all(&mut self.a)?;
+                match (rb, c) {
+                    (Some(rb), _) => self.a.alu_rr(Size::B64, Alu::Cmp, ra, rb),
+                    // x - 0 sets the same ZF/SF/CF/OF as TEST (CF = OF = 0).
+                    (None, Some(0)) => self.a.test_rr(Size::B64, ra, ra),
+                    (None, Some(c)) => self.a.alu_ri(Size::B64, Alu::Cmp, ra, c),
+                    (None, None) => unreachable!(),
+                }
                 self.exit_cond(cc, taken);
                 self.exit_direct(fall);
             }
