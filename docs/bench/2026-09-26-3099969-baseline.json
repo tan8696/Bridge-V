@@ -1,0 +1,1304 @@
+{
+ "host": {
+  "date": "2026-09-26T17:34:07+00:00",
+  "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "nproc": 4,
+  "pinned_cpu": 2,
+  "kernel": "6.18.44-fc-v37",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "qemu": "qemu-riscv64 version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+  "commit": "3099969",
+  "dirty": false,
+  "buildinfo": "# Bridge-V benchmark builds (tools/build-bench.sh), 2026-09-26T17:29:43Z\nriscv cc: riscv64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nhost cc:  gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\ncoremark: 1f483d5b8316753a742cbf5590caf5bd0a4e4777 make PORT_DIR=linux, PORT_CFLAGS=-O2, XCFLAGS='<arch> -static -DPERFORMANCE_RUN=1' (rv64: -march=rv64gc -mabi=lp64d)\ndhrystone: riscv-tests bcffa2b3188b040c611f90dc0b6e422f54775a09 benchmarks/dhrystone + guest/bench/dhrystone; flags: -O2 -static -std=gnu89 -w -I/home/user/Bridge-V/guest/bench/dhrystone -I/home/user/Bridge-V/third_party/riscv-tests/benchmarks/dhrystone, main: -Ddebug_printf=bridgev_dhry_printf, dhrystone.c: -DPASS2 (rv64: + -march=rv64gc -mabi=lp64d)\n99bfd194b22b50dd901afbb7de5ce627a5f31c18b31c93d10911569bd53fe646  coremark-rv64.elf\na620cc327885b03d7192f1c8903230108142ae52fbd5c3bfb4ce785a2c3337b2  coremark-native\n270f2ef3dbed158a22f5af94af575e9bff69e4df1206b49c6251c2a02d3c3340  dhrystone-rv64.elf\n814582f7206a91542ffeb1f3a366954da5493bdcdf0a7a990c4aa9b4ef160374  dhrystone-native\n"
+ },
+ "params": {
+  "runs": 5,
+  "warmup": 1,
+  "target": 12.0,
+  "quick": false
+ },
+ "results": {
+  "coremark": {
+   "interp": {
+    "median": 488.786561,
+    "min": 483.917265,
+    "max": 501.268037,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 5732,
+    "mips": 175.4,
+    "guest_insns": 2056926301,
+    "secs": 11.729,
+    "insns_per_unit": 358849.66870202374
+   },
+   "jit-naive": {
+    "median": 846.881878,
+    "min": 827.277288,
+    "max": 869.85682,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 11543,
+    "mips": 303.8,
+    "bytes_per_insn": 31.2,
+    "entries_per_m": 180762,
+    "guest_insns": 4141975378,
+    "translate_ms": 2.7,
+    "secs": 13.635,
+    "translate_share": 0.00019801980198019803,
+    "insns_per_unit": 358830.0596032227
+   },
+   "jit+chain": {
+    "median": 7339.588177,
+    "min": 6750.0,
+    "max": 7692.133658,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 88398,
+    "mips": 2632.2,
+    "bytes_per_insn": 31.2,
+    "entries_per_m": 10,
+    "guest_insns": 31718363879,
+    "translate_ms": 2.6,
+    "secs": 12.05,
+    "translate_share": 0.00021576763485477176,
+    "insns_per_unit": 358813.1391999819
+   },
+   "jit+pinned": {
+    "median": 9163.293962,
+    "min": 8640.186916,
+    "max": 9491.786448,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 110940,
+    "mips": 3286.1,
+    "bytes_per_insn": 29.4,
+    "entries_per_m": 10,
+    "guest_insns": 39806672799,
+    "translate_ms": 4.9,
+    "secs": 12.114,
+    "translate_share": 0.00040449067194981016,
+    "insns_per_unit": 358812.62663601944
+   },
+   "jit+linear": {
+    "median": 13041.042113,
+    "min": 12760.956871,
+    "max": 13553.783383,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 146164,
+    "mips": 4675.7,
+    "bytes_per_insn": 26.3,
+    "entries_per_m": 10,
+    "guest_insns": 52445416558,
+    "translate_ms": 6.9,
+    "secs": 11.217,
+    "translate_share": 0.0006151377373629313,
+    "insns_per_unit": 358812.1326592047
+   },
+   "qemu": {
+    "median": 9562.081129,
+    "min": 9466.911123,
+    "max": 9996.68111,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 108434
+   },
+   "native": {
+    "median": 28003.138896,
+    "min": 26232.786082,
+    "max": 28251.935257,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 321168
+   }
+  },
+  "dhrystone": {
+   "interp": {
+    "median": 532515.0,
+    "min": 503349.0,
+    "max": 546144.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 3234048,
+    "mips": 178.9,
+    "guest_insns": 1086866724,
+    "secs": 6.077,
+    "insns_per_unit": 336.07006575041555
+   },
+   "jit-naive": {
+    "median": 962939.0,
+    "min": 858874.0,
+    "max": 989453.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 5521908,
+    "mips": 323.3,
+    "bytes_per_insn": 30.9,
+    "entries_per_m": 175607,
+    "guest_insns": 1855587684,
+    "translate_ms": 1.8,
+    "secs": 5.74,
+    "translate_share": 0.00031358885017421603,
+    "insns_per_unit": 336.04103581588106
+   },
+   "jit+chain": {
+    "median": 11017007.0,
+    "min": 10914047.0,
+    "max": 12011238.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 76493166,
+    "mips": 3699.5,
+    "bytes_per_insn": 30.8,
+    "entries_per_m": 10,
+    "guest_insns": 25701930241,
+    "translate_ms": 1.7,
+    "secs": 6.947,
+    "translate_share": 0.0002447099467395998,
+    "insns_per_unit": 336.00296059127686
+   },
+   "jit+pinned": {
+    "median": 13954962.0,
+    "min": 13184252.0,
+    "max": 14381046.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 84411450,
+    "mips": 4684.2,
+    "bytes_per_insn": 28.6,
+    "entries_per_m": 10,
+    "guest_insns": 28362473665,
+    "translate_ms": 3.7,
+    "secs": 6.055,
+    "translate_share": 0.000611065235342692,
+    "insns_per_unit": 336.00268287062954
+   },
+   "jit+linear": {
+    "median": 18410684.0,
+    "min": 17375802.0,
+    "max": 19896745.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 103356054,
+    "mips": 6177.4,
+    "bytes_per_insn": 25.8,
+    "entries_per_m": 10,
+    "guest_insns": 34727860571,
+    "translate_ms": 5.5,
+    "secs": 5.622,
+    "translate_share": 0.0009782995375311276,
+    "insns_per_unit": 336.0021907473364
+   },
+   "qemu": {
+    "median": 5163837.0,
+    "min": 4975023.0,
+    "max": 5347070.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 29419692
+   },
+   "native": {
+    "median": 47768874.0,
+    "min": 46749477.0,
+    "max": 49949793.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 319063548
+   }
+  }
+ },
+ "raw": {
+  "coremark": {
+   "interp": [
+    {
+     "n": 5732,
+     "wall": 11.732854222999777,
+     "score": 488.786561,
+     "secs": 11.727,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 2056926301,
+      "secs": 11.729,
+      "mips": 175.4,
+      "blocks_decoded": 1611
+     }
+    },
+    {
+     "n": 5732,
+     "wall": 11.85147402199982,
+     "score": 483.917265,
+     "secs": 11.845,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 2056926386,
+      "secs": 11.848,
+      "mips": 173.6,
+      "blocks_decoded": 1612
+     }
+    },
+    {
+     "n": 5732,
+     "wall": 11.682163687999491,
+     "score": 490.963597,
+     "secs": 11.675,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 2056926247,
+      "secs": 11.679,
+      "mips": 176.1,
+      "blocks_decoded": 1600
+     }
+    },
+    {
+     "n": 5732,
+     "wall": 11.44302597099977,
+     "score": 501.268037,
+     "secs": 11.435,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 2056926115,
+      "secs": 11.439,
+      "mips": 179.8,
+      "blocks_decoded": 1612
+     }
+    },
+    {
+     "n": 5732,
+     "wall": 11.770292854999752,
+     "score": 487.290657,
+     "secs": 11.763,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 2056926454,
+      "secs": 11.767,
+      "mips": 174.8,
+      "blocks_decoded": 1607
+     }
+    }
+   ],
+   "jit-naive": [
+    {
+     "n": 11543,
+     "wall": 13.63847963400076,
+     "score": 846.881878,
+     "secs": 13.63,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 4141975338,
+      "secs": 13.635,
+      "mips": 303.8,
+      "tbs": 1605,
+      "tb_guest_insns": 9079,
+      "bytes_per_insn": 31.2,
+      "translate_ms": 2.7,
+      "dispatcher_entries": 748709910,
+      "entries_per_m": 180762
+     }
+    },
+    {
+     "n": 11543,
+     "wall": 13.280765057999815,
+     "score": 869.85682,
+     "secs": 13.27,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 4141975657,
+      "secs": 13.277,
+      "mips": 312.0,
+      "tbs": 1607,
+      "tb_guest_insns": 9088,
+      "bytes_per_insn": 31.2,
+      "translate_ms": 2.7,
+      "dispatcher_entries": 748709957,
+      "entries_per_m": 180762
+     }
+    },
+    {
+     "n": 11543,
+     "wall": 13.729564823000146,
+     "score": 841.203906,
+     "secs": 13.722,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 4141975360,
+      "secs": 13.726,
+      "mips": 301.8,
+      "tbs": 1612,
+      "tb_guest_insns": 9101,
+      "bytes_per_insn": 31.3,
+      "translate_ms": 2.1,
+      "dispatcher_entries": 748709919,
+      "entries_per_m": 180762
+     }
+    },
+    {
+     "n": 11543,
+     "wall": 13.963890453999738,
+     "score": 827.277288,
+     "secs": 13.953,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 4141975515,
+      "secs": 13.96,
+      "mips": 296.7,
+      "tbs": 1612,
+      "tb_guest_insns": 9104,
+      "bytes_per_insn": 31.2,
+      "translate_ms": 3.1,
+      "dispatcher_entries": 748709929,
+      "entries_per_m": 180762
+     }
+    },
+    {
+     "n": 11543,
+     "wall": 13.476584954999453,
+     "score": 857.132249,
+     "secs": 13.467,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 4141975378,
+      "secs": 13.473,
+      "mips": 307.4,
+      "tbs": 1605,
+      "tb_guest_insns": 9079,
+      "bytes_per_insn": 31.2,
+      "translate_ms": 2.6,
+      "dispatcher_entries": 748709913,
+      "entries_per_m": 180762
+     }
+    }
+   ],
+   "jit+chain": [
+    {
+     "n": 88398,
+     "wall": 11.683619757999622,
+     "score": 7570.914697,
+     "secs": 11.676,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 31718363879,
+      "secs": 11.68,
+      "mips": 2715.6,
+      "tbs": 1619,
+      "tb_guest_insns": 9119,
+      "bytes_per_insn": 31.3,
+      "translate_ms": 2.6,
+      "dispatcher_entries": 319141,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 88398,
+     "wall": 13.105599535000692,
+     "score": 6750.0,
+     "secs": 13.096,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 31718362570,
+      "secs": 13.102,
+      "mips": 2421.0,
+      "tbs": 1624,
+      "tb_guest_insns": 9171,
+      "bytes_per_insn": 31.2,
+      "translate_ms": 2.4,
+      "dispatcher_entries": 319151,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 88398,
+     "wall": 12.053472448999855,
+     "score": 7339.588177,
+     "secs": 12.044,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 31718363914,
+      "secs": 12.05,
+      "mips": 2632.2,
+      "tbs": 1619,
+      "tb_guest_insns": 9119,
+      "bytes_per_insn": 31.3,
+      "translate_ms": 2.5,
+      "dispatcher_entries": 319141,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 88398,
+     "wall": 12.087524331999703,
+     "score": 7318.926975,
+     "secs": 12.078,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 31718364116,
+      "secs": 12.084,
+      "mips": 2624.9,
+      "tbs": 1614,
+      "tb_guest_insns": 9110,
+      "bytes_per_insn": 31.2,
+      "translate_ms": 2.9,
+      "dispatcher_entries": 319136,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 88398,
+     "wall": 11.501068284000212,
+     "score": 7692.133658,
+     "secs": 11.492,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 31718363863,
+      "secs": 11.497,
+      "mips": 2758.8,
+      "tbs": 1607,
+      "tb_guest_insns": 9089,
+      "bytes_per_insn": 31.2,
+      "translate_ms": 2.9,
+      "dispatcher_entries": 319128,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "jit+pinned": [
+    {
+     "n": 110940,
+     "wall": 11.905203058000552,
+     "score": 9327.391962,
+     "secs": 11.894,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 39806672749,
+      "secs": 11.901,
+      "mips": 3344.7,
+      "tbs": 1601,
+      "tb_guest_insns": 9032,
+      "bytes_per_insn": 29.4,
+      "translate_ms": 5.3,
+      "dispatcher_entries": 400007,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 110940,
+     "wall": 11.697433967000507,
+     "score": 9491.786448,
+     "secs": 11.688,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 39806672799,
+      "secs": 11.694,
+      "mips": 3404.1,
+      "tbs": 1611,
+      "tb_guest_insns": 9060,
+      "bytes_per_insn": 29.4,
+      "translate_ms": 4.9,
+      "dispatcher_entries": 400018,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 110940,
+     "wall": 12.11689179699988,
+     "score": 9163.293962,
+     "secs": 12.107,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 39806672869,
+      "secs": 12.114,
+      "mips": 3286.1,
+      "tbs": 1608,
+      "tb_guest_insns": 9054,
+      "bytes_per_insn": 29.4,
+      "translate_ms": 4.3,
+      "dispatcher_entries": 400014,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 110940,
+     "wall": 12.568333213000187,
+     "score": 8834.912798,
+     "secs": 12.557,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 39806672799,
+      "secs": 12.565,
+      "mips": 3168.2,
+      "tbs": 1611,
+      "tb_guest_insns": 9060,
+      "bytes_per_insn": 29.4,
+      "translate_ms": 5.6,
+      "dispatcher_entries": 400018,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 110940,
+     "wall": 12.850166895999791,
+     "score": 8640.186916,
+     "secs": 12.84,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 39806672922,
+      "secs": 12.847,
+      "mips": 3098.6,
+      "tbs": 1604,
+      "tb_guest_insns": 9048,
+      "bytes_per_insn": 29.4,
+      "translate_ms": 4.9,
+      "dispatcher_entries": 400009,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "jit+linear": [
+    {
+     "n": 146164,
+     "wall": 11.220123671999318,
+     "score": 13041.042113,
+     "secs": 11.208,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 52445416301,
+      "secs": 11.217,
+      "mips": 4675.7,
+      "tbs": 1613,
+      "tb_guest_insns": 9063,
+      "bytes_per_insn": 26.4,
+      "translate_ms": 6.9,
+      "dispatcher_entries": 526413,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 146164,
+     "wall": 11.085693652999907,
+     "score": 13200.036124,
+     "secs": 11.073,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 52445416346,
+      "secs": 11.082,
+      "mips": 4732.5,
+      "tbs": 1611,
+      "tb_guest_insns": 9061,
+      "bytes_per_insn": 26.3,
+      "translate_ms": 6.6,
+      "dispatcher_entries": 526411,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 146164,
+     "wall": 10.79505184700065,
+     "score": 13553.783383,
+     "secs": 10.784,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 52445416727,
+      "secs": 10.792,
+      "mips": 4859.8,
+      "tbs": 1614,
+      "tb_guest_insns": 9065,
+      "bytes_per_insn": 26.4,
+      "translate_ms": 6.8,
+      "dispatcher_entries": 526415,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 146164,
+     "wall": 11.2995207569993,
+     "score": 12950.912635,
+     "secs": 11.286,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 52445416643,
+      "secs": 11.296,
+      "mips": 4642.8,
+      "tbs": 1606,
+      "tb_guest_insns": 9052,
+      "bytes_per_insn": 26.3,
+      "translate_ms": 7.7,
+      "dispatcher_entries": 526404,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 146164,
+     "wall": 11.469173233999754,
+     "score": 12760.956871,
+     "secs": 11.454,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 52445416558,
+      "secs": 11.466,
+      "mips": 4574.2,
+      "tbs": 1612,
+      "tb_guest_insns": 9062,
+      "bytes_per_insn": 26.3,
+      "translate_ms": 9.4,
+      "dispatcher_entries": 526411,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "qemu": [
+    {
+     "n": 108434,
+     "wall": 11.024373618000027,
+     "score": 9848.683015,
+     "secs": 11.01,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 108434,
+     "wall": 11.469995362999725,
+     "score": 9466.911123,
+     "secs": 11.454,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 108434,
+     "wall": 10.862116817999777,
+     "score": 9996.68111,
+     "secs": 10.847,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 108434,
+     "wall": 11.425237587000083,
+     "score": 9503.418054,
+     "secs": 11.41,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 108434,
+     "wall": 11.353261950999695,
+     "score": 9562.081129,
+     "secs": 11.34,
+     "valid": true,
+     "errors": []
+    }
+   ],
+   "native": [
+    {
+     "n": 321168,
+     "wall": 11.707052437999664,
+     "score": 27438.530543,
+     "secs": 11.705,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 321168,
+     "wall": 11.370910669000295,
+     "score": 28251.935257,
+     "secs": 11.368,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 321168,
+     "wall": 11.470637734000775,
+     "score": 28003.138896,
+     "secs": 11.469,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 321168,
+     "wall": 12.246893271000772,
+     "score": 26232.786082,
+     "secs": 12.243,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 321168,
+     "wall": 11.43898658299986,
+     "score": 28081.489901,
+     "secs": 11.437,
+     "valid": true,
+     "errors": []
+    }
+   ]
+  },
+  "dhrystone": {
+   "interp": [
+    {
+     "n": 3234048,
+     "wall": 6.4323411469995335,
+     "score": 503349.0,
+     "secs": 6.425060941811745,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1086866724,
+      "secs": 6.429,
+      "mips": 169.1,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3234048,
+     "wall": 5.928535321999334,
+     "score": 546144.0,
+     "secs": 5.921603093689576,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1086866724,
+      "secs": 5.925,
+      "mips": 183.4,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3234048,
+     "wall": 6.143437742999595,
+     "score": 527030.0,
+     "secs": 6.1363641538432345,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1086866724,
+      "secs": 6.14,
+      "mips": 177.0,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3234048,
+     "wall": 6.080602128999999,
+     "score": 532515.0,
+     "secs": 6.073158502577392,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1086866724,
+      "secs": 6.077,
+      "mips": 178.9,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3234048,
+     "wall": 5.990455584000301,
+     "score": 540533.0,
+     "secs": 5.983072263858081,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1086866724,
+      "secs": 5.987,
+      "mips": 181.5,
+      "blocks_decoded": 1090
+     }
+    }
+   ],
+   "jit-naive": [
+    {
+     "n": 5521908,
+     "wall": 5.743659169000239,
+     "score": 962939.0,
+     "secs": 5.734431776052273,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1855587684,
+      "secs": 5.74,
+      "mips": 323.3,
+      "tbs": 1089,
+      "tb_guest_insns": 6182,
+      "bytes_per_insn": 30.9,
+      "translate_ms": 1.9,
+      "dispatcher_entries": 325854173,
+      "entries_per_m": 175607
+     }
+    },
+    {
+     "n": 5521908,
+     "wall": 6.042706070999884,
+     "score": 915148.0,
+     "secs": 6.0338961566872245,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1855587684,
+      "secs": 6.039,
+      "mips": 307.3,
+      "tbs": 1089,
+      "tb_guest_insns": 6182,
+      "bytes_per_insn": 30.9,
+      "translate_ms": 1.8,
+      "dispatcher_entries": 325854173,
+      "entries_per_m": 175607
+     }
+    },
+    {
+     "n": 5521908,
+     "wall": 5.589572631999545,
+     "score": 989453.0,
+     "secs": 5.580768363934416,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1855587684,
+      "secs": 5.586,
+      "mips": 332.2,
+      "tbs": 1089,
+      "tb_guest_insns": 6182,
+      "bytes_per_insn": 30.9,
+      "translate_ms": 1.7,
+      "dispatcher_entries": 325854173,
+      "entries_per_m": 175607
+     }
+    },
+    {
+     "n": 5521908,
+     "wall": 6.437378546000218,
+     "score": 858874.0,
+     "secs": 6.429241076106623,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1855587684,
+      "secs": 6.434,
+      "mips": 288.4,
+      "tbs": 1089,
+      "tb_guest_insns": 6182,
+      "bytes_per_insn": 30.9,
+      "translate_ms": 1.6,
+      "dispatcher_entries": 325854173,
+      "entries_per_m": 175607
+     }
+    },
+    {
+     "n": 5521908,
+     "wall": 5.739361339000425,
+     "score": 963781.0,
+     "secs": 5.729421932991001,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 1855587684,
+      "secs": 5.735,
+      "mips": 323.6,
+      "tbs": 1089,
+      "tb_guest_insns": 6182,
+      "bytes_per_insn": 30.9,
+      "translate_ms": 2.0,
+      "dispatcher_entries": 325854173,
+      "entries_per_m": 175607
+     }
+    }
+   ],
+   "jit+chain": [
+    {
+     "n": 76493166,
+     "wall": 6.95118322899998,
+     "score": 11017007.0,
+     "secs": 6.943189379837918,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 25701930241,
+      "secs": 6.947,
+      "mips": 3699.5,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 30.8,
+      "translate_ms": 1.8,
+      "dispatcher_entries": 258344,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 76493166,
+     "wall": 7.016948284999671,
+     "score": 10914047.0,
+     "secs": 7.008689443979854,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 25701930241,
+      "secs": 7.013,
+      "mips": 3664.9,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 30.8,
+      "translate_ms": 1.9,
+      "dispatcher_entries": 258344,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 76493166,
+     "wall": 6.3757882820000304,
+     "score": 12011238.0,
+     "secs": 6.368466431187193,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 25701930241,
+      "secs": 6.373,
+      "mips": 4033.2,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 30.8,
+      "translate_ms": 1.7,
+      "dispatcher_entries": 258344,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 76493166,
+     "wall": 6.966634587000044,
+     "score": 10990154.0,
+     "secs": 6.96015415252598,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 25701930241,
+      "secs": 6.964,
+      "mips": 3690.7,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 30.8,
+      "translate_ms": 1.5,
+      "dispatcher_entries": 258344,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 76493166,
+     "wall": 6.788548102999812,
+     "score": 11279785.0,
+     "secs": 6.7814382986909765,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 25701930241,
+      "secs": 6.785,
+      "mips": 3787.9,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 30.8,
+      "translate_ms": 1.6,
+      "dispatcher_entries": 258344,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "jit+pinned": [
+    {
+     "n": 84411450,
+     "wall": 6.309669667999515,
+     "score": 13395683.0,
+     "secs": 6.301392023086841,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 28362473665,
+      "secs": 6.307,
+      "mips": 4497.1,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 28.6,
+      "translate_ms": 3.4,
+      "dispatcher_entries": 284951,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 84411450,
+     "wall": 6.0586853149998205,
+     "score": 13954962.0,
+     "secs": 6.0488484311171895,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 28362473665,
+      "secs": 6.055,
+      "mips": 4684.2,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 28.6,
+      "translate_ms": 3.7,
+      "dispatcher_entries": 284951,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 84411450,
+     "wall": 5.999572867000097,
+     "score": 14095384.0,
+     "secs": 5.98858817893858,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 28362473665,
+      "secs": 5.996,
+      "mips": 4730.1,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 28.6,
+      "translate_ms": 5.4,
+      "dispatcher_entries": 284951,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 84411450,
+     "wall": 5.879647889999433,
+     "score": 14381046.0,
+     "secs": 5.86963215332181,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 28362473665,
+      "secs": 5.876,
+      "mips": 4827.0,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 28.6,
+      "translate_ms": 3.9,
+      "dispatcher_entries": 284951,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 84411450,
+     "wall": 6.41141681299996,
+     "score": 13184252.0,
+     "secs": 6.402445129234484,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 28362473665,
+      "secs": 6.408,
+      "mips": 4426.0,
+      "tbs": 1096,
+      "tb_guest_insns": 6239,
+      "bytes_per_insn": 28.6,
+      "translate_ms": 3.6,
+      "dispatcher_entries": 284951,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "jit+linear": [
+    {
+     "n": 103356054,
+     "wall": 5.959075982000286,
+     "score": 17375802.0,
+     "secs": 5.948275308385766,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 34727860571,
+      "secs": 5.955,
+      "mips": 5831.3,
+      "tbs": 1089,
+      "tb_guest_insns": 6179,
+      "bytes_per_insn": 25.8,
+      "translate_ms": 5.1,
+      "dispatcher_entries": 348600,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 103356054,
+     "wall": 5.4250205950002055,
+     "score": 19090787.0,
+     "secs": 5.41392316618482,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 34727860571,
+      "secs": 5.422,
+      "mips": 6405.3,
+      "tbs": 1089,
+      "tb_guest_insns": 6179,
+      "bytes_per_insn": 25.8,
+      "translate_ms": 5.5,
+      "dispatcher_entries": 348600,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 103356054,
+     "wall": 5.793822050999552,
+     "score": 17874028.0,
+     "secs": 5.782471304173855,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 34727860571,
+      "secs": 5.79,
+      "mips": 5997.5,
+      "tbs": 1089,
+      "tb_guest_insns": 6179,
+      "bytes_per_insn": 25.8,
+      "translate_ms": 5.6,
+      "dispatcher_entries": 348600,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 103356054,
+     "wall": 5.204988411999693,
+     "score": 19896745.0,
+     "secs": 5.194621230759101,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 34727860571,
+      "secs": 5.202,
+      "mips": 6675.9,
+      "tbs": 1089,
+      "tb_guest_insns": 6179,
+      "bytes_per_insn": 25.8,
+      "translate_ms": 5.2,
+      "dispatcher_entries": 348600,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 103356054,
+     "wall": 5.625562750999961,
+     "score": 18410684.0,
+     "secs": 5.613917114649298,
+     "valid": true,
+     "errors": [],
+     "stats": {
+      "guest_insns": 34727860571,
+      "secs": 5.622,
+      "mips": 6177.4,
+      "tbs": 1089,
+      "tb_guest_insns": 6179,
+      "bytes_per_insn": 25.8,
+      "translate_ms": 5.6,
+      "dispatcher_entries": 348600,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "qemu": [
+    {
+     "n": 29419692,
+     "wall": 5.6207067819996155,
+     "score": 5248497.0,
+     "secs": 5.605355590371873,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 29419692,
+     "wall": 5.9277773570001955,
+     "score": 4975023.0,
+     "secs": 5.913478590953248,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 29419692,
+     "wall": 5.515188164999927,
+     "score": 5347070.0,
+     "secs": 5.502021106886575,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 29419692,
+     "wall": 5.710899409999911,
+     "score": 5163837.0,
+     "secs": 5.697254192957678,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 29419692,
+     "wall": 5.849504327999966,
+     "score": 5039960.0,
+     "secs": 5.837286803863523,
+     "valid": true,
+     "errors": []
+    }
+   ],
+   "native": [
+    {
+     "n": 319063548,
+     "wall": 6.827662032999797,
+     "score": 46749477.0,
+     "secs": 6.82496507928848,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 319063548,
+     "wall": 6.7419511729995065,
+     "score": 47346188.0,
+     "secs": 6.738949036403945,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 319063548,
+     "wall": 6.538818095000352,
+     "score": 48816728.0,
+     "secs": 6.5359470220945575,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 319063548,
+     "wall": 6.682629955999801,
+     "score": 47768874.0,
+     "secs": 6.679319005928421,
+     "valid": true,
+     "errors": []
+    },
+    {
+     "n": 319063548,
+     "wall": 6.391414873999565,
+     "score": 49949793.0,
+     "secs": 6.3876850901063795,
+     "valid": true,
+     "errors": []
+    }
+   ]
+  }
+ }
+}

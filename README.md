@@ -8,13 +8,14 @@ It has four core subsystems:
 - guest registers pinned in R12–R15, plus a linear-scan allocator
 - an SV39 software MMU with an inline software TLB
 
-> **Status:** Phases 0–4 complete: interpreter, JIT with a hand-written x86-64 encoder, W^X code buffer, block chaining, an inline jump cache, and an IR with constant folding and a register allocator (guest registers pinned in R12–R15 plus linear scan), all checked in lockstep against the interpreter and by a random-block fuzzer (10⁶ blocks). CoreMark runs at 12,754 iterations/s, 23.6× the interpreter and 1.32× QEMU. Benchmarks and Milestone A (Phase 5) are next. See `docs/phase-reports/`.
+> **Status:** Phases 0–5 complete, including **Milestone A**: CoreMark runs at 13,498 iterations/s under the JIT, **26.5× the interpreter, 1.52× `qemu-riscv64` and 52% of native x86-64** on the same machine (Dhrystone: 39.6× the interpreter, 4.55× QEMU). Results and method: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); reproduce with `tools/demo-milestone-a.sh`. Everything is checked in lockstep against the interpreter and by a random-block fuzzer. FP in the JIT (Phase 6) is next. See `docs/phase-reports/`.
 
 | Document | What it covers |
 |---|---|
 | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) | What Bridge-V is, how it works, what it's used for. Start here. |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Detailed phase-by-phase build plan with acceptance criteria. |
 | [`docs/phase-reports/`](docs/phase-reports/) | A detailed report for every completed phase. |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Measured results from the benchmark harness. |
 | [`CLAUDE.md`](CLAUDE.md) | The full engineering specification and design decision log. |
 
 **Milestones**

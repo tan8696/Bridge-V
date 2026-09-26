@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 4 (IR, optimizer, register allocation) complete.** Next up: Phase 5, task P5.1 (`docs/ROADMAP.md`). |
+| Phase | **Phase 5 (Milestone A) complete.** CoreMark 13,498 it/s = 26.5× interp, 1.52× qemu-riscv64, 52% of native (`docs/BENCHMARKS.md`). Next up: Phase 6, task P6.1 (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-04-ir-regalloc.md` |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-05-milestone-a.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-26 |
@@ -1042,7 +1042,7 @@ Each phase ends with:
 ## 28. Resume bullets and interview presentation
 
 ### 28.1 Resume bullets (targets: replace the numbers with measured values from `docs/BENCHMARKS.md` before use)
-- Engineered a 64-bit RISC-V to x86_64 dynamic binary translator supporting RV64IMAFD instruction extensions, executing compiled Linux binaries at over **120M instructions/sec**.
+- Engineered a 64-bit RISC-V to x86_64 dynamic binary translator supporting RV64IMAFD instruction extensions, executing compiled Linux binaries at over **120M instructions/sec**. *(Measured, Phase 5: CoreMark at 4.8 billion guest instructions/s in user mode, 26.5× the interpreter and 1.52× `qemu-riscv64`; the softmmu/system-mode figure comes in Phase 7.)*
 - Eliminated dispatcher context switching by developing a runtime basic-block chaining mechanism that hot-patches native branch targets directly in executable cache memory.
 - Implemented an inline software TLB and SV39 virtual memory engine, reducing memory translation overhead from **45 cycles to 4 cycles** on cached hits.
 - Authored a custom JIT code emitter and register allocator mapping 32 guest registers to host x86_64 registers with zero-cost spill resolution for hot execution paths.

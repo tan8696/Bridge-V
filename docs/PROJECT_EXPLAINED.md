@@ -4,7 +4,7 @@ This document explains Bridge-V from the ground up, for readers ranging from "ne
 - The exact engineering specification is [`CLAUDE.md`](../CLAUDE.md).
 - The build plan is [`ROADMAP.md`](ROADMAP.md).
 
-> **Status (2026-09-26):** Phase 4 complete. Bridge-V translates guest code into real x86-64 machine code; translated blocks jump directly into each other (block chaining, with an inline jump cache for function returns); and each block now goes through a small compiler: an intermediate representation, constant folding, removal of redundant register writes, and a register allocator that keeps four hot guest registers permanently in x86 registers and caches the rest. It passes everything the interpreter passes (110 riscv-tests, 35 programs byte-identical with QEMU) at every optimization level, including "lockstep" mode (the JIT checked against the interpreter after every block) and a fuzzer that compared one million random blocks. CoreMark: 12,754 iterations/s, 1.75× the Phase 3 JIT, 23.6× the interpreter and 1.32× faster than QEMU on the same machine (4.6 billion guest instructions per second). Other numbers under "Performance" are still targets (see `docs/phase-reports/`).
+> **Status (2026-09-26):** Phase 5 (Milestone A) complete. Bridge-V translates guest code into real x86-64 machine code; translated blocks jump directly into each other (block chaining, with an inline jump cache for function returns); each block goes through a small compiler (an intermediate representation, constant folding, removal of redundant register writes, and a register allocator that keeps four hot guest registers permanently in x86 registers). It passes everything the interpreter passes at every optimization level, including "lockstep" mode and a fuzzer that compared a million random blocks. Measured with a reproducible benchmark harness on the same machine: **CoreMark 13,498 iterations/s, 26.5× the interpreter, 1.52× QEMU and 52% of native x86-64 speed; Dhrystone 12,443 DMIPS, 39.6× the interpreter and 4.55× QEMU** (`docs/BENCHMARKS.md`). The software MMU numbers under "Performance" are still targets (Phase 7).
 
 ---
 
@@ -253,11 +253,18 @@ Everything else stays on the fast path.
 
 - **MIPS / "instructions per second"** means how many *guest* RISC-V instructions Bridge-V completes per second of wall-clock time.
 - **Speedup** means JIT time compared with the interpreter on the same workload (CoreMark, Dhrystone), same machine, same inputs.
-- **Targets, not results** (CLAUDE.md §22):
+- **Measured (Phase 5, `docs/BENCHMARKS.md`)**, user mode, same machine:
+
+  | Configuration | CoreMark | vs interpreter | vs QEMU | vs native x86-64 |
+  |---|---|---|---|---|
+  | interpreter | 510 it/s | 1× | | 2% |
+  | JIT, fully optimized | 13,498 it/s (4.8 billion guest instructions/s) | 26.5× | 1.52× | 52% |
+
+  Each JIT technique's share: chaining alone is 13.8× the interpreter; pinning four registers takes it to 19.9×; the optimizer and register allocator to 26.5×.
+- **Still targets** (CLAUDE.md §22), for later phases:
 
   | Configuration | Target |
   |---|---|
-  | JIT in user mode | ≥ 5–10× faster than the interpreter; on the order of hundreds of MIPS |
   | JIT in system mode (with SoftMMU) | ≥ 100–120 MIPS |
   | TLB | ~4–5 cycles on a hit vs tens of cycles for a page walk |
 
@@ -276,7 +283,7 @@ Everything else stays on the fast path.
 
 ## 12. Project status and how it will be used
 
-- **Now:** Phases 0–4 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, and a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining by hot-patching jumps, an inline jump cache, an IR optimizer and register allocator (`--regalloc none|pinned|linear`), lockstep checking and a random-block fuzzer. The next phase is Milestone A: reproducible CoreMark and Dhrystone benchmarks against the interpreter, QEMU and native code.
+- **Now:** Phases 0–5 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining, an inline jump cache, an IR optimizer and register allocator, lockstep checking, a random-block fuzzer, and Milestone A: reproducible CoreMark and Dhrystone builds, a benchmark harness comparing the interpreter, every JIT level, QEMU and native code (`tools/bench.py`), a sampling profiler (`--profile-tbs`), and a one-command demo (`tools/demo-milestone-a.sh`). The next phase moves floating point into the JIT.
 - **Milestone A (required):** CoreMark and Dhrystone run under both the interpreter and the JIT, with a printed speedup table.
 - **Milestone B (stretch):** Linux 6.6 boots to a BusyBox shell.
 - **Planned usage:**
