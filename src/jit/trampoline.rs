@@ -53,7 +53,13 @@ impl Trampolines {
     /// Generate the prefix into an empty code buffer and seal it (it survives flushes).
     /// `pinned` lists the guest registers kept in host registers across blocks (§8.2):
     /// `enter_jit` loads them from `CpuState`, `exit_jit` stores them back (§8.3, §8.4).
-    pub fn generate(cm: &mut CodeMem, pinned: &[(u8, Reg)]) -> Trampolines {
+    /// `pinned`: guest registers living in host registers across TBs; `budget_reg`: the
+    /// register holding the budget inside JIT code, if not `CpuState.budget` (D46).
+    pub fn generate(
+        cm: &mut CodeMem,
+        pinned: &[(u8, Reg)],
+        budget_reg: Option<Reg>,
+    ) -> Trampolines {
         let helpers: [u64; helper::COUNT] = [helper_interp_one as *const () as u64];
         let origin = cm.next_addr();
         let mut a = Asm::new(origin);
@@ -79,6 +85,9 @@ impl Trampolines {
         for &(g, r) in pinned {
             a.load(Size::B64, r, cpu_field(8 * g as usize));
         }
+        if let Some(r) = budget_reg {
+            a.load(Size::B64, r, cpu_field(offset_of!(CpuState, budget)));
+        }
         a.jmp_rm(Reg::Rsi);
 
         // exit_jit: restore and return RAX to enter_jit's caller.
@@ -86,6 +95,9 @@ impl Trampolines {
         let exit = a.here();
         for &(g, r) in pinned {
             a.store(Size::B64, cpu_field(8 * g as usize), r);
+        }
+        if let Some(r) = budget_reg {
+            a.store(Size::B64, cpu_field(offset_of!(CpuState, budget)), r);
         }
         a.alu_ri(Size::B64, Alu::Add, Reg::Rsp, 8);
         for r in [Reg::R15, Reg::R14, Reg::R13, Reg::R12, Reg::Rbx, Reg::Rbp] {
@@ -204,7 +216,7 @@ mod tests {
 
     fn setup() -> (CodeMem, Trampolines) {
         let mut cm = CodeMem::new(1 << 20, WxMode::DualMap).unwrap();
-        let t = Trampolines::generate(&mut cm, &[]);
+        let t = Trampolines::generate(&mut cm, &[], None);
         (cm, t)
     }
 
@@ -307,7 +319,7 @@ mod tests {
     fn pinned_registers_round_trip() {
         let mut cm = CodeMem::new(1 << 20, WxMode::DualMap).unwrap();
         let pins = [(2, Reg::R12), (1, Reg::R13), (10, Reg::R14), (15, Reg::R15)];
-        let t = Trampolines::generate(&mut cm, &pins);
+        let t = Trampolines::generate(&mut cm, &pins, None);
         let mut a = Asm::new(cm.next_addr());
         for (k, &(_, r)) in pins.iter().enumerate() {
             // The home is stale inside the block: clobber it, the exit must overwrite it.

@@ -78,6 +78,11 @@ pub const MEM_BASE: Reg = Reg::Rbx;
 pub const SCRATCH0: Reg = Reg::R10;
 pub const SCRATCH1: Reg = Reg::R11;
 
+/// The IR back end keeps the instruction budget (D12, D30) in this register instead of
+/// `CpuState.budget` (D46): `enter_jit` loads it, `exit_jit` stores it back, helper calls sync
+/// it. It is therefore not allocatable at the `pinned`/`linear` levels.
+pub const BUDGET_REG: Reg = Reg::R9;
+
 /// Caller-saved registers available to the allocator (Phase 4).
 pub const POOL: [Reg; 7] = [
     Reg::Rax,

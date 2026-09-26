@@ -149,12 +149,31 @@ pub fn terminator() -> impl Strategy<Value = u32> {
     ]
 }
 
-/// A whole block: body + terminator.
+/// A whole block: body + terminator. One block in four loops back to its own start (a branch
+/// or JAL to CODE), the shape of hot inner loops.
 pub fn block() -> impl Strategy<Value = Vec<u32>> {
-    (prop::collection::vec(body_insn(), 1..40), terminator()).prop_map(|(mut v, t)| {
+    let plain = (prop::collection::vec(body_insn(), 1..40), terminator()).prop_map(|(mut v, t)| {
         v.push(t);
         v
-    })
+    });
+    let self_loop = (
+        prop::collection::vec(body_insn(), 1..40),
+        prop::sample::select(vec![0u32, 1, 4, 5, 6, 7]),
+        rs(),
+        rs(),
+        rd(),
+        prop::bool::weighted(0.8),
+    )
+        .prop_map(|(mut v, f3, a, bb, d, branch)| {
+            let back = -4 * v.len() as i32;
+            v.push(if branch {
+                b(back, bb, a, f3)
+            } else {
+                j(back, d)
+            });
+            v
+        });
+    prop_oneof![3 => plain, 1 => self_loop]
 }
 
 /// Initial registers (x5, x6 fixed; a mix of edge values and random bits).

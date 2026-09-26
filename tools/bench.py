@@ -313,7 +313,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--suite", default="coremark,dhrystone", help="comma-separated workloads")
     ap.add_argument("--configs", default=",".join(CONFIGS), help="comma-separated configurations")
-    ap.add_argument("--runs", type=int, default=5, help="measured runs per cell (after 1 warm-up)")
+    ap.add_argument("--runs", type=int, default=5, help="measured runs per cell")
+    ap.add_argument("--warmup", type=int, default=1, help="warm-up runs per cell (not measured)")
     ap.add_argument("--target", type=float, default=12.0, help="seconds per run (CoreMark needs >= 10)")
     ap.add_argument("--cpu", type=int, default=2, help="CPU for taskset (-1: no pinning)")
     ap.add_argument("--quick", action="store_true",
@@ -321,7 +322,7 @@ def main():
     ap.add_argument("--out", default=os.path.join(ROOT, "target", "bench"), help="output directory")
     a = ap.parse_args()
     cpu = None if a.cpu < 0 or not shutil.which("taskset") or a.cpu >= (os.cpu_count() or 1) else a.cpu
-    runs, warmup, target = (1, 0, 1.0) if a.quick else (a.runs, 1, a.target)
+    runs, warmup, target = (1, 0, 1.0) if a.quick else (a.runs, a.warmup, a.target)
     for w in WORKLOADS.values():
         if a.quick:
             w.min_secs = 0.0

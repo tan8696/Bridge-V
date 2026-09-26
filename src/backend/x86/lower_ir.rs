@@ -14,11 +14,14 @@
 //! instruction, the address register and the **state map** (where each dirty guest register
 //! is). The SIGSEGV path uses it to rebuild precise guest state (§15). Helper calls
 //! (`Interp`) do a full sync: write back, store pinned registers home, reload them after.
+//!
+//! The instruction budget lives in R9 (`BUDGET_REG`, D46), not in `CpuState`: the prologue's
+//! `sub r9, n; jl` has no memory dependency chain from one TB to the next.
 
 use std::mem::offset_of;
 
 use super::emit::{Alu, Asm, Cond, Label, Mem, Scale, Shift, ShiftX, Size, Unary};
-use super::regs::{CPU, CPU_BIAS, MEM_BASE, Reg};
+use super::regs::{BUDGET_REG, CPU, CPU_BIAS, MEM_BASE, Reg};
 use crate::cpu::state::{CpuState, JC_SIZE, exit};
 use crate::cpu::trap::Exception;
 use crate::ir::liveness::{Constraint, constraint};
@@ -84,7 +87,7 @@ struct Stub {
     slot: u64,
 }
 
-fn budget() -> Mem {
+fn budget_mem() -> Mem {
     cpu_field(offset_of!(CpuState, budget))
 }
 
@@ -169,7 +172,7 @@ impl Ctx<'_> {
             self.a.bind(s.label);
             if s.refund > 0 {
                 self.a
-                    .alu_ri(Size::B64, Alu::Add, budget(), s.refund as i32);
+                    .alu_ri(Size::B64, Alu::Add, BUDGET_REG, s.refund as i32);
             }
             match s.pc {
                 PcSrc::Const(pc) => store_const(&mut self.a, field(offset_of!(CpuState, pc)), pc),
@@ -359,15 +362,14 @@ impl Ctx<'_> {
     /// Multiply-high and division: operands to R10 (dividend) / R11 (divisor), RDX:RAX vacated.
     fn muldiv(&mut self, op: BinOp, dst: V, x: V, y: V) -> Result<()> {
         use BinOp::*;
-        // Free RDX:RAX first, then load the operands elsewhere: the allocator uses R11 for its
-        // own copies (write-back protection), so nothing may be parked in R10/R11 across an
-        // allocator call.
+        // Free RDX:RAX first, then copy the operands straight to R10/R11 (no pool registers
+        // needed besides the fixed ones). The allocator uses R11 for its own copies, so
+        // nothing may be parked in R10/R11 across an allocator call that can emit code
+        // (vacate/evict).
         self.ra.vacate(&mut self.a, Rax, &[Rax, Rdx])?;
         self.ra.vacate(&mut self.a, Rdx, &[Rax, Rdx])?;
-        let ra = self.ra.get(&mut self.a, x, &[Rax, Rdx])?;
-        let rb = self.ra.get(&mut self.a, y, &[Rax, Rdx, ra])?;
-        self.a.mov_rr(Size::B64, R10, ra);
-        self.a.mov_rr(Size::B64, R11, rb);
+        self.ra.copy_to(&mut self.a, x, R10);
+        self.ra.copy_to(&mut self.a, y, R11);
         self.ra.release(&[x, y]);
         let a = &mut self.a;
         a.mov_rr(Size::B64, Rax, R10);
@@ -408,10 +410,8 @@ impl Ctx<'_> {
         // As in `muldiv`: free RCX before loading the operands, never hold R10/R11 across an
         // allocator call.
         self.ra.vacate(&mut self.a, Rcx, &[Rcx])?;
-        let ra = self.ra.get(&mut self.a, x, &[Rcx])?;
-        let rb = self.ra.get(&mut self.a, y, &[Rcx, ra])?;
-        self.a.mov_rr(Size::B64, R10, ra);
-        self.a.mov_rr(Size::B64, Rcx, rb);
+        self.ra.copy_to(&mut self.a, x, R10);
+        self.ra.copy_to(&mut self.a, y, Rcx);
         self.ra.release(&[x, y]);
         let (size, sh) = match op {
             Sll => (Size::B64, Shift::Shl),
@@ -566,11 +566,15 @@ impl Ctx<'_> {
         self.ra.sync_for_call(&mut self.a)?;
         let rest = (self.n - idx) as i32;
         let a = &mut self.a;
-        a.alu_ri(Size::B64, Alu::Add, budget(), rest);
+        // The helper reads and adjusts CpuState.budget (icount sync, D30): pass the register
+        // through memory, and take it back after the call (R9 is caller-saved anyway).
+        a.alu_ri(Size::B64, Alu::Add, BUDGET_REG, rest);
+        a.store(Size::B64, budget_mem(), BUDGET_REG);
         a.lea(Rdi, Mem::base(CPU, -CPU_BIAS));
         a.mov_r32_imm(Rsi, raw);
         a.mov_imm(Rdx, pc);
         a.call_indirect_abs(self.tr.helper_slot(helper::INTERP_ONE));
+        a.load(Size::B64, BUDGET_REG, budget_mem());
         a.test_rr(Size::B64, Rax, Rax);
         let l = match self.helper_exit {
             Some(l) => l,
@@ -581,7 +585,7 @@ impl Ctx<'_> {
             }
         };
         self.a.jcc(Cond::Ne, l);
-        self.a.alu_ri(Size::B64, Alu::Sub, budget(), rest);
+        self.a.alu_ri(Size::B64, Alu::Sub, BUDGET_REG, rest);
         self.ra.after_call(&mut self.a);
         Ok(())
     }
@@ -739,7 +743,7 @@ pub fn translate(
         idx: 0,
     };
     if c.n > 0 {
-        c.a.alu_ri(Size::B64, Alu::Sub, budget(), c.n as i32);
+        c.a.alu_ri(Size::B64, Alu::Sub, BUDGET_REG, c.n as i32);
         let l = c.stub(PcSrc::Const(b.pc), c.n, exit::BUDGET, SLOT_SPECIAL);
         c.a.jcc(Cond::L, l);
     }

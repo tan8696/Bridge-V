@@ -8,6 +8,11 @@
 //! memory base x5 pinned. Failing cases are shrunk and persisted by proptest's regression file
 //! (`proptest-regressions`), which is replayed first on every later run.
 //!
+//! Every block runs twice per configuration: once as a single TB execution (budget = its
+//! length), and once with its self-targeting exits linked and a budget of three executions,
+//! against the interpreter looping while control stays at the block start. The second run
+//! exercises chained self-loops (a linked exit into the TB's own prologue) and the jump cache.
+//!
 //! `PROPTEST_CASES` sets the number of blocks per run (default 2000, the CI smoke run; every
 //! block runs under all configurations).
 
@@ -17,7 +22,7 @@ mod rvgen;
 use std::cell::RefCell;
 
 use bridgev::backend::x86::disasm::disasm_x86;
-use bridgev::interp::{Engine, exec_block};
+use bridgev::interp::{BlockExit, Engine, exec_block};
 use bridgev::ir::lift::lift;
 use bridgev::ir::opt;
 use bridgev::jit::{Jit, JitOptions, RegAlloc};
@@ -79,22 +84,35 @@ thread_local! {
     );
 }
 
-/// Run the block at `CODE` as one TB under `jit` (fresh translation: the previous case's code
-/// was different); returns the JIT outcome and the interpreter's.
-fn run_jit(h: &mut Harness, regs: &[u64; 32], jit: &mut Jit) -> (Outcome, Outcome) {
+/// Run the block at `CODE` as a TB under `jit` (fresh translation: the previous case's code
+/// was different) for up to `iters` executions; returns the JIT outcome and the
+/// interpreter's.
+fn run_jit(h: &mut Harness, regs: &[u64; 32], jit: &mut Jit, iters: i64) -> (Outcome, Outcome) {
     jit.flush();
     let mut id = 0;
     let got = h.run(regs, |cpu, mem, _, _| {
         id = jit.tb_for(CODE, mem);
+        if iters > 1 {
+            jit.link_self_exits(id);
+        }
         let n = jit.tb(id).insns.len() as i64;
-        jit.exec(cpu, mem, id, n)
+        jit.exec(cpu, mem, id, n * iters)
     });
     // Reference over exactly the translated instructions (a TB may be shorter than the
-    // interpreter's block if it ran out of spill slots and was retranslated).
+    // interpreter's block if it ran out of spill slots and was retranslated), repeated while
+    // control comes back to the block start: that is what the JIT does through linked exits,
+    // the jump cache (JALR) and loop back-edges, until the budget runs out.
     let tb = jit.tb(id);
     let (insns, ff) = (tb.insns.clone(), tb.fetch_fault);
     let want = h.run(regs, |cpu, mem, _, _| {
-        exec_block(cpu, mem, &insns, ff, false)
+        let mut exit = exec_block(cpu, mem, &insns, ff, false);
+        for _ in 1..iters {
+            if exit != BlockExit::Continue || cpu.pc != CODE {
+                break;
+            }
+            exit = exec_block(cpu, mem, &insns, ff, false);
+        }
+        exit
     });
     (got, want)
 }
@@ -124,18 +142,21 @@ proptest! {
             .collect();
         JITS.with(|jits| -> Result<(), TestCaseError> {
             for (name, jit) in jits.borrow_mut().iter_mut() {
-                let (got, want) = run_jit(&mut h, &regs, jit);
-                if got != want {
-                    let regalloc = jit.options().regalloc;
-                    let r = report(&h, jit, regalloc);
-                    prop_assert_eq!(
-                        &got,
-                        &want,
-                        "config `{}`, block:\n  {}\n{}",
-                        name,
-                        listing.join("\n  "),
-                        r
-                    );
+                for iters in [1, 3] {
+                    let (got, want) = run_jit(&mut h, &regs, jit, iters);
+                    if got != want {
+                        let regalloc = jit.options().regalloc;
+                        let r = report(&h, jit, regalloc);
+                        prop_assert_eq!(
+                            &got,
+                            &want,
+                            "config `{}`, {} execution(s), block:\n  {}\n{}",
+                            name,
+                            iters,
+                            listing.join("\n  "),
+                            r
+                        );
+                    }
                 }
             }
             Ok(())

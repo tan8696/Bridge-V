@@ -10,10 +10,14 @@
 //! stack-overflow handler) or the default action.
 //!
 //! Guest signal delivery (rt_sigframe, sigreturn) is a Phase 10 stretch goal.
+//!
+//! The same file holds the `--profile-tbs` sampling profiler (P5.3): SIGPROF every N µs of
+//! process CPU time records the interrupted host RIP; the JIT maps the samples to TBs.
 
 use std::cell::Cell;
 use std::mem::MaybeUninit;
 use std::sync::Once;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::cpu::state::CpuState;
 
@@ -118,5 +122,71 @@ extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut li
             let f: extern "C" fn(libc::c_int) = std::mem::transmute(h);
             f(sig);
         }
+    }
+}
+
+// ------------------------------------------------------------ sampling profiler (P5.3) ----
+
+/// Sample buffer: 2^17 RIPs (131 s of CPU time at the default 1 kHz); later samples are
+/// counted but dropped.
+const SAMPLE_CAP: usize = 1 << 17;
+static SAMPLES: [AtomicU64; SAMPLE_CAP] = [const { AtomicU64::new(0) }; SAMPLE_CAP];
+static SAMPLE_N: AtomicUsize = AtomicUsize::new(0);
+
+fn set_prof_timer(interval_us: i64) {
+    let tv = libc::timeval {
+        tv_sec: interval_us / 1_000_000,
+        tv_usec: (interval_us % 1_000_000) as libc::suseconds_t,
+    };
+    let it = libc::itimerval {
+        it_interval: tv,
+        it_value: tv,
+    };
+    // SAFETY: plain setitimer call with a valid struct.
+    let rc = unsafe { libc::setitimer(libc::ITIMER_PROF, &it, std::ptr::null_mut()) };
+    assert_eq!(rc, 0, "setitimer: {}", std::io::Error::last_os_error());
+}
+
+/// Start sampling the host RIP every `interval_us` µs of process CPU time.
+pub fn start_sampling(interval_us: u32) {
+    SAMPLE_N.store(0, Ordering::Relaxed);
+    // SAFETY: sigaction with a fully initialised struct. SA_RESTART: guest syscalls serviced
+    // on the host (read, write, …) restart instead of failing with EINTR.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = prof_handler as *const () as usize;
+        sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
+        libc::sigemptyset(&mut sa.sa_mask);
+        let rc = libc::sigaction(libc::SIGPROF, &sa, std::ptr::null_mut());
+        assert_eq!(
+            rc,
+            0,
+            "sigaction(SIGPROF): {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    set_prof_timer(interval_us as i64);
+}
+
+/// Stop sampling. Returns the recorded RIPs and the number of samples dropped (buffer full).
+pub fn stop_sampling() -> (Vec<u64>, usize) {
+    set_prof_timer(0);
+    let n = SAMPLE_N.load(Ordering::Acquire);
+    let kept = n.min(SAMPLE_CAP);
+    let rips = SAMPLES[..kept]
+        .iter()
+        .map(|a| a.load(Ordering::Relaxed))
+        .collect();
+    (rips, n - kept)
+}
+
+extern "C" fn prof_handler(_sig: libc::c_int, _info: *mut libc::siginfo_t, ctx: *mut libc::c_void) {
+    // SAFETY: the kernel passes a valid ucontext_t for SA_SIGINFO handlers.
+    let uc = unsafe { &*(ctx as *const libc::ucontext_t) };
+    let rip = uc.uc_mcontext.gregs[libc::REG_RIP as usize] as u64;
+    // Atomics only: async-signal-safe.
+    let i = SAMPLE_N.fetch_add(1, Ordering::AcqRel);
+    if i < SAMPLE_CAP {
+        SAMPLES[i].store(rip, Ordering::Relaxed);
     }
 }

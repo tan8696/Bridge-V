@@ -164,6 +164,9 @@ enum Command {
         /// Count JALR executions in JIT code (jump-cache hit rate in --stats; adds overhead).
         #[arg(long)]
         profile_jit: bool,
+        /// Sample where host time goes (1 kHz SIGPROF) and report the hottest TBs in --stats.
+        #[arg(long)]
+        profile_tbs: bool,
         /// Testing only: deliberately miscompile ADDI (lockstep must catch it).
         #[arg(long, hide = true)]
         inject_bug: bool,
@@ -292,6 +295,7 @@ fn main() -> ExitCode {
             inject_bug,
             no_chain,
             profile_jit,
+            profile_tbs,
             regalloc,
             pin,
             dump_ir,
@@ -322,6 +326,7 @@ fn main() -> ExitCode {
                 inject_bug,
                 chain: !no_chain,
                 profile: profile_jit,
+                profile_tbs,
                 regalloc: match regalloc {
                     RegAllocArg::None => RegAlloc::None,
                     RegAllocArg::Pinned => RegAlloc::Pinned,

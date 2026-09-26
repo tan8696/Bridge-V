@@ -4,7 +4,8 @@
 //! (Poletto & Sarkar with intervals `[def, last_use]` from `ir::liveness`). The allocator runs
 //! interleaved with code generation and emits its own fills, spills and moves:
 //!
-//! * **Pool:** RAX, RCX, RDX, RSI, RDI, R8, R9. R10/R11 are never allocated (op scratch).
+//! * **Pool:** RAX, RCX, RDX, RSI, RDI, R8. R9 holds the budget (D46); R10/R11 are never
+//!   allocated (op scratch).
 //! * **Pinned guest registers** (§8.2) live in R12–R15 for the whole block and across chained
 //!   blocks. A `WriteReg` to a pinned register moves the value there immediately, so pinned
 //!   state is exact at every fault site.
@@ -21,7 +22,7 @@
 use std::mem::offset_of;
 
 use crate::backend::x86::emit::{Asm, Mem, Size};
-use crate::backend::x86::regs::{CPU, CPU_BIAS, POOL, Reg, SCRATCH1};
+use crate::backend::x86::regs::{BUDGET_REG, CPU, CPU_BIAS, POOL, Reg, SCRATCH1};
 use crate::cpu::state::{CpuState, SPILL_SLOTS};
 use crate::ir::liveness::Liveness;
 use crate::ir::ops::{Block, V};
@@ -101,6 +102,8 @@ pub struct Alloc {
     vals: Vec<Val>,
     owner: [Option<V>; 16],
     pinned: [Option<Reg>; 32],
+    /// Allocatable registers: `POOL` minus the pinned hosts and the budget register.
+    pool: Vec<Reg>,
     pin_val: [Option<V>; 32],
     dirty: [Option<V>; 32],
     home_owner: [Option<V>; 32],
@@ -131,6 +134,11 @@ impl Alloc {
             ],
             owner: [None; 16],
             pinned,
+            pool: POOL
+                .iter()
+                .copied()
+                .filter(|r| !pinned.contains(&Some(*r)) && *r != BUDGET_REG)
+                .collect(),
             pin_val: [None; 32],
             dirty: [None; 32],
             home_owner: [None; 32],
@@ -272,6 +280,13 @@ impl Alloc {
             if let Some(o) = self.pin_val[g as usize].take()
                 && self.vals[o.0 as usize].pin == Some(g)
             {
+                // Still the value of another pinned register (after `mv s0, a4`): that
+                // register keeps it, no copy needed.
+                if let Some(h) = (1..32u8).find(|&h| h != g && self.pin_val[h as usize] == Some(o))
+                {
+                    self.val(o).pin = Some(h);
+                    return self.write_pinned(a, g, p, v);
+                }
                 self.val(o).pin = None;
                 let x = self.vals[o.0 as usize];
                 if self.needed(o) && x.reg.is_none() && x.back == Back::None {
@@ -281,19 +296,7 @@ impl Alloc {
                     self.take(r, o);
                 }
             }
-            match self.reg_of(v) {
-                Some(r) if r == p => {}
-                Some(r) => {
-                    a.mov_rr(Size::B64, p, r);
-                    self.stats.moves += 1;
-                }
-                None => self.fill(a, v, p),
-            }
-            self.pin_val[g as usize] = Some(v);
-            if self.vals[v.0 as usize].pin.is_none() {
-                self.val(v).pin = Some(g);
-            }
-            return Ok(());
+            return self.write_pinned(a, g, p, v);
         }
         if !self.lazy {
             return self.store_home(a, g, v);
@@ -307,6 +310,23 @@ impl Alloc {
         }
         self.dirty[g as usize] = Some(v);
         self.val(v).dirty |= 1 << g;
+        Ok(())
+    }
+
+    /// Move `v` into guest `g`'s pinned register `p` (its old value is already preserved).
+    fn write_pinned(&mut self, a: &mut Asm, g: u8, p: Reg, v: V) -> Result<()> {
+        match self.reg_of(v) {
+            Some(r) if r == p => {}
+            Some(r) => {
+                a.mov_rr(Size::B64, p, r);
+                self.stats.moves += 1;
+            }
+            None => self.fill(a, v, p),
+        }
+        self.pin_val[g as usize] = Some(v);
+        if self.vals[v.0 as usize].pin.is_none() {
+            self.val(v).pin = Some(g);
+        }
         Ok(())
     }
 
@@ -401,15 +421,28 @@ impl Alloc {
         Ok(r)
     }
 
+    /// Copy `v` into `dst` (a scratch or fixed register the caller owns) without allocating a
+    /// pool register for it; `v`'s own location is unchanged.
+    pub fn copy_to(&mut self, a: &mut Asm, v: V, dst: Reg) {
+        let v = self.r(v);
+        match self.reg_of(v) {
+            Some(r) if r == dst => {}
+            Some(r) => a.mov_rr(Size::B64, dst, r),
+            None => self.fill(a, v, dst),
+        }
+    }
+
     /// A free pool register (evicting the furthest-next-use value if needed).
     pub fn alloc(&mut self, a: &mut Asm, avoid: &[Reg]) -> Result<Reg> {
-        if let Some(&r) = POOL
+        if let Some(&r) = self
+            .pool
             .iter()
             .find(|r| self.owner[r.num() as usize].is_none() && !avoid.contains(r))
         {
             return Ok(r);
         }
-        let victim = *POOL
+        let victim = *self
+            .pool
             .iter()
             .filter(|r| !avoid.contains(r))
             .max_by_key(|r| {
@@ -426,7 +459,7 @@ impl Alloc {
     /// Define `v` in a fresh pool register (`prefer` if it is free).
     pub fn def(&mut self, a: &mut Asm, v: V, prefer: Option<Reg>, avoid: &[Reg]) -> Result<Reg> {
         let r = match prefer {
-            Some(p) if self.owner[p.num() as usize].is_none() && POOL.contains(&p) => p,
+            Some(p) if self.owner[p.num() as usize].is_none() && self.pool.contains(&p) => p,
             _ => self.alloc(a, avoid)?,
         };
         self.take(r, v);
@@ -465,7 +498,8 @@ impl Alloc {
             return Ok(());
         };
         if self.needed(v)
-            && let Some(&f) = POOL
+            && let Some(&f) = self
+                .pool
                 .iter()
                 .find(|f| self.owner[f.num() as usize].is_none() && !avoid.contains(f) && **f != r)
         {

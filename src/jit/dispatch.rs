@@ -77,6 +77,9 @@ pub struct JitOptions {
     pub pin: Vec<u8>,
     /// `--dump-ir DIR`: write every TB's IR before and after the passes.
     pub dump_ir: Option<PathBuf>,
+    /// `--profile-tbs`: sample the host RIP (SIGPROF, 1 kHz of CPU time) and report the
+    /// hottest TBs in `stats` (D44).
+    pub profile_tbs: bool,
 }
 
 impl Default for JitOptions {
@@ -95,6 +98,7 @@ impl Default for JitOptions {
             regalloc: RegAlloc::Linear,
             pin: vec![2, 1, 10, 15],
             dump_ir: None,
+            profile_tbs: false,
         }
     }
 }
@@ -178,7 +182,10 @@ impl Jit {
                 }
             }
         }
-        let tr = Trampolines::generate(&mut cm, &pairs);
+        // The IR back end keeps the budget in a register (D46); the naive one in memory.
+        let budget_reg =
+            (opts.regalloc != RegAlloc::None).then_some(crate::backend::x86::regs::BUDGET_REG);
+        let tr = Trampolines::generate(&mut cm, &pairs, budget_reg);
         let features = if opts.host_features {
             features::host()
         } else {
@@ -193,6 +200,9 @@ impl Jit {
             std::fs::create_dir_all(d)?;
         }
         signal::install();
+        if opts.profile_tbs {
+            signal::start_sampling(1000);
+        }
         Ok(Jit {
             cm,
             tr,
@@ -423,6 +433,20 @@ impl Jit {
         self.id << 48 | (self.jc_version & 0xFFFF_FFFF_FFFF)
     }
 
+    /// Link every unlinked direct exit of TB `id` that targets the TB's own start to itself,
+    /// as the dispatcher does the first time such an exit is taken. Tests use it to run a
+    /// self-looping TB for several iterations in one `exec`.
+    pub fn link_self_exits(&mut self, id: u32) {
+        let pc = self.cache.get(id).guest_pc;
+        for slot in 0..2u8 {
+            let own = self.cache.get(id).exits[slot as usize]
+                .is_some_and(|e| e.target_pc == pc && e.linked.is_none());
+            if own && chain::link(&mut self.cache, &mut self.cm, id, slot, id) {
+                self.stats.chain_links += 1;
+            }
+        }
+    }
+
     /// Enter JIT code at TB `id` with `budget` instructions (D12) and run until control comes
     /// back. Returns how execution ended; `cpu.pc` and `cpu.icount` are exact.
     pub fn exec(
@@ -598,6 +622,59 @@ impl Engine for Jit {
     }
 
     fn stats(&self) -> String {
+        let profile = if self.opts.profile_tbs {
+            format!("; {}", self.profile_report())
+        } else {
+            String::new()
+        };
+        self.stats_counters() + &profile
+    }
+}
+
+impl Jit {
+    /// `--profile-tbs`: stop sampling and attribute the samples (D44). Samples in the code
+    /// buffer but in no TB are the trampolines; samples outside it are Rust (dispatcher,
+    /// translator, helpers) and the kernel (syscalls).
+    fn profile_report(&self) -> String {
+        let (rips, dropped) = signal::stop_sampling();
+        let (lo, hi) = (self.cm.rx_base(), self.cm.rx_base() + self.cm.size() as u64);
+        let mut by_tb: rustc_hash::FxHashMap<u64, (u64, usize)> = Default::default();
+        let (mut in_tb, mut tramp) = (0u64, 0u64);
+        for &rip in &rips {
+            if let Some(tb) = self.cache.find_host(rip) {
+                in_tb += 1;
+                by_tb.entry(tb.guest_pc).or_insert((0, tb.insns.len())).0 += 1;
+            } else if (lo..hi).contains(&rip) {
+                tramp += 1;
+            }
+        }
+        let n = rips.len().max(1) as f64;
+        let pct = |x: u64| 100.0 * x as f64 / n;
+        let mut top: Vec<(u64, (u64, usize))> = by_tb.into_iter().collect();
+        top.sort_by_key(|&(pc, (c, _))| (std::cmp::Reverse(c), pc));
+        let list: Vec<String> = top
+            .iter()
+            .take(12)
+            .map(|&(pc, (c, len))| format!("{pc:#x} {:.1}% ({len} insns)", pct(c)))
+            .collect();
+        format!(
+            "profile: {} samples ({dropped} dropped{}), {:.1}% in translated code, {:.1}% in \
+             trampolines, {:.1}% elsewhere (dispatcher, translator, helpers, kernel); hottest \
+             TBs: {}",
+            rips.len(),
+            if self.stats.full_flushes > 0 {
+                "; code was flushed, attribution approximate"
+            } else {
+                ""
+            },
+            pct(in_tb),
+            pct(tramp),
+            pct(rips.len() as u64 - in_tb - tramp),
+            list.join(", ")
+        )
+    }
+
+    fn stats_counters(&self) -> String {
         let s = &self.stats;
         let per_m = |x: u64| x as f64 * 1e6 / s.retired.max(1) as f64;
         let jc = if self.opts.profile {

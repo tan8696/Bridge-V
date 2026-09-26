@@ -241,3 +241,32 @@ fn stats_regs_histogram() {
     assert_eq!(plain.code, Some(0), "{}", plain.stderr);
     assert!(!plain.stderr.contains("register uses"));
 }
+
+/// P5.3: `--profile-tbs` samples the host RIP and attributes it to TBs in `--stats`.
+#[test]
+fn profile_tbs_attributes_samples() {
+    let Some(elf) = common::guest_elf("fib-O2") else {
+        return;
+    };
+    let out = run_bridgev([
+        "run",
+        "--engine",
+        "jit",
+        "--profile-tbs",
+        "--stats",
+        elf.to_str().unwrap(),
+        "35", // about 0.1 s of JIT time: tens of samples at the kernel's SIGPROF rate
+    ]);
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let p = out
+        .stderr
+        .split("profile: ")
+        .nth(1)
+        .expect("profile report");
+    let samples: u64 = p.split(' ').next().unwrap().parse().unwrap();
+    assert!(samples > 0, "{p}");
+    assert!(
+        p.contains("in translated code") && p.contains("hottest TBs: 0x"),
+        "{p}"
+    );
+}

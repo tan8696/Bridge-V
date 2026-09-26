@@ -395,12 +395,20 @@ fn link_then_invalidate_unlinks() {
 }
 
 /// P3.3: a chained infinite loop (`jal x0, 0` linked to itself) still returns to the
-/// dispatcher every slice, so an instruction limit stops it; icount is exact.
+/// dispatcher every slice, so an instruction limit stops it; icount is exact. Runs at every
+/// regalloc level (the IR levels keep the budget in R9, D46).
 #[test]
 fn infinite_chained_loop_is_preempted() {
-    for slice in [1u64, 7, 1000, 100_000] {
+    for (slice, regalloc) in [1u64, 7, 1000, 100_000].into_iter().flat_map(|s| {
+        [
+            (s, RegAlloc::None),
+            (s, RegAlloc::Pinned),
+            (s, RegAlloc::Linear),
+        ]
+    }) {
         let opts = JitOptions {
             slice,
+            regalloc,
             ..JitOptions::default()
         };
         let mut rig = Rig::new(opts);
@@ -422,7 +430,11 @@ fn infinite_chained_loop_is_preempted() {
             "{}",
             cpu.icount
         );
-        assert_eq!(cpu.x[7], cpu.icount.div_ceil(2), "slice {slice}");
+        assert_eq!(
+            cpu.x[7],
+            cpu.icount.div_ceil(2),
+            "slice {slice} {regalloc:?}"
+        );
         let budget_exits = rig.jit.stats.exits[bridgev::cpu::state::exit::BUDGET as usize];
         assert!(
             budget_exits >= (limit / slice.max(2)).saturating_sub(1),
