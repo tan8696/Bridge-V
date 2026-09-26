@@ -479,43 +479,43 @@ Before and after exit layouts (disassembly), an explanation of one real patch wi
 **Entry criteria:** Phase 3 done.
 
 ### P4.1 IR definitions and printer (M), `src/ir/ops.rs`
-- [ ] The ops per §9, the `Block` container, and a readable text printer (`--dump-ir`).
+- [x] The ops per §9 (as amended by D34), the `Block` container, and a readable text printer (`--dump-ir`).
 
 ### P4.2 Lifter (L), `src/ir/lift.rs`
-- [ ] `Inst` → IR for all integer, memory and branch instructions. FP, CSR and complex system ops become `CallHelper` (the D14 fallback continues).
-- [ ] `InsnStart` markers.
+- [x] `Inst` → IR for all integer, memory and branch instructions. FP, CSR, AMO and system ops become `Interp` (the D14 fallback continues; D34).
+- [x] `InsnStart` markers (`Op::Insn`).
 - **Tests:** a tiny **IR evaluator** (test-only) executes the IR directly, and is compared against the interpreter on all instruction unit tests. This isolates lifter bugs from backend bugs.
 
 ### P4.3 Optimizer passes (M), `src/ir/opt.rs`
-- [ ] Guest-register forwarding, read CSE, constant folding (LUI/ADDI/AUIPC/identities), constant branches, and dead write-back elimination, respecting fault sites (§9).
+- [x] Guest-register forwarding, read CSE, constant folding (LUI/ADDI/AUIPC/identities), constant branches, and dead write-back elimination, respecting fault sites (§9).
 - **Tests:** a golden IR test per pass (input IR → expected IR). The IR evaluator gives the same results before and after each pass (property test).
 
 ### P4.4 Liveness and intervals (S), `src/ir/liveness.rs`
-- [ ] Backward liveness, intervals `[def, last_use]`, and fixed constraints (RAX/RDX, RCX, helper-call clobbers).
+- [x] Backward liveness, intervals `[def, last_use]`, and fixed constraints (RAX/RDX, RCX, helper-call clobbers).
 
 ### P4.5 Pinned registers (M)
-- [ ] R12–R15 hold x2/x1/x10/x15 (§8.2). Update `enter_jit`/`exit_jit` to load and store them. The block-boundary ABI (§8.3) is enforced everywhere, including stubs, helper calls (full sync writes pinned to `CpuState` and reloads after) and the jump cache.
-- [ ] `--regalloc=pinned`. `--pin=` to override the set.
-- [ ] `--check-abi` (debug builds): verify the pinned registers against a shadow copy at block boundaries.
+- [x] R12–R15 hold x2/x1/x10/x15 (§8.2). Update `enter_jit`/`exit_jit` to load and store them. The block-boundary ABI (§8.3) is enforced everywhere, including stubs, helper calls (full sync writes pinned to `CpuState` and reloads after) and the jump cache.
+- [x] `--regalloc=pinned`. `--pin=` to override the set.
+- [ ] ~~`--check-abi` (debug builds): verify the pinned registers against a shadow copy at block boundaries.~~ Dropped: lockstep and the fuzzer subsume it (D41).
 
 ### P4.6 Linear-scan allocator (L), `src/regalloc/linear_scan.rs`
-- [ ] Poletto–Sarkar over the 7-register pool (plus RBX in softmmu mode later), with fixed-register handling.
-- [ ] Guest-register caching with clean/dirty state. Spill choice by furthest next use: a clean guest register is dropped for free, a dirty one is written home, a temporary goes to a `cpu.spill[k]` slot.
-- [ ] Write-back of dirty registers on every exit path.
+- [x] Poletto–Sarkar over the 7-register pool (plus RBX in softmmu mode later), with fixed-register handling.
+- [x] Guest-register caching with clean/dirty state. Spill choice by furthest next use: a clean guest register is dropped for free, a dirty one is written home, a temporary goes to a `cpu.spill[k]` slot.
+- [x] Write-back of dirty registers on every exit path.
 - **Tests:** allocator unit tests on synthetic IR (pressure > 7 registers, fixed constraints, back-to-back DIVs).
 
 ### P4.7 Lowering v2 and cold stubs (L), `src/backend/x86/lower.rs`
-- [ ] IR → x86 using allocator assignments, with better instruction selection: `lea` for add and addi, `imul` 3-operand, BMI2 shifts when available, `xor`-zeroing, `setcc` handling.
-- [ ] Cold stubs at the TB tail for helper calls and faults. **State maps** at each fault site: pc plus the dirty guest registers → host registers (§15). The hot path stays spill-free.
-- [ ] `--regalloc=none|pinned|linear` all keep working (`none` = the Phase-3 behaviour).
+- [x] IR → x86 using allocator assignments (`backend/x86/lower_ir.rs`), with better instruction selection: `lea` for add and addi, `imul` 3-operand, BMI2 shifts when available, `xor`-zeroing, `setcc` handling.
+- [x] Cold stubs at the TB tail for exits and the budget; faults use fault-site state maps resolved by the dispatcher (D37), helper calls do an inline full sync (D36). **State maps** at each fault site: pc plus the dirty guest registers → host registers (§15). The hot path stays spill-free.
+- [x] `--regalloc=none|pinned|linear` all keep working (`none` = the Phase-3 behaviour).
 
 ### P4.8 Random block fuzzer (M), `tests/fuzz_blocks.rs`
-- [ ] A proptest generator of valid RV64GC straight-line sequences (integer + memory into a scratch page + branches at the end) with random initial registers.
-- [ ] Execute under the interpreter and under the JIT at each regalloc level, and compare. Failing cases are shrunk and saved as regression tests.
-- [ ] CI runs a fixed-seed smoke run (about 10k blocks). The ≥ 1e6-block run is done locally or on a schedule, and recorded in the report.
+- [x] A proptest generator of valid RV64GC straight-line sequences (integer + memory into a scratch page + branches at the end) with random initial registers.
+- [x] Execute under the interpreter and under the JIT at each regalloc level, and compare. Failing cases are shrunk and saved as regression tests.
+- [x] CI runs a fixed-seed smoke run (about 10k blocks: 2000 blocks × 5 configurations, `PROPTEST_RNG_SEED` in `ci.yml`). The ≥ 1e6-block run is done locally or on a schedule, and recorded in the report.
 
 ### P4.9 Pinned-set profiling (S)
-- [ ] `--stats=regs`: a static and dynamic guest-register use histogram. Run it on CoreMark, Dhrystone and the C programs. If another set beats x2/x1/x10/x15, append a decision (D19+) and change the default.
+- [x] `--stats=regs`: a static and dynamic guest-register use histogram. Run it on CoreMark, Dhrystone and the C programs. If another set beats x2/x1/x10/x15, append a decision (D19+) and change the default.
 
 ### Phase 4 acceptance criteria
 - The fuzzer is clean over ≥ 1e6 random blocks.

@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 3 (block chaining + jump cache) complete.** Next up: Phase 4, task P4.1 (`docs/ROADMAP.md`). |
+| Phase | **Phase 4 (IR, optimizer, register allocation) complete.** Next up: Phase 5, task P5.1 (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-03-chaining.md` |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-04-ir-regalloc.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-26 |
@@ -84,6 +84,15 @@ Update this table at the end of every phase.
 | D31 | Jump cache ownership | The jump cache is `CpuState.jmp_cache[4096]` at 0x300 (`{pc, host}`; `pc = u64::MAX` means empty; slot `(pc >> 1) & 4095`, so byte offset `(pc << 3) & 0xFFF0`). The dispatcher fills the entry for every TB it enters. `cpu.jc_tag = jit_id << 48 \| version`, where `version` is bumped on every flush or invalidation; on a mismatch the dispatcher clears the whole cache before entering JIT code. | The `Engine::flush` path has no `CpuState` at hand. Lazy, tag-based clearing can never leave a host pointer into flushed code, even with several `Jit`s per process (tests). |
 | D32 | Lockstep with chaining | Lockstep enters each TB with `budget = n` (its length). A linked exit or jump-cache hit reaches the successor's prologue, which exits with BUDGET before executing anything. Snapshots copy only architectural state (`ArchState`), not the 64 KiB jump cache. | Linked exits and jump-cache hits are exercised, yet every comparison still covers exactly one TB. |
 | D33 | `--no-chain` / `--profile-jit` | `--no-chain` disables both linking and jump-cache fills, so every TB returns to the dispatcher (the Phase 2 behaviour with the Phase 3 code layout). `--profile-jit` makes JALRs increment `cpu.prof_jalr` to report the jump-cache hit rate. It changes the generated code, so timings are taken without it. | Clean A/B measurements of chaining, and a hit-rate metric that costs nothing when off. |
+| D34 | IR shape (Phase 4) | Per-TB SSA list of `Op`s (`ir/ops.rs`): `Insn{pc,idx}` markers, `Const`, `ReadReg`/`WriteReg`, `Bin`/`BinImm` (W ops explicit, sign extension folded in), `Load{size,signed}`/`Store`, `Interp{raw}` and the terminators `Branch`/`Jump`/`JumpInd`/`Exit`. There are no `CallHelper`/`Ext`/`Amo`/`Fence` ops: every instruction not lowered natively (CSR, AMO, FP, system) is `Interp`, the D14 helper. `ir::eval` executes IR directly and is the test oracle for the lifter and every pass. Amends §9. | The smallest IR that covers what the backend lowers natively; new native ops (FP in Phase 6, AMOs) get IR ops when they get lowering. |
+| D35 | Optimizer passes | `forward` (register forwarding + read CSE, reset at `Interp`), `dead_writes` (a `WriteReg` overwritten later with no `Load`/`Store`/`Interp` in between), `fold` (constants, immediate forms, identities, constant branches, constant `JumpInd` → `Jump`), `dce`. Dead write-backs across fault sites are left to the allocator's lazy write-back (D36). | Each pass is one linear sweep; the eval oracle proves each preserves semantics (`tests/ir_passes.rs`). |
+| D36 | Allocator (Phase 4) | One forward walk interleaved with emission (linear scan over a straight-line block). Values carry a backing (`Home(g)`, spill `Slot(k)`, `Const`) so a clean value is dropped for free. Non-pinned guest registers are written back lazily (dirty until an exit, helper call or eviction). Eviction takes the furthest next use. The current op's operands count as live while it is lowered. R10/R11 are never held across an allocator call (the allocator uses R11 for copies). A helper call is a full sync: write back, store pinned registers, move live values to slots, reload pinned registers after. | Linear in block size, no separate allocation pass, and a block overwriting a register many times stores it once. |
+| D37 | Precise faults without cold stubs (direct mode) | JIT loads/stores stay single `[rbx+r+disp]` instructions. Each records a *fault site* (host offset, guest idx/pc, address register, offset, size, and where every dirty guest register lives: pool register, slot, constant or another home). The SIGSEGV handler copies the host GPRs to `cpu.fault_regs`; the dispatcher (`resolve_site`) writes the dirty values home, sets pc, refunds the budget and computes `tval`. The hot path carries no state-map code at all. Softmmu slow paths (Phase 7) will be real cold stubs. Amends §10/§15 for direct mode. | Zero hot-path cost and exact state; the fuzzer's faulting terminators check it. |
+| D38 | Spill slots and oversize blocks | `CpuState.spill[64]` at 0x10300. If a TB needs more slots, `translate` returns `OutOfSlots` and the dispatcher retranslates it with half the instructions. | A fixed, disp32-addressable area; running out is rare and handled without failing. |
+| D39 | `--regalloc` levels, `--pin` | `none` = the Phase 3 lowering (`lower.rs`, no pins). `pinned` = IR without optimizer passes and with eager stores (every `WriteReg` stores home at once), pinned registers in R12–R15. `linear` (default) = passes + lazy write-back. `--pin` takes up to 4 registers mapped to R12, R13, R14, R15 in order; `--pin ""` pins nothing. | The levels isolate what pinning and what caching/optimization each contribute (§22). |
+| D40 | `--stats=regs` | Interpreter engine only (a property of the guest program): counts integer register references (reads + writes, x0 excluded) once per decoded block (static) and once per retired instruction (dynamic), and reports the dynamic share covered by the default and by the best 4-register set. Other engines reject it. | No extra code in JIT output; exact dynamic counts. |
+| D41 | `--check-abi` dropped | Lockstep (after every TB, including chained entries per D32) and the block fuzzer compare full architectural state, which includes the pinned registers `exit_jit` writes back. A wrong pinned value is reported as a register divergence at the first TB that exposes it. | The shadow-copy check would test a subset of what lockstep already tests. |
+| D42 | Pinned set stays x2, x1, x10, x15 (P4.9) | `--stats=regs` on CoreMark ranks x15, x14, x13, x10 highest (72.1% of dynamic register uses vs 39.9% for the default set), but measured CoreMark speed with `--pin x15,x14,x13,x10` was only +2.6% (median of 5, ranges overlapping), fib was −6% (noisy), and x2,x15,x10,x14 was −1.7%. Use counts are a poor proxy: pinning pays for values live *across* blocks (sp, ra for returns through the jump cache), which the linear allocator cannot cache. Default unchanged; revisit with Dhrystone and the Phase 5 harness. | Change the default only on a clear, reproducible win. |
 
 ---
 
@@ -192,15 +201,17 @@ Bridge-V/
 │   │   └── softfloat_shim.c  ← accessors for SoftFloat's thread-local state
 │   ├── interp/               ← reference interpreter (pre-decoded block cache)
 │   ├── ir/
-│   │   ├── ops.rs            ← IR definitions
+│   │   ├── ops.rs            ← IR definitions + printer (--dump-ir)
 │   │   ├── lift.rs           ← Inst → IR
+│   │   ├── eval.rs           ← IR evaluator (the oracle for lifter/optimizer tests)
 │   │   ├── opt.rs            ← const fold, forwarding, dead write-back elimination
-│   │   └── liveness.rs       ← backward liveness → intervals
-│   ├── regalloc/linear_scan.rs
+│   │   └── liveness.rs       ← use positions → intervals, fixed-register constraints
+│   ├── regalloc/linear_scan.rs ← per-TB allocator: pinned regs, lazy write-back, spills (D36)
 │   ├── backend/x86/
 │   │   ├── emit.rs           ← byte emitter: REX/ModRM/SIB/imm, labels, fixups
 │   │   ├── regs.rs           ← host register enum, pools, pinned map
-│   │   ├── lower.rs          ← Phase 2: Inst → x86 1:1 (all guest regs in CpuState); Phase 4: IR → x86 (hot path + cold stubs)
+│   │   ├── lower.rs          ← Phase 2/3: Inst → x86 1:1, all guest regs in CpuState (`--regalloc=none`)
+│   │   ├── lower_ir.rs       ← Phase 4: IR → x86 with the allocator, exit/budget stubs, fault sites
 │   │   ├── features.rs       ← cpuid (BMI2, FMA, ...)
 │   │   └── disasm.rs         ← host-code dump (iced-x86 with `--features disasm`, else hex)
 │   ├── jit/
@@ -227,10 +238,11 @@ Bridge-V/
 │   │   ├── clint.rs  plic.rs  uart16550.rs  syscon.rs  virtio_mmio.rs(stretch)
 │   │   ├── sbi.rs            ← built-in SBI (D15)
 │   │   └── fdt.rs            ← devicetree blob generator
-│   └── stats.rs
+│   └── stats.rs              ← `--stats=regs` register-use histogram (RegStats)
 ├── tests/                    ← integration: riscv-tests (all engines), user programs (all engines), emitter_golden,
-│                               jit_lowering, cli, decoder_vectors, elf
+│                               jit_lowering, cli, decoder_vectors, elf, ir_passes, fuzz_blocks
 │   ├── common/mod.rs         ← guest_elf() / run_bridgev() helpers
+│   ├── common/rvgen.rs       ← random RV64 block generator + single-block harness (proptest)
 │   └── data/                 ← expected/ (qemu reference outputs), qemu-known-failures.txt
 ├── benches/                  ← benchmark harness (interp vs jit vs qemu vs native)
 ├── guest/                    ← RISC-V guest sources + build scripts (outputs .gitignored)
@@ -344,7 +356,8 @@ The offsets are illustrative. **The source of truth is the `offset_of!` compile-
 | 0x270 | `budget_ref: i64` | budget at the last icount sync (D30) |
 | 0x278 | `jc_tag`, `prof_jalr` @0x280 | jump-cache owner/version (D31); JALR counter (`--profile-jit`) |
 | 0x300 | `jmp_cache: [{pc, host}; 4096]` | 64 KiB, the inline JALR lookup table (§13.4) |
-| … | `spill: [u64; 32]` | Spill slots for IR temporaries. |
+| 0x10300 | `spill: [u64; 64]` | Spill slots for IR values (D38) |
+| 0x10500 | `fault_regs: [u64; 16]` | host GPRs at a SIGSEGV in JIT code, in `Reg` order (Rust-only, D37) |
 | … | `tlb: [[TlbEntry; 256]; NB_MMU_IDX]` | 32 B/entry. MMU indices: U=0, S=1, M/bare=2 (plus MPRV variants if needed). |
 | … | CSR block (mstatus, mie, mip, mtvec, mepc, …) | Accessed only by Rust helpers. |
 
@@ -363,7 +376,7 @@ The offsets are illustrative. **The source of truth is the `offset_of!` compile-
 | RAX, RCX, RDX, RSI, RDI, R8, R9 | **allocatable pool** (7). Fixed constraints: RAX/RDX for MUL/IMUL(1-op)/DIV/IDIV/CQO, RCX for variable shifts when BMI2 is absent | caller-saved |
 | XMM0–XMM15 | FP scratch (Phase F2). All caller-saved in SysV. | caller-saved |
 
-The pinned set (x2, x1, x10, x15) is the initial default. In Phase 4, re-derive it from static and dynamic register-use histograms over CoreMark, Dhrystone and a Linux boot (`--stats=regs`). It should be overridable with `--pin=x2,x1,x10,x15`.
+The pinned set (x2, x1, x10, x15) is the default; `--pin` overrides it (D39). Phase 4 measured the alternatives with `--stats=regs` and CoreMark timings and kept it (D42); re-check with Dhrystone and a Linux boot.
 
 ### 8.3 Block-boundary ABI (invariant, never violate)
 At **every** block entry and exit, including chained jumps and jump-cache jumps:

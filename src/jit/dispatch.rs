@@ -615,7 +615,9 @@ impl Engine for Jit {
              {} full + {} code-change flushes, translate time {:.1} ms; \
              {} dispatcher entries ({:.0} per M guest insns); \
              exits: none {}, ecall {}, exception {}, flush {}, host-fault {}, budget {}, \
-             jump-cache miss {}; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}",
+             jump-cache miss {}; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}; \
+             regalloc {:?} (emitted code, all TBs): {} fills, {} spills, {} write-backs, \
+             {} moves, {} retranslations",
             s.translated,
             s.guest_insns_translated,
             s.code_bytes / 1024,
@@ -637,6 +639,12 @@ impl Engine for Jit {
             s.chain_unlinks,
             s.jc_fills,
             jc,
+            self.opts.regalloc,
+            s.fills,
+            s.spills,
+            s.writebacks,
+            s.moves,
+            s.retranslations,
         )
     }
 }

@@ -8,7 +8,7 @@ It has four core subsystems:
 - guest registers pinned in R12–R15, plus a linear-scan allocator
 - an SV39 software MMU with an inline software TLB
 
-> **Status:** Phases 0–3 complete: interpreter, JIT with a hand-written x86-64 encoder, W^X code buffer, block chaining and an inline jump cache, all checked in lockstep against the interpreter. CoreMark runs at 12.3× the interpreter (76% of QEMU). Register allocation (Phase 4) is next. See `docs/phase-reports/`.
+> **Status:** Phases 0–4 complete: interpreter, JIT with a hand-written x86-64 encoder, W^X code buffer, block chaining, an inline jump cache, and an IR with constant folding and a register allocator (guest registers pinned in R12–R15 plus linear scan), all checked in lockstep against the interpreter and by a random-block fuzzer (10⁶ blocks). CoreMark runs at 12,754 iterations/s, 23.6× the interpreter and 1.32× QEMU. Benchmarks and Milestone A (Phase 5) are next. See `docs/phase-reports/`.
 
 | Document | What it covers |
 |---|---|

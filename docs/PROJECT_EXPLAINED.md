@@ -4,7 +4,7 @@ This document explains Bridge-V from the ground up, for readers ranging from "ne
 - The exact engineering specification is [`CLAUDE.md`](../CLAUDE.md).
 - The build plan is [`ROADMAP.md`](ROADMAP.md).
 
-> **Status (2026-09-26):** Phase 3 complete. Bridge-V translates guest code into real x86-64 machine code, and translated blocks now **jump directly into each other** (block chaining, with an inline jump cache for function returns). It passes everything the interpreter passes (110 riscv-tests, 35 programs byte-identical with QEMU), including a "lockstep" mode that checks the JIT against the interpreter after every block. CoreMark: 7,260 iterations/s, 12.3× the interpreter and 76% of QEMU on the same machine (2.6 billion guest instructions per second). Register allocation (Phase 4) is next. Other numbers under "Performance" are still targets (see `docs/phase-reports/`).
+> **Status (2026-09-26):** Phase 4 complete. Bridge-V translates guest code into real x86-64 machine code; translated blocks jump directly into each other (block chaining, with an inline jump cache for function returns); and each block now goes through a small compiler: an intermediate representation, constant folding, removal of redundant register writes, and a register allocator that keeps four hot guest registers permanently in x86 registers and caches the rest. It passes everything the interpreter passes (110 riscv-tests, 35 programs byte-identical with QEMU) at every optimization level, including "lockstep" mode (the JIT checked against the interpreter after every block) and a fuzzer that compared one million random blocks. CoreMark: 12,754 iterations/s, 1.75× the Phase 3 JIT, 23.6× the interpreter and 1.32× faster than QEMU on the same machine (4.6 billion guest instructions per second). Other numbers under "Performance" are still targets (see `docs/phase-reports/`).
 
 ---
 
@@ -167,7 +167,7 @@ Here is what happens the first time `.Lloop` runs:
    - From then on, the loop runs entirely in native code, about 8 x86 instructions per iteration, never touching Bridge-V.
    - An interpreter would need dozens of host instructions *per guest instruction* to fetch, decode and dispatch.
 
-Notice that `a4` is loaded and stored on every iteration, because it isn't pinned. Measuring which registers are hottest, and pinning those, is exactly the kind of tuning Phase 4 does.
+Notice that `a4` is loaded and stored on every iteration, because it isn't pinned: the register allocator keeps values in x86 registers only *within* a block, and a loop-carried value crosses a block boundary every iteration. Phase 4 measured this directly: pinning the two loop registers of a two-instruction test loop made it 1.43× faster, while choosing pinned registers by how often they are *used* (rather than how often they cross blocks) did not beat the default set on CoreMark (Phase 4 report §7.3).
 
 ### 6.4 When the translated code needs help
 Native code returns to the Rust dispatcher only when:
@@ -206,7 +206,9 @@ Everything else stays on the fast path.
 - **What:** 32 guest registers must be mapped onto roughly 11 usable x86 registers.
   - Four of the hottest guest registers are **pinned** to `R12`–`R15`. These x86 registers survive function calls under the host ABI, so they cost nothing to keep live across blocks.
   - The rest live in a memory structure (`CpuState`, addressed through `RBP`). A **linear-scan register allocator** assigns them to free x86 registers within each block.
-- **"Zero-cost spill resolution":** the rare slow paths (a memory-translation miss, a helper call) save and restore registers in out-of-line "cold stubs". The common path contains no save/restore code at all.
+  - Within a block, a guest register is loaded at most once and written back at most once, at the block's exit: if a block overwrites `a5` five times, only the last value is stored.
+  - When more values are live than there are free x86 registers, the allocator evicts the one whose next use is furthest away. A value that is still in memory is simply dropped; a modified guest register is written home; a pure temporary goes to a spill slot.
+- **"Zero-cost spill resolution":** a load or store can fault while several guest registers are still only in x86 registers. Instead of saving them on the fast path, Bridge-V records, for every memory instruction, *where* each unsaved guest register lives at that point (a "state map"). If the access really faults, the crash handler looks up the map and reconstructs the exact guest state. The common path contains no save/restore code at all.
 
 ### 7.4 Software MMU and two-level TLB emulation
 - **What:** in system mode, the guest OS uses **virtual memory**. Every address the program uses must be translated through RISC-V SV39 page tables (a 3-level tree in guest memory) into a physical address.
@@ -274,7 +276,7 @@ Everything else stays on the fast path.
 
 ## 12. Project status and how it will be used
 
-- **Now:** Phases 0–3 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, and a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining by hot-patching jumps, an inline jump cache and lockstep checking. The next phase is the IR and register allocator.
+- **Now:** Phases 0–4 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, and a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining by hot-patching jumps, an inline jump cache, an IR optimizer and register allocator (`--regalloc none|pinned|linear`), lockstep checking and a random-block fuzzer. The next phase is Milestone A: reproducible CoreMark and Dhrystone benchmarks against the interpreter, QEMU and native code.
 - **Milestone A (required):** CoreMark and Dhrystone run under both the interpreter and the JIT, with a printed speedup table.
 - **Milestone B (stretch):** Linux 6.6 boots to a BusyBox shell.
 - **Planned usage:**

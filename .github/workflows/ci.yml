@@ -54,6 +54,8 @@ jobs:
         run: cargo test
         env:
           BRIDGEV_REQUIRE_GUESTS: "1"
+          # Fixed seed for the property tests (ir_passes, fuzz_blocks): reproducible CI runs.
+          PROPTEST_RNG_SEED: "20260926"
 
   riscv-tests:
     name: riscv-tests (build + qemu reference)

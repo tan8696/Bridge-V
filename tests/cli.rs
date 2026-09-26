@@ -52,11 +52,11 @@ fn guest_helper_skips_or_finds_hello() {
 
 /// P2.8: a deliberately miscompiled ADDI must be caught by lockstep, not by the program's
 /// output, and the report must show the TB and the differing register. Runs at every
-/// `--regalloc` level; `fib` (C) keeps non-constant ADDIs after IR constant folding, which
+/// `--regalloc` level; `fib-O2` (C) keeps non-constant ADDIs after IR constant folding, which
 /// the asm `hello` does not.
 #[test]
 fn lockstep_catches_injected_miscompilation() {
-    let Some(elf) = common::guest_elf("fib") else {
+    let Some(elf) = common::guest_elf("fib-O2") else {
         return;
     };
     let elf = elf.to_str().unwrap();
