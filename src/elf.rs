@@ -276,7 +276,8 @@ mod tests {
     #[test]
     fn rejects_malformed() {
         let good = tiny_elf();
-        let cases: Vec<(&str, Box<dyn Fn(&mut Vec<u8>)>)> = vec![
+        type Mutation = Box<dyn Fn(&mut Vec<u8>)>;
+        let cases: Vec<(&str, Mutation)> = vec![
             ("truncated", Box::new(|d| d.truncate(40))),
             ("bad magic", Box::new(|d| d[1] = b'X')),
             ("32-bit", Box::new(|d| d[4] = 1)),
