@@ -7,7 +7,14 @@ mod common;
 use bridgev::system::bare::{self, BareResult};
 
 /// Suites that must pass under the interpreter (`p` = physical-memory environment).
-const SUITES: &[&str] = &["rv64ui-p-", "rv64um-p-", "rv64ua-p-", "rv64uc-p-"];
+const SUITES: &[&str] = &[
+    "rv64ui-p-",
+    "rv64um-p-",
+    "rv64ua-p-",
+    "rv64uc-p-",
+    "rv64uf-p-",
+    "rv64ud-p-",
+];
 
 #[test]
 fn phase1_suites_pass_under_interpreter() {

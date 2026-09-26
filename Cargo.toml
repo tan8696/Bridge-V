@@ -35,3 +35,6 @@ panic = "abort"
 lto = "thin"
 codegen-units = 1
 debug = 1
+
+[build-dependencies]
+cc = "1.5.1"

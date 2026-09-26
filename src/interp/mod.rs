@@ -16,8 +16,8 @@ use crate::cpu::trap::{Exception, cause, prv};
 use crate::isa::decode_parts;
 use crate::isa::disasm::disasm;
 use crate::isa::inst::*;
+use crate::mem::MemFault;
 use crate::mem::direct::DirectMem;
-use crate::mem::{Access, MemFault};
 
 const MAX_BLOCK: usize = 64;
 
@@ -215,15 +215,7 @@ pub fn build_block(pc: u64, mem: &DirectMem) -> Block {
 }
 
 fn mem_exc(f: MemFault) -> Exception {
-    let cause = match f.access {
-        Access::Load => cause::LOAD_ACCESS,
-        Access::Store => cause::STORE_ACCESS,
-        Access::Fetch => cause::INSN_ACCESS,
-    };
-    Exception {
-        cause,
-        tval: f.addr,
-    }
+    Exception::from(f)
 }
 
 /// 64-bit ALU semantics (register and immediate forms), CLAUDE.md §7.5.

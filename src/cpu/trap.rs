@@ -2,6 +2,7 @@
 
 use super::csr::mstatus as ms;
 use super::state::CpuState;
+use crate::mem::{Access, MemFault};
 
 /// Privilege levels.
 pub mod prv {
@@ -41,6 +42,21 @@ impl Exception {
         Exception {
             cause: cause::ILLEGAL_INSN,
             tval: raw as u64,
+        }
+    }
+}
+
+impl From<MemFault> for Exception {
+    /// A failed guest access is an access fault of the matching kind (tval = address).
+    fn from(f: MemFault) -> Self {
+        let cause = match f.access {
+            Access::Load => cause::LOAD_ACCESS,
+            Access::Store => cause::STORE_ACCESS,
+            Access::Fetch => cause::INSN_ACCESS,
+        };
+        Exception {
+            cause,
+            tval: f.addr,
         }
     }
 }
