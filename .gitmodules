@@ -1,0 +1,12 @@
+[submodule "third_party/riscv-tests"]
+	path = third_party/riscv-tests
+	url = https://github.com/riscv-software-src/riscv-tests
+	shallow = true
+[submodule "third_party/coremark"]
+	path = third_party/coremark
+	url = https://github.com/eembc/coremark
+	shallow = true
+[submodule "third_party/berkeley-softfloat-3"]
+	path = third_party/berkeley-softfloat-3
+	url = https://github.com/ucb-bar/berkeley-softfloat-3
+	shallow = true

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Run the built riscv-tests under the reference emulator: QEMU's `spike` machine implements the
+# HTIF tohost/fromhost protocol the tests use to report pass (exit 0) or fail (exit = test no.).
+# Confirms the test ELFs themselves are valid before bridgev runs them (P0.5).
+#   tools/ref-riscv-tests.sh [glob]     default glob: rv64*
+set -uo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+DIR="$ROOT/guest/build/riscv-tests"
+pass=0; fail=0
+for elf in "$DIR"/${1:-rv64*}; do
+  timeout 20 qemu-system-riscv64 -M spike -nographic -bios "$elf" >/dev/null 2>&1
+  code=$?
+  if ((code == 0)); then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL($code): $(basename "$elf")"; fi
+done
+echo "ref-riscv-tests: $pass passed, $fail failed"
+((fail == 0))
