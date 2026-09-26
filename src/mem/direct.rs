@@ -1,1 +1,380 @@
-//! User-mode guest address space mapped 1:1 at a host base (CLAUDE.md §14.1, D9). Phase 1 (P1.8).
+//! User-mode guest address space mapped 1:1 at a host base (CLAUDE.md §14.1, D9).
+//!
+//! The whole 2^38-byte guest space (the SV39 user half) is reserved up front as `PROT_NONE`
+//! host memory, with 4 GiB guard regions on each side. Guest mappings are made inside it with
+//! `MAP_FIXED`, so guest address `g` always lives at host address `base + g`; the JIT (Phase 2)
+//! will access guest memory as `[rbx + g]`.
+//!
+//! Guest permissions are tracked in a two-level page table (`PageProt`) and enforced by the
+//! checked accessors below, so the interpreter can never fault the host: a bad guest access
+//! becomes a `MemFault`. Host pages are always mapped read/write; host-level protection that
+//! mirrors guest permissions is introduced with the JIT's direct accesses (Phase 2/8).
+
+use std::ptr;
+
+use super::{Access, GuestVirt, MemFault, PAGE_SIZE, page_ceil, page_floor, prot};
+
+/// Size of the guest address space: 2^38 bytes = 256 GiB.
+pub const GUEST_SPACE: u64 = 1 << 38;
+const GUARD: usize = 4 << 30;
+const PAGES_PER_CHUNK: u64 = 4096;
+const NUM_CHUNKS: usize = (GUEST_SPACE / PAGE_SIZE / PAGES_PER_CHUNK) as usize;
+
+/// Guest permissions per 4 KiB page; chunks of 4096 pages are allocated lazily.
+struct PageProt {
+    chunks: Vec<Option<Box<[u8; PAGES_PER_CHUNK as usize]>>>,
+}
+
+impl PageProt {
+    fn new() -> Self {
+        PageProt {
+            chunks: (0..NUM_CHUNKS).map(|_| None).collect(),
+        }
+    }
+
+    #[inline]
+    fn get(&self, page: u64) -> u8 {
+        match self.chunks.get((page / PAGES_PER_CHUNK) as usize) {
+            Some(Some(c)) => c[(page % PAGES_PER_CHUNK) as usize],
+            _ => 0,
+        }
+    }
+
+    fn set(&mut self, page: u64, p: u8) {
+        let c = self.chunks[(page / PAGES_PER_CHUNK) as usize]
+            .get_or_insert_with(|| Box::new([0; PAGES_PER_CHUNK as usize]));
+        c[(page % PAGES_PER_CHUNK) as usize] = p;
+    }
+}
+
+/// The direct-mapped guest address space.
+pub struct DirectMem {
+    reserve: *mut u8,
+    base: *mut u8,
+    prot: PageProt,
+}
+
+// SAFETY: DirectMem owns its mapping exclusively; it is only accessed through &self/&mut self.
+unsafe impl Send for DirectMem {}
+
+#[derive(Debug)]
+pub struct MapError(pub String);
+
+impl std::fmt::Display for MapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for MapError {}
+
+impl DirectMem {
+    /// Reserve the guest address space (no memory is committed yet).
+    pub fn new() -> Result<Self, MapError> {
+        let len = GUEST_SPACE as usize + 2 * GUARD;
+        // SAFETY: anonymous PROT_NONE reservation; no existing memory is affected.
+        let p = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                len,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(MapError(format!(
+                "cannot reserve {len:#x} bytes of address space: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let reserve = p as *mut u8;
+        Ok(DirectMem {
+            reserve,
+            // SAFETY: GUARD < len, so the offset stays inside the reservation.
+            base: unsafe { reserve.add(GUARD) },
+            prot: PageProt::new(),
+        })
+    }
+
+    /// Host address of guest address 0 (the JIT's RBX in direct mode).
+    pub fn base(&self) -> *mut u8 {
+        self.base
+    }
+
+    fn check_range(addr: u64, len: u64) -> Result<(), MapError> {
+        match addr.checked_add(len) {
+            Some(end) if end <= GUEST_SPACE => Ok(()),
+            _ => Err(MapError(format!(
+                "guest range {addr:#x}+{len:#x} is outside the guest address space"
+            ))),
+        }
+    }
+
+    /// Map fresh zero-filled memory at `[addr, addr+len)` (rounded out to pages) with guest
+    /// permissions `p`. Replaces anything mapped there before.
+    pub fn map(&mut self, addr: GuestVirt, len: u64, p: u8) -> Result<(), MapError> {
+        let start = page_floor(addr.0);
+        let end = page_ceil(addr.0 + len);
+        Self::check_range(start, end - start)?;
+        if end == start {
+            return Ok(());
+        }
+        // SAFETY: the range lies inside our reservation (checked above) and MAP_FIXED only
+        // replaces pages of that reservation.
+        let r = unsafe {
+            libc::mmap(
+                self.base.add(start as usize) as *mut libc::c_void,
+                (end - start) as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        if r == libc::MAP_FAILED {
+            return Err(MapError(format!(
+                "mmap of guest {start:#x}..{end:#x} failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        for page in start / PAGE_SIZE..end / PAGE_SIZE {
+            self.prot.set(page, p | MAPPED);
+        }
+        Ok(())
+    }
+
+    /// Unmap `[addr, addr+len)`: the pages become inaccessible again.
+    pub fn unmap(&mut self, addr: GuestVirt, len: u64) -> Result<(), MapError> {
+        let start = page_floor(addr.0);
+        let end = page_ceil(addr.0 + len);
+        Self::check_range(start, end - start)?;
+        if end == start {
+            return Ok(());
+        }
+        // SAFETY: as in `map`; re-reserves the pages as PROT_NONE, dropping their contents.
+        let r = unsafe {
+            libc::mmap(
+                self.base.add(start as usize) as *mut libc::c_void,
+                (end - start) as usize,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        if r == libc::MAP_FAILED {
+            return Err(MapError(format!(
+                "munmap of guest {start:#x}..{end:#x} failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        for page in start / PAGE_SIZE..end / PAGE_SIZE {
+            self.prot.set(page, 0);
+        }
+        Ok(())
+    }
+
+    /// Change guest permissions of mapped pages. Fails if any page is unmapped.
+    pub fn protect(&mut self, addr: GuestVirt, len: u64, p: u8) -> Result<(), MapError> {
+        let start = page_floor(addr.0);
+        let end = page_ceil(addr.0 + len);
+        Self::check_range(start, end - start)?;
+        if (start / PAGE_SIZE..end / PAGE_SIZE).any(|pg| !self.is_mapped(pg * PAGE_SIZE)) {
+            return Err(MapError(format!(
+                "mprotect of unmapped range {start:#x}..{end:#x}"
+            )));
+        }
+        for page in start / PAGE_SIZE..end / PAGE_SIZE {
+            self.prot.set(page, p | MAPPED);
+        }
+        Ok(())
+    }
+
+    /// Guest permissions of the page containing `addr` (0 if unmapped).
+    #[inline]
+    pub fn prot_of(&self, addr: u64) -> u8 {
+        self.prot.get(addr / PAGE_SIZE) & prot::RWX
+    }
+
+    /// Is the page containing `addr` mapped (even if it has no permissions)?
+    pub fn is_mapped(&self, addr: u64) -> bool {
+        addr < GUEST_SPACE && self.prot.get(addr / PAGE_SIZE) != 0
+    }
+
+    /// Check that every page of `[addr, addr+len)` has all permissions in `need`.
+    #[inline]
+    fn check(&self, addr: u64, len: u64, need: u8, access: Access) -> Result<(), MemFault> {
+        let fault = MemFault { access, addr };
+        let last = addr.checked_add(len - 1).ok_or(fault)?;
+        if last >= GUEST_SPACE {
+            return Err(fault);
+        }
+        for page in addr / PAGE_SIZE..=last / PAGE_SIZE {
+            if self.prot.get(page) & need != need {
+                return Err(MemFault {
+                    access,
+                    addr: addr.max(page * PAGE_SIZE),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Load `size` (1, 2, 4 or 8) bytes, zero-extended. Misaligned accesses are allowed.
+    #[inline]
+    pub fn load(&self, addr: u64, size: u64) -> Result<u64, MemFault> {
+        self.check(addr, size, prot::R, Access::Load)?;
+        // SAFETY: `check` proved [addr, addr+size) lies in mapped guest pages, which are
+        // host-readable memory inside our reservation.
+        unsafe {
+            let p = self.base.add(addr as usize);
+            Ok(match size {
+                1 => *p as u64,
+                2 => ptr::read_unaligned(p as *const u16) as u64,
+                4 => ptr::read_unaligned(p as *const u32) as u64,
+                _ => ptr::read_unaligned(p as *const u64),
+            })
+        }
+    }
+
+    /// Store the low `size` bytes of `val`. Misaligned accesses are allowed.
+    #[inline]
+    pub fn store(&mut self, addr: u64, size: u64, val: u64) -> Result<(), MemFault> {
+        self.check(addr, size, prot::W, Access::Store)?;
+        // SAFETY: as in `load`; host pages are always writable.
+        unsafe {
+            let p = self.base.add(addr as usize);
+            match size {
+                1 => *p = val as u8,
+                2 => ptr::write_unaligned(p as *mut u16, val as u16),
+                4 => ptr::write_unaligned(p as *mut u32, val as u32),
+                _ => ptr::write_unaligned(p as *mut u64, val),
+            }
+        }
+        Ok(())
+    }
+
+    /// Load for a read-modify-write (AMO): requires both R and W, faults as a store.
+    #[inline]
+    pub fn load_for_amo(&self, addr: u64, size: u64) -> Result<u64, MemFault> {
+        self.check(addr, size, prot::R | prot::W, Access::Store)?;
+        self.load(addr, size).map_err(|_| MemFault {
+            access: Access::Store,
+            addr,
+        })
+    }
+
+    /// Fetch an instruction halfword (requires X).
+    #[inline]
+    pub fn fetch16(&self, addr: u64) -> Result<u16, MemFault> {
+        self.check(addr, 2, prot::X, Access::Fetch)?;
+        // SAFETY: as in `load`.
+        Ok(unsafe { ptr::read_unaligned(self.base.add(addr as usize) as *const u16) })
+    }
+
+    /// Guest memory as a host slice, if every page has permissions `need`. Used by syscalls
+    /// and the loader; the slice borrows `self`, so it cannot outlive a remapping.
+    pub fn slice(&self, addr: GuestVirt, len: u64, need: u8) -> Result<&[u8], MemFault> {
+        if len == 0 {
+            return Ok(&[]);
+        }
+        self.check(addr.0, len, need, Access::Load)?;
+        // SAFETY: range checked as mapped and readable; lifetime tied to &self.
+        Ok(unsafe { std::slice::from_raw_parts(self.base.add(addr.0 as usize), len as usize) })
+    }
+
+    /// Mutable guest memory as a host slice, if every page has permissions `need`.
+    pub fn slice_mut(
+        &mut self,
+        addr: GuestVirt,
+        len: u64,
+        need: u8,
+    ) -> Result<&mut [u8], MemFault> {
+        if len == 0 {
+            return Ok(&mut []);
+        }
+        self.check(addr.0, len, need, Access::Store)?;
+        // SAFETY: range checked as mapped; host pages are writable; exclusive via &mut self.
+        Ok(unsafe { std::slice::from_raw_parts_mut(self.base.add(addr.0 as usize), len as usize) })
+    }
+
+    /// Copy `data` into mapped guest memory regardless of guest permissions (loader use).
+    pub fn write_bytes(&mut self, addr: GuestVirt, data: &[u8]) -> Result<(), MemFault> {
+        self.slice_mut(addr, data.len() as u64, MAPPED)?
+            .copy_from_slice(data);
+        Ok(())
+    }
+}
+
+/// Internal marker bit: the page is mapped (so a page with no guest permissions is still
+/// distinguishable from an unmapped one).
+const MAPPED: u8 = 0x80;
+
+impl Drop for DirectMem {
+    fn drop(&mut self) {
+        // SAFETY: unmapping exactly the reservation created in `new`.
+        unsafe {
+            libc::munmap(
+                self.reserve as *mut libc::c_void,
+                GUEST_SPACE as usize + 2 * GUARD,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_access_unmap() {
+        let mut m = DirectMem::new().unwrap();
+        let a = 0x1_0000;
+        assert!(m.load(a, 8).is_err(), "unmapped read must fault");
+        m.map(GuestVirt(a), 0x2000, prot::RW).unwrap();
+        m.store(a + 0xffe, 4, 0xdead_beef).unwrap(); // crosses into the second page
+        assert_eq!(m.load(a + 0xffe, 4).unwrap(), 0xdead_beef);
+        assert_eq!(m.load(a + 0x1000, 1).unwrap(), 0xad); // LE bytes: ef be | ad de
+        assert!(m.fetch16(a).is_err(), "no X permission");
+        m.protect(GuestVirt(a), 0x1000, prot::R).unwrap();
+        assert_eq!(
+            m.store(a, 1, 0),
+            Err(MemFault {
+                access: Access::Store,
+                addr: a
+            })
+        );
+        m.unmap(GuestVirt(a), 0x2000).unwrap();
+        assert!(m.load(a + 0x1000, 1).is_err());
+    }
+
+    #[test]
+    fn page_crossing_fault_reports_first_bad_byte() {
+        let mut m = DirectMem::new().unwrap();
+        m.map(GuestVirt(0x4000), 0x1000, prot::RW).unwrap();
+        let f = m.load(0x4ffc, 8).unwrap_err();
+        assert_eq!(f.addr, 0x5000);
+    }
+
+    #[test]
+    fn out_of_space_is_rejected() {
+        let mut m = DirectMem::new().unwrap();
+        assert!(
+            m.map(GuestVirt(GUEST_SPACE - 0x1000), 0x2000, prot::RW)
+                .is_err()
+        );
+        assert!(m.load(u64::MAX - 3, 8).is_err());
+        assert!(m.load(GUEST_SPACE, 1).is_err());
+    }
+
+    #[test]
+    fn mapped_without_permissions() {
+        let mut m = DirectMem::new().unwrap();
+        m.map(GuestVirt(0x8000), 0x1000, 0).unwrap();
+        assert!(m.is_mapped(0x8000));
+        assert_eq!(m.prot_of(0x8000), 0);
+        assert!(m.load(0x8000, 1).is_err());
+        m.write_bytes(GuestVirt(0x8000), b"ok").unwrap(); // loader ignores guest perms
+    }
+}

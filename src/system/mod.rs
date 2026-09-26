@@ -1,5 +1,6 @@
 //! Full-system emulation of a QEMU `virt`-compatible RISC-V machine (CLAUDE.md §20). Phase 9.
 
+pub mod bare;
 pub mod clint;
 pub mod fdt;
 pub mod machine;
