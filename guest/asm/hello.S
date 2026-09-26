@@ -4,7 +4,7 @@
     .globl _start
 _start:
     li      a0, 1               # fd = stdout
-    la      a1, msg             # buf
+    lla     a1, msg             # buf (lla: PC-relative; `la` would load from the GOT under PIC)
     li      a2, 6               # len
     li      a7, 64              # __NR_write
     ecall

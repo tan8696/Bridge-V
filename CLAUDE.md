@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Design complete, no code yet.** Next up: Phase 0, task P0.1 (`docs/ROADMAP.md`). |
+| Phase | **Phase 0 (setup) complete.** Next up: Phase 1, task P1.1 (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `design-stage.md` |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-00-setup.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-26 |
@@ -70,6 +70,8 @@ Update this table at the end of every phase.
 | D17 | Guest software | Linux **6.6 LTS**, BusyBox **1.36.x** static, initramfs embedded in the kernel | Well-trodden on QEMU virt. |
 | D18 | Dependencies | Runtime: `libc`, `rustc-hash`, `clap` (derive), `anyhow`, `cc` (build-time, SoftFloat). Dev: `iced-x86` (decoder + fmt features), `proptest`. Anything else must be justified in this table. | Minimal attack surface and fast builds. |
 | D19 | Process | The detailed plan lives in `docs/ROADMAP.md`, and §24 here is its summary. **Every phase ends with a detailed report** at `docs/phase-reports/phase-NN-<name>.md`, based on `TEMPLATE.md`. A phase isn't done without its report. | Owner requirement: a written account of what was done, how it works and how it was verified, after every phase. |
+| D20 | Reference validation | Guest programs are checked against `qemu-riscv64` 8.2.2 with byte-exact stdout and exit codes (`tests/data/expected/`). riscv-tests are validated under `qemu-system-riscv64 -M spike` (HTIF). Tests QEMU itself gets wrong are listed in `tests/data/qemu-known-failures.txt` (XFAIL, and an XPASS is an error). | Every input is proven valid before bridgev runs it, so a future failure is bridgev's bug, not a bad test binary. |
+| D21 | riscv-tests scope and build | Only the RV64GC + privileged suites are built (rv64ui/um/ua/uf/ud/uc `-p`/`-v`, rv64si/mi `-p`: 244 ELFs). Ubuntu-toolchain flags: `-no-pie -fno-pic -Wl,--build-id=none`. rv64ua is built directly with `-march=rv64g`, excluding `amocas_*` (Zacas). | Upstream compiles rv64ua with `zacas_zabha`, which binutils 2.42 rejects. PIC turns `la` into GOT loads, and the build-id note displaced `_start` from 0x80000000. |
 
 ---
 
@@ -78,7 +80,12 @@ Update this table at the end of every phase.
 - Host CPU: Intel Xeon @ 2.80 GHz, 4 vCPU, 15 GiB RAM. Flags present: `sse4_2 avx2 avx512f bmi1 bmi2 fma popcnt movbe adx erms`.
   - The JIT may use BMI2 (`SHLX/SHRX/SARX`, `MULX`), FMA3 and POPCNT, but **must check features at runtime with `cpuid`** and fall back gracefully.
 - Tools already installed: `rustc`/`cargo` 1.94.1, `gcc`/`g++` 13.3, `clang` 18 (**supports `--target=riscv64`**), `ld.lld`, `llvm-mc`, `llvm-objdump`, `gdb`, `make`, `cmake`, `python3`.
-- Tools not installed but available via apt (install in `tools/setup.sh`): `gcc-riscv64-linux-gnu`, `g++-riscv64-linux-gnu`, `libc6-dev-riscv64-cross`, `qemu-user` (reference `qemu-riscv64` 8.2), `qemu-system-misc` (reference `qemu-system-riscv64`), `device-tree-compiler`, plus kernel build deps `flex bison bc libssl-dev libelf-dev cpio`.
+- Installed by `tools/setup.sh` via apt (it must be re-run in each new container):
+  - `gcc-riscv64-linux-gnu` 13.3.0 (binutils 2.42, cross glibc 2.39, lp64d only)
+  - `qemu-user` (`qemu-riscv64` 8.2.2) and `qemu-system-misc` (`qemu-system-riscv64` 8.2.2)
+  - `device-tree-compiler` 1.7.0
+  - kernel build deps: `flex bison bc libssl-dev libelf-dev cpio autoconf automake`
+  - Third-party PPAs in the container are blocked by the network policy (403); the Ubuntu archive works.
 - `vm.overcommit_memory=0` and `ulimit -v unlimited`, so a 256 GiB `PROT_NONE` + `MAP_NORESERVE` reservation for the direct-mode guest space is fine.
 - `perf` is not installed. Use in-process timers and `rdtsc`, and emit `/tmp/perf-<pid>.map` anyway for machines that have perf.
 - Handy commands:
@@ -206,12 +213,15 @@ Bridge-V/
 │   │   └── fdt.rs            ← devicetree blob generator
 │   └── stats.rs
 ├── tests/                    ← integration: riscv-tests runner, user programs, lockstep fuzz, emitter golden
+│   ├── common/mod.rs         ← guest_elf() / run_bridgev() helpers
+│   └── data/                 ← expected/ (qemu reference outputs), qemu-known-failures.txt
 ├── benches/                  ← benchmark harness (interp vs jit vs qemu vs native)
 ├── guest/                    ← RISC-V guest sources + build scripts (outputs .gitignored)
 │   ├── asm/  c/  bench/      ← hand tests, C tests, CoreMark/Dhrystone ports
 │   └── linux/                ← kernel .config fragment, busybox .config, initramfs skeleton, build.sh
 ├── third_party/              ← git submodules: riscv-tests, coremark, berkeley-softfloat-3
-├── tools/                    ← setup.sh, build-guests.sh, run-riscv-tests.sh, bench.sh, boot-linux.sh
+├── tools/                    ← setup.sh, build-guests.sh, build-riscv-tests.sh, ref-run.sh, ref-check.sh,
+│                               ref-riscv-tests.sh (Phase 0); later: bench.sh, boot-linux.sh
 ├── README.md                 ← short landing page
 ├── docs/
 │   ├── ROADMAP.md            ← detailed phase-by-phase plan (task IDs P<phase>.<n>)

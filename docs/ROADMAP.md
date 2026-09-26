@@ -113,67 +113,67 @@ A phase is **done** only when all of the following hold:
 **Entry criteria:** repository exists, and CLAUDE.md is committed.
 
 ### P0.1 Repository hygiene (S)
-- [ ] `.gitignore`: `target/`, `guest/build/`, `*.elf`, `*.o`, `Image`, `*.cpio`, `*.dtb`, `third_party/*/build/`, `perf-*.map`, `*.x86dump`.
-- [ ] `rust-toolchain.toml`: pin `channel = "1.94"` (or `stable`) with the `rustfmt` and `clippy` components.
-- [ ] `rustfmt.toml` (defaults plus `max_width = 100`) and `clippy.toml` (if needed).
-- [ ] `.editorconfig`: LF line endings, 4-space indents for Rust, tabs for Makefiles.
-- [ ] `LICENSE`: **ask the owner** (§18). Until then, leave it out rather than guess.
+- [x] `.gitignore`: `target/`, `guest/build/`, `*.elf`, `*.o`, `Image`, `*.cpio`, `*.dtb`, `third_party/*/build/`, `perf-*.map`, `*.x86dump`.
+- [x] `rust-toolchain.toml`: pin `channel = "1.94"` (or `stable`) with the `rustfmt` and `clippy` components.
+- [x] `rustfmt.toml` (defaults plus `max_width = 100`) and `clippy.toml` (if needed).
+- [x] `.editorconfig`: LF line endings, 4-space indents for Rust, tabs for Makefiles.
+- [ ] `LICENSE`: **ask the owner** (§18). Until then, leave it out rather than guess. *(Deferred: awaiting the owner's choice.)*
 - **Done when:** `git status` is clean after a build.
 
 ### P0.2 Cargo skeleton (S)
-- [ ] `Cargo.toml` for a single crate with `lib` + `[[bin]] name = "bridgev"`, edition 2024.
-- [ ] Dependencies per D18: `libc`, `rustc-hash`, `clap` (derive), `anyhow`. `cc` goes in build-deps later (P1.11).
-- [ ] Dev-dependencies: `iced-x86` (features: `decoder`, `intel`), `proptest`.
-- [ ] Profiles:
+- [x] `Cargo.toml` for a single crate with `lib` + `[[bin]] name = "bridgev"`, edition 2024.
+- [x] Dependencies per D18: `libc`, `rustc-hash`, `clap` (derive), `anyhow`. `cc` goes in build-deps later (P1.11).
+- [x] Dev-dependencies: `iced-x86` (features: `decoder`, `intel`), `proptest`.
+- [x] Profiles:
   - `release`: `panic = "abort"`, `lto = "thin"`, `codegen-units = 1`, `debug = 1`.
   - `dev`: `opt-level = 1`, so test runs of the interpreter aren't painfully slow.
-- [ ] Module tree matching CLAUDE.md §6. Every file gets a `//!` doc comment stating its responsibility, and nothing else yet.
-- [ ] `src/main.rs` with clap subcommands `run`, `boot`, `disasm`, `bench`. Each prints `not implemented yet (Phase N)` and exits 2. `bridgev --version` works.
+- [x] Module tree matching CLAUDE.md §6. Every file gets a `//!` doc comment stating its responsibility, and nothing else yet.
+- [x] `src/main.rs` with clap subcommands `run`, `boot`, `disasm`, `bench`. Each prints `not implemented yet (Phase N)` and exits 2. `bridgev --version` works.
 - **Tests:** `tests/cli.rs` checks that `bridgev --version` exits 0 and that the subcommands exit 2.
 - **Done when:** `cargo build && cargo test && cargo clippy --all-targets -- -D warnings` all pass.
 
 ### P0.3 `tools/setup.sh` (S)
-- [ ] An idempotent script: `apt-get update` then install `gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libc6-dev-riscv64-cross qemu-user qemu-system-misc device-tree-compiler flex bison bc libssl-dev libelf-dev cpio autoconf automake`.
-- [ ] Skip packages that are already installed. Print the versions of every tool at the end: `riscv64-linux-gnu-gcc --version`, `qemu-riscv64 --version`, `clang --version`, `rustc --version`.
-- [ ] Fail loudly with a helpful message if apt is blocked by the network policy.
+- [x] An idempotent script: `apt-get update` then install `gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libc6-dev-riscv64-cross qemu-user qemu-system-misc device-tree-compiler flex bison bc libssl-dev libelf-dev cpio autoconf automake`.
+- [x] Skip packages that are already installed. Print the versions of every tool at the end: `riscv64-linux-gnu-gcc --version`, `qemu-riscv64 --version`, `clang --version`, `rustc --version`.
+- [x] Fail loudly with a helpful message if apt is blocked by the network policy.
 - **Done when:** the script runs twice in a row without errors, and the second run installs nothing.
 
 ### P0.4 Guest build infrastructure (M)
-- [ ] `guest/asm/hello.S`: a bare RV64 Linux program that does `write(1, "hello\n", 6)` then `exit(0)` via `ecall` (a7 = 64, then 93).
-- [ ] `guest/asm/loop.S`: a tight counted loop (1e8 iterations), then exit with the low byte of the counter. Used later for MIPS measurements.
-- [ ] `guest/c/hello.c`, `guest/c/printf_float.c`, `guest/c/malloc.c`, `guest/c/qsort.c`, `guest/c/setjmp.c`, `guest/c/strings.c`. Each prints deterministic output.
-- [ ] `tools/build-guests.sh`:
+- [x] `guest/asm/hello.S`: a bare RV64 Linux program that does `write(1, "hello\n", 6)` then `exit(0)` via `ecall` (a7 = 64, then 93).
+- [x] `guest/asm/loop.S`: a tight counted loop (1e8 iterations), then exit with the low byte of the counter. Used later for MIPS measurements.
+- [x] `guest/c/hello.c`, `guest/c/printf_float.c`, `guest/c/malloc.c`, `guest/c/qsort.c`, `guest/c/setjmp.c`, `guest/c/strings.c`. Each prints deterministic output.
+- [x] `tools/build-guests.sh`:
   - asm: `clang --target=riscv64-unknown-linux-gnu -march=rv64gc -nostdlib -static -fuse-ld=lld`.
   - C: `riscv64-linux-gnu-gcc -static -O2` and `-O0`, each with `-march=rv64gc` and `-march=rv64imafd`.
   - Output goes to `guest/build/<name>[-O0|-O2][-nc].elf`.
-- [ ] `tests/data/expected/*.out`: expected stdout for each C program, generated with `qemu-riscv64` and committed. They are small text files.
+- [x] `tests/data/expected/*.out`: expected stdout for each C program, generated with `qemu-riscv64` and committed. They are small text files.
 - **Done when:** `file guest/build/hello.elf` reports `ELF 64-bit LSB executable, UCB RISC-V`, and `qemu-riscv64 guest/build/hello.elf` prints `hello`.
 
 ### P0.5 Third-party sources (M)
-- [ ] Git submodules, each pinned to a specific commit that is recorded in the phase report:
+- [x] Git submodules, each pinned to a specific commit that is recorded in the phase report:
   - `third_party/riscv-tests` (with its `env` submodule)
   - `third_party/coremark`
   - `third_party/berkeley-softfloat-3`
-- [ ] `tools/build-riscv-tests.sh`: `autoconf` if needed, `./configure --with-xlen=64`, then `make isa RISCV_PREFIX=riscv64-linux-gnu-`. Copy `rv64u*-p-*`, `rv64m*-p-*`, `rv64s*-p-*`, `rv64u*-v-*` into `guest/build/riscv-tests/`.
+- [x] `tools/build-riscv-tests.sh`: `autoconf` if needed, `./configure --with-xlen=64`, then `make isa RISCV_PREFIX=riscv64-linux-gnu-`. Copy `rv64u*-p-*`, `rv64m*-p-*`, `rv64s*-p-*`, `rv64u*-v-*` into `guest/build/riscv-tests/`.
   - Fallback if the linux-gnu GCC misbehaves: override `RISCV_GCC` with clang + lld.
-- [ ] Record the number of test ELFs produced. The expected order of magnitude is 200+.
+- [x] Record the number of test ELFs produced. The expected order of magnitude is 200+.
 - **Done when:** `ls guest/build/riscv-tests | wc -l` is non-zero, and a sample test (`rv64ui-p-add`) runs to completion under `spike` or with `qemu-system-riscv64 -M virt -bios none -kernel <elf> -nographic`.
   - The qemu check is best-effort. Its only purpose is to confirm the ELFs themselves are valid.
 
 ### P0.6 Reference emulator sanity (S)
-- [ ] Run every C guest program under `qemu-riscv64` and diff the output against `tests/data/expected/`.
-- [ ] `tools/ref-run.sh <elf>` runs a program under qemu and prints its stdout and exit code. Later phases use it for differential comparison.
+- [x] Run every C guest program under `qemu-riscv64` and diff the output against `tests/data/expected/`.
+- [x] `tools/ref-run.sh <elf>` runs a program under qemu and prints its stdout and exit code. Later phases use it for differential comparison.
 - **Done when:** every program matches its expected output under qemu.
 
 ### P0.7 Test harness scaffolding (S)
-- [ ] `tests/common/mod.rs`: `guest_elf(name) -> PathBuf`.
+- [x] `tests/common/mod.rs`: `guest_elf(name) -> PathBuf`.
   - If the ELF is missing and `BRIDGEV_REQUIRE_GUESTS=1` is set (as in CI), **fail** with the message "run tools/build-guests.sh".
   - If it is missing otherwise, skip the test with a visible `eprintln!`.
-- [ ] `tests/common/mod.rs`: `run_bridgev(args) -> (stdout, stderr, exit_code)`.
+- [x] `tests/common/mod.rs`: `run_bridgev(args) -> (stdout, stderr, exit_code)`.
 - **Done when:** a placeholder integration test uses both helpers.
 
 ### P0.8 Continuous integration (M)
-- [ ] `.github/workflows/ci.yml` on `ubuntu-24.04`:
+- [x] `.github/workflows/ci.yml` on `ubuntu-24.04`:
   1. checkout with submodules
   2. cache `~/.cargo` and `target/`
   3. `tools/setup.sh`
@@ -181,13 +181,13 @@ A phase is **done** only when all of the following hold:
   5. `cargo clippy --all-targets -- -D warnings`
   6. `tools/build-guests.sh`
   7. `cargo test` with `BRIDGEV_REQUIRE_GUESTS=1`
-- [ ] A separate, optional job builds riscv-tests (cached by submodule commit).
+- [x] A separate, optional job builds riscv-tests (cached by submodule commit).
 - **Done when:** CI is green on the pushed branch (link the run in the report). If GitHub access isn't available, record that and run the same steps locally.
 
 ### P0.9 Documentation scaffolding (S)
-- [ ] `README.md`: a short description and links to `docs/PROJECT_EXPLAINED.md`, `docs/ROADMAP.md` and `CLAUDE.md`.
-- [ ] `docs/phase-reports/TEMPLATE.md`, which already exists.
-- [ ] `docs/BENCHMARKS.md` containing the header "No measurements yet".
+- [x] `README.md`: a short description and links to `docs/PROJECT_EXPLAINED.md`, `docs/ROADMAP.md` and `CLAUDE.md`.
+- [x] `docs/phase-reports/TEMPLATE.md`, which already exists.
+- [x] `docs/BENCHMARKS.md` containing the header "No measurements yet".
 - **Done when:** the files exist, and their links resolve on GitHub.
 
 ### Phase 0 acceptance criteria

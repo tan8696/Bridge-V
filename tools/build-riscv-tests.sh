@@ -14,7 +14,7 @@ PREFIX=${RISCV_PREFIX:-riscv64-linux-gnu-}
 [[ -f "$SRC/env/p/link.ld" ]] || { echo "missing submodules: git submodule update --init --recursive" >&2; exit 1; }
 mkdir -p "$OBJ" "$OUT"
 cd "$OBJ"
-[[ -f Makefile ]] || "$SRC/configure" --with-xlen=64 > configure.log
+[[ -f Makefile ]] || "$SRC/configure" --with-xlen=64 > configure.log 2>&1
 # -no-pie -fno-pic: Ubuntu's cross gcc defaults to PIE/PIC, which turns `la` into GOT loads;
 # the tests are linked at fixed addresses (0x80000000). --build-id=none: the default
 # .note.gnu.build-id would be placed at 0x80000000, ahead of _start in .text.init.
