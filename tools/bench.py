@@ -40,6 +40,8 @@ CONFIGS = {
     "jit+chain": ("bridgev", ["--engine", "jit", "--regalloc", "none"]),
     "jit+pinned": ("bridgev", ["--engine", "jit", "--regalloc", "pinned"]),
     "jit+linear": ("bridgev", ["--engine", "jit"]),
+    # Phase 6 A/B: the full JIT with every FP instruction through the interpreter helper.
+    "jit-helper-fp": ("bridgev", ["--engine", "jit", "--no-inline-fp"]),
     "qemu": ("qemu", []),
     "native": ("native", []),
 }
@@ -49,6 +51,10 @@ PENDING = {"softmmu": "Phase 7 (--mem=softmmu)"}
 
 class Workload:
     """A benchmark program: how to run N units of work, parse and validate the output."""
+
+    # Configurations that only make sense for some workloads (skipped for the others).
+    only = {"jit-helper-fp": {"fpbench"}}
+    score_label = "score"
 
     def __init__(self, name, rv64, native, unit, min_secs, start, target_factor):
         self.name, self.rv64, self.native = name, rv64, native
@@ -61,6 +67,8 @@ class Workload:
 
 
 class CoreMark(Workload):
+    score_label = "iterations/s"
+
     def __init__(self):
         super().__init__("coremark", "coremark-rv64.elf", "coremark-native", "iterations", 10.0, 20, 1.0)
 
@@ -87,6 +95,8 @@ class CoreMark(Workload):
 
 
 class Dhrystone(Workload):
+    score_label = "Dhrystones/s"
+
     def __init__(self):
         super().__init__("dhrystone", "dhrystone-rv64.elf", "dhrystone-native", "runs", 0.0, 20000, 0.5)
 
@@ -123,7 +133,32 @@ class Dhrystone(Workload):
         return float(dps), (n / dps if dps > 0 else None), errors
 
 
-WORKLOADS = {w.name: w for w in (CoreMark(), Dhrystone())}
+class FpBench(Workload):
+    """guest/bench/fp/fpbench.c: nbody + sgemm + conversions, validated against integer and
+    published references by the program itself ("FP validated")."""
+    score_label = "units/s"
+
+    def __init__(self):
+        super().__init__("fpbench", "fpbench-rv64.elf", "fpbench-native", "units", 0.0, 20, 0.5)
+
+    def args(self, n):
+        return [str(n)]
+
+    def parse(self, out, n):
+        score = re.search(r"FP units/s:\s*([\d.]+)", out)
+        secs = re.search(r"Total time \(secs\)\s*:\s*([\d.]+)", out)
+        units = re.search(r"^fpbench: (\d+) units", out, re.M)
+        if not score or not secs or not units:
+            return None, None, ["unparsable fpbench output"]
+        errors = []
+        if int(units.group(1)) != n:
+            errors.append(f"ran {units.group(1)} units, asked for {n}")
+        if "FP validated" not in out:
+            errors += [l.strip() for l in out.splitlines() if "want" in l or "failed" in l]
+        return float(score.group(1)), float(secs.group(1)), errors
+
+
+WORKLOADS = {w.name: w for w in (CoreMark(), Dhrystone(), FpBench())}
 
 
 def command(cfg, w, n, cpu):
@@ -268,7 +303,7 @@ def markdown(res):
            f"Shared cloud VM: expect noise of several percent."]
     for wname, cells in res["results"].items():
         w = WORKLOADS[wname]
-        score = "iterations/s" if wname == "coremark" else "Dhrystones/s"
+        score = w.score_label
         interp = (cells.get("interp") or {}).get("median")
         native = (cells.get("native") or {}).get("median")
         linear_ipu = (cells.get("jit+linear") or {}).get("insns_per_unit")
@@ -316,7 +351,7 @@ def markdown(res):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--suite", default="coremark,dhrystone", help="comma-separated workloads")
+    ap.add_argument("--suite", default="coremark,dhrystone,fpbench", help="comma-separated workloads")
     ap.add_argument("--configs", default=",".join(CONFIGS), help="comma-separated configurations")
     ap.add_argument("--runs", type=int, default=5, help="measured runs per cell")
     ap.add_argument("--warmup", type=int, default=1, help="warm-up runs per cell (not measured)")
@@ -344,6 +379,8 @@ def main():
                 raise SystemExit(f"missing {p}: run tools/build-bench.sh")
         res["results"][wname], res["raw"][wname] = {}, {}
         for cfg in a.configs.split(","):
+            if wname not in Workload.only.get(cfg, {wname}):
+                continue
             if CONFIGS[cfg][0] == "qemu" and not shutil.which("qemu-riscv64"):
                 print(f"{wname}/{cfg}: qemu-riscv64 not installed, skipped", file=sys.stderr)
                 continue

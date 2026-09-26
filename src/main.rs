@@ -167,6 +167,9 @@ enum Command {
         /// Sample where host time goes (1 kHz SIGPROF) and report the hottest TBs in --stats.
         #[arg(long)]
         profile_tbs: bool,
+        /// Run every FP instruction through the interpreter helper (no inline SSE code).
+        #[arg(long)]
+        no_inline_fp: bool,
         /// Testing only: deliberately miscompile ADDI (lockstep must catch it).
         #[arg(long, hide = true)]
         inject_bug: bool,
@@ -296,6 +299,7 @@ fn main() -> ExitCode {
             no_chain,
             profile_jit,
             profile_tbs,
+            no_inline_fp,
             regalloc,
             pin,
             dump_ir,
@@ -334,6 +338,7 @@ fn main() -> ExitCode {
                 },
                 pin: pin.0,
                 dump_ir,
+                inline_fp: !no_inline_fp,
                 ..JitOptions::default()
             };
             match mode {

@@ -568,27 +568,30 @@ The complete results table, methodology, analysis (where time goes and why each 
 **Entry criteria:** Phase 5 done.
 
 ### P6.1 FP register handling (M)
-- [ ] FP values in XMM scratch registers within a TB (a simple allocation, or load/store per instruction to start). NaN-boxing checks on single-precision reads; writes box.
+- [x] FP values in XMM scratch registers within a TB (a simple allocation, or load/store per instruction to start). NaN-boxing checks on single-precision reads; writes box.
 
 ### P6.2 Arithmetic fast paths (L)
-- [ ] add/sub/mul/div/sqrt (S and D) inline when the rounding mode is statically RNE (or DYN with frm = RNE checked at translate time via `TbFlags`, ending the TB on frm writes).
-- [ ] NaN canonicalization after each op: `ucomisd` + `jp` to a cold fix-up.
-- [ ] fmadd/fmsub/fnmadd/fnmsub with FMA3 when available, else SoftFloat.
+- [x] add/sub/mul/div/sqrt (S and D) inline when the rounding mode is statically RNE (or DYN with frm = RNE checked at translate time via `TbFlags`, ending the TB on frm writes).
+- [x] NaN canonicalization after each op: `ucomisd` + `jp` to a cold fix-up.
+- [x] fmadd/fmsub/fnmadd/fnmsub with FMA3 when available, else SoftFloat.
 
 ### P6.3 fflags via MXCSR (M)
-- [ ] Clear the MXCSR exception bits at TB entry if the TB contains FP ops. Read them back (`stmxcsr`) on exits and before fcsr reads, and OR the mapped bits into fflags (§17).
-- [ ] Verify underflow/tininess behaviour matches SoftFloat. If it doesn't, route the affected ops to helpers and record a decision.
+- [x] Clear the MXCSR exception bits at TB entry if the TB contains FP ops. Read them back (`stmxcsr`) on exits and before fcsr reads, and OR the mapped bits into fflags (§17).
+- [x] Verify underflow/tininess behaviour matches SoftFloat. If it doesn't, route the affected ops to helpers and record a decision.
 
 ### P6.4 Conversions, compares, min/max, sign ops (M)
-- [ ] fcvt with correct RISC-V saturation, done inline with fix-up branches or via helpers. feq/flt/fle via `ucomisd`/`comisd`, with correct NV semantics (flt/fle signal on quiet NaN, feq doesn't). fsgnj via bit operations. fmin/fmax via helper or careful inline code.
+- [x] fcvt with correct RISC-V saturation, done inline with fix-up branches or via helpers (fmin/fmax, fclass and the unsigned 64-bit conversions stay on the helper, D47). feq/flt/fle via `ucomisd`/`comisd`, with correct NV semantics (flt/fle signal on quiet NaN, feq doesn't). fsgnj via bit operations. fmin/fmax via helper or careful inline code.
 
 ### P6.5 FP fuzzing (M)
-- [ ] Random operands biased toward special values (NaN payloads, ±0, ±inf, subnormals, the max/min normals), with random rm. The inline JIT must match the SoftFloat interpreter bit-exactly, **fflags included**.
+- [x] Random operands biased toward special values (NaN payloads, ±0, ±inf, subnormals, the max/min normals), with random rm. The inline JIT must match the SoftFloat interpreter bit-exactly, **fflags included**.
+
+### P6.6 FP benchmark (S)
+- [x] `guest/bench/fp/fpbench.c` (nbody, sgemm, conversions; self-validating), in `tools/build-bench.sh` and `tools/bench.py`, with `--no-inline-fp` as the A/B baseline.
 
 ### Phase 6 acceptance criteria
-- rv64uf/ud pass under jit and lockstep.
-- The FP fuzzer is clean (≥ 1e6 cases).
-- Measured speedup on an FP-heavy benchmark (a small nbody/linpack-style guest program added in P6.5).
+- ✅ rv64uf/ud pass under jit and lockstep.
+- ✅ The FP fuzzer is clean (≥ 1e6 cases): 1,000,000 clean.
+- ✅ Measured speedup on an FP-heavy benchmark: fpbench 3,508 units/s vs 58 with FP through the helper (60×), 5.6× qemu-riscv64 (`docs/phase-reports/phase-06-fp-jit.md`).
 
 ### Phase 6 report must include
 The list of ops inline vs helper, how each semantic difference was handled, fuzz statistics and the performance table.

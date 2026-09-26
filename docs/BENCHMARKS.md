@@ -52,6 +52,34 @@ Host: Intel(R) Xeon(R) Processor @ 2.10GHz (4 vCPU, pinned to CPU 2), kernel 6.1
 - **CoreMark:** Bridge-V's full JIT (`jit+linear`) reaches **13,498 iterations/s**. That is 26.5× the interpreter, **1.52× `qemu-riscv64`** and 52% of the same source compiled natively for x86-64.
 - **Dhrystone:** 21.9 M Dhrystones/s (12,443 DMIPS). That is 39.6× the interpreter, 4.55× QEMU and 49% of native.
 
+## FP benchmark (Phase 6, 2026-09-26, commit `b312367` + `--no-inline-fp`)
+
+Raw data: [`bench/2026-09-26-fp-b312367/results.json`](bench/2026-09-26-fp-b312367/results.json). Same host, method and noise caveat as above. The binary was `b312367` plus the `--no-inline-fp` switch and a stats fix, which were committed right after the run (the JSON records a dirty tree).
+
+Workload: `guest/bench/fp/fpbench.c`. One unit is:
+- 1000 nbody steps (double: add, sub, mul, div, sqrt, FMA)
+- a 24×24 single-precision sgemm with row norms
+- 4096 int↔FP conversions
+
+Every unit is validated against integer or published references, and every run printed "FP validated". Runs were sized for about 6.5 s. `jit-helper-fp` is the full JIT with `--no-inline-fp`: every FP instruction goes through the interpreter helper, which is the pre-Phase-6 behaviour.
+
+| config | units/s | vs interp | vs native | guest MIPS | units/run | valid |
+|---|---:|---:|---:|---:|---:|---:|
+| interp | 130 (124–134) | 1.0× | 0.008 | 91 | 863 | 5/5 |
+| jit-naive | 55 (54–58) | 0.4× | 0.003 | 38 | 356 | 5/5 |
+| jit+chain | 58 (56–61) | 0.4× | 0.003 | 41 | 368 | 5/5 |
+| jit+pinned | 3,686 (3,629–3,919) | 28.4× | 0.215 | 2,584 | 23,804 | 5/5 |
+| jit+linear | 3,508 (3,469–3,654) | 27.1× | 0.205 | 2,458 | 22,531 | 5/5 |
+| jit-helper-fp | 58 (55–59) | 0.4× | 0.003 | 40 | 376 | 5/5 |
+| qemu | 629 (606–687) | 4.9× | 0.037 | 442 (est.) | 4,175 | 5/5 |
+| native | 17,107 (16,920–17,700) | 132.0× | 1.000 | — | 112,757 | 5/5 |
+| softmmu | n/a: Phase 7 (--mem=softmmu) |  |  |  |  |  |
+
+**Headline:**
+- Inline FP (D47) makes the full JIT **60× faster than the same JIT with FP through the helper** (3,508 vs 58 units/s).
+- It is **5.6× faster than `qemu-riscv64`** and runs at 21% of native.
+- The Phase 2/3 back end (`jit-naive`, `jit+chain`) never inlines FP and is slower than the interpreter on this workload. See `docs/phase-reports/phase-06-fp-jit.md` §7.
+
 **Configurations** (CLAUDE.md §22):
 
 | config | what it is |
@@ -61,6 +89,7 @@ Host: Intel(R) Xeon(R) Processor @ 2.10GHz (4 vCPU, pinned to CPU 2), kernel 6.1
 | `jit+chain` | `--regalloc none`: + block chaining and the jump cache (Phase 3) |
 | `jit+pinned` | `--regalloc pinned`: + IR, four guest registers pinned to R12–R15 (Phase 4), budget in R9 (D46, Phase 5) |
 | `jit+linear` | default: + optimizer passes and the linear-scan allocator with lazy write-back (Phase 4) |
+| `jit-helper-fp` | `--no-inline-fp`: the full JIT with every FP instruction through the interpreter helper (fpbench only) |
 | `softmmu` | not implemented yet (Phase 7) |
 | `qemu` | `qemu-riscv64` 8.2.2 (Ubuntu), same guest binary |
 | `native` | the same C sources compiled with the host gcc 13.3 for x86-64 (`-O2 -static`) |

@@ -8,7 +8,7 @@ It has four core subsystems:
 - guest registers pinned in R12–R15, plus a linear-scan allocator
 - an SV39 software MMU with an inline software TLB
 
-> **Status:** Phases 0–5 complete, including **Milestone A**: CoreMark runs at 13,498 iterations/s under the JIT, **26.5× the interpreter, 1.52× `qemu-riscv64` and 52% of native x86-64** on the same machine (Dhrystone: 39.6× the interpreter, 4.55× QEMU). Results and method: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); reproduce with `tools/demo-milestone-a.sh`. Everything is checked in lockstep against the interpreter and by a random-block fuzzer. FP in the JIT (Phase 6) is next. See `docs/phase-reports/`.
+> **Status:** Phases 0–6 complete, including **Milestone A**: CoreMark runs at 13,498 iterations/s under the JIT, **26.5× the interpreter, 1.52× `qemu-riscv64` and 52% of native x86-64** on the same machine (Dhrystone: 39.6× the interpreter, 4.55× QEMU). Results and method: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); reproduce with `tools/demo-milestone-a.sh`. Phase 6 inlines floating point (SSE2/FMA3, bit-exact against SoftFloat): 60× the helper path and 5.6× QEMU on an FP benchmark. Everything is checked in lockstep against the interpreter and by random-block fuzzers. Privileged mode and the software MMU (Phase 7) are next. See `docs/phase-reports/`.
 
 | Document | What it covers |
 |---|---|

@@ -4,7 +4,7 @@ This document explains Bridge-V from the ground up, for readers ranging from "ne
 - The exact engineering specification is [`CLAUDE.md`](../CLAUDE.md).
 - The build plan is [`ROADMAP.md`](ROADMAP.md).
 
-> **Status (2026-09-26):** Phase 5 (Milestone A) complete. Bridge-V translates guest code into real x86-64 machine code; translated blocks jump directly into each other (block chaining, with an inline jump cache for function returns); each block goes through a small compiler (an intermediate representation, constant folding, removal of redundant register writes, and a register allocator that keeps four hot guest registers permanently in x86 registers). It passes everything the interpreter passes at every optimization level, including "lockstep" mode and a fuzzer that compared a million random blocks. Measured with a reproducible benchmark harness on the same machine: **CoreMark 13,498 iterations/s, 26.5× the interpreter, 1.52× QEMU and 52% of native x86-64 speed; Dhrystone 12,443 DMIPS, 39.6× the interpreter and 4.55× QEMU** (`docs/BENCHMARKS.md`). The software MMU numbers under "Performance" are still targets (Phase 7).
+> **Status (2026-09-26):** Phase 6 (floating point in the JIT) complete. Bridge-V translates guest code into real x86-64 machine code; translated blocks jump directly into each other (block chaining, with an inline jump cache for function returns); each block goes through a small compiler (an intermediate representation, constant folding, removal of redundant register writes, and a register allocator that keeps four hot guest registers permanently in x86 registers). It passes everything the interpreter passes at every optimization level, including "lockstep" mode and a fuzzer that compared a million random blocks. Measured with a reproducible benchmark harness on the same machine: **CoreMark 13,498 iterations/s, 26.5× the interpreter, 1.52× QEMU and 52% of native x86-64 speed; Dhrystone 12,443 DMIPS, 39.6× the interpreter and 4.55× QEMU** (`docs/BENCHMARKS.md`). Since Phase 6, common floating-point instructions also run as inline SSE2/FMA3 code, bit-exact against the SoftFloat reference: 60× faster than calling the reference and 5.6× QEMU on an FP benchmark. The software MMU numbers under "Performance" are still targets (Phase 7).
 
 ---
 
@@ -230,7 +230,7 @@ Everything else stays on the fast path.
 | **Decoder** | Turns raw bytes into structured instructions, including the 16-bit compressed forms, and rejects illegal encodings. |
 | **ELF loader and Linux syscall layer** | Loads executables and emulates about 40 Linux system calls. It translates data structures whose layout differs between RISC-V and x86 (e.g. `struct stat`). |
 | **Self-modifying code handling** | Programs such as JIT compilers and OS loaders sometimes write new code into memory. Bridge-V write-protects memory pages it has translated. On a write, it discards the affected translations and unlinks any chained jumps into them, so stale code never runs. |
-| **Floating point** | IEEE-754 details differ between RISC-V and x86: NaN encoding, rounding modes, exception flags, conversion saturation. Bridge-V starts with the bit-exact Berkeley SoftFloat library, then adds inline SSE fast paths only where it can prove identical results. |
+| **Floating point** | IEEE-754 details differ between RISC-V and x86: NaN encoding, rounding modes, exception flags, conversion saturation. Bridge-V starts with the bit-exact Berkeley SoftFloat library, then adds inline SSE fast paths only where it can prove identical results (Phase 6: arithmetic, FMA, compares and conversions inline, with small fix-up paths for NaNs and saturation; a million-case fuzzer compares every bit, flags included). |
 | **Atomics and memory ordering** | RISC-V atomic instructions map to x86 `lock`-prefixed instructions. Because x86 has *stronger* ordering than RISC-V, most RISC-V fences cost nothing on x86. |
 | **Devices (system mode)** | Timer (CLINT), interrupt controller (PLIC), serial port (16550 UART), power-off device, and an SBI firmware interface. Together these form a machine compatible with QEMU's `virt` board, so a stock Linux kernel boots. |
 | **Verification tooling** | The official RISC-V `riscv-tests` suite, lockstep differential testing, random instruction fuzzing, and comparison against QEMU's output. |
@@ -260,6 +260,8 @@ Everything else stays on the fast path.
   | interpreter | 510 it/s | 1× | | 2% |
   | JIT, fully optimized | 13,498 it/s (4.8 billion guest instructions/s) | 26.5× | 1.52× | 52% |
 
+  FP benchmark (Phase 6: nbody, matrix multiply, conversions): the fully optimized JIT runs 3,508 units/s, 27× the interpreter, 60× the same JIT with FP through the reference helper, 5.6× QEMU and 21% of native.
+
   Each JIT technique's share: chaining alone is 13.8× the interpreter; pinning four registers takes it to 19.9×; the optimizer and register allocator to 26.5×.
 - **Still targets** (CLAUDE.md §22), for later phases:
 
@@ -283,7 +285,7 @@ Everything else stays on the fast path.
 
 ## 12. Project status and how it will be used
 
-- **Now:** Phases 0–5 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining, an inline jump cache, an IR optimizer and register allocator, lockstep checking, a random-block fuzzer, and Milestone A: reproducible CoreMark and Dhrystone builds, a benchmark harness comparing the interpreter, every JIT level, QEMU and native code (`tools/bench.py`), a sampling profiler (`--profile-tbs`), and a one-command demo (`tools/demo-milestone-a.sh`). The next phase moves floating point into the JIT.
+- **Now:** Phases 0–6 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining, an inline jump cache, an IR optimizer and register allocator, lockstep checking, a random-block fuzzer, and Milestone A: reproducible CoreMark and Dhrystone builds, a benchmark harness comparing the interpreter, every JIT level, QEMU and native code (`tools/bench.py`), a sampling profiler (`--profile-tbs`), and a one-command demo (`tools/demo-milestone-a.sh`), plus (Phase 6) inline floating point with an FP fuzzer and an FP benchmark. The next phase adds privileged mode (M/S/U), Sv39 virtual memory and the inline software TLB.
 - **Milestone A (required):** CoreMark and Dhrystone run under both the interpreter and the JIT, with a printed speedup table.
 - **Milestone B (stretch):** Linux 6.6 boots to a BusyBox shell.
 - **Planned usage:**

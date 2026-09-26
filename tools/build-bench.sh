@@ -6,6 +6,8 @@
 #                                         (argv: 0x0 0x0 0x66 <iterations>).
 #   dhrystone-rv64.elf / dhrystone-native Dhrystone 2.1 from third_party/riscv-tests (unmodified)
 #                                         + guest/bench/dhrystone shim; argv[1] = runs.
+#   fpbench-rv64.elf / fpbench-native     guest/bench/fp/fpbench.c (P6.6: nbody, sgemm, int<->FP
+#                                         conversions, self-validating); argv[1] = units.
 # Writes guest/build/bench/BUILDINFO.txt with compiler versions, flags, source commits and hashes.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -54,12 +56,20 @@ dhrystone() { # <cc> <arch flags> <output name>
 dhrystone "$RV_CC" "$RV_ARCH" dhrystone-rv64.elf
 dhrystone "$HOST_CC" "" dhrystone-native
 
+FP_FLAGS="-O2 -static"
+# shellcheck disable=SC2086
+"$RV_CC" $RV_ARCH $FP_FLAGS "$ROOT/guest/bench/fp/fpbench.c" -o "$OUT/fpbench-rv64.elf" -lm
+# shellcheck disable=SC2086
+"$HOST_CC" $FP_FLAGS "$ROOT/guest/bench/fp/fpbench.c" -o "$OUT/fpbench-native" -lm
+
 {
   echo "# Bridge-V benchmark builds (tools/build-bench.sh), $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "riscv cc: $("$RV_CC" --version | head -1)"
   echo "host cc:  $("$HOST_CC" --version | head -1)"
   echo "coremark: $(git -C "$ROOT/third_party/coremark" rev-parse HEAD) make PORT_DIR=linux, PORT_CFLAGS=-O2, XCFLAGS='<arch> -static -DPERFORMANCE_RUN=1' (rv64: $RV_ARCH)"
   echo "dhrystone: riscv-tests $(git -C "$ROOT/third_party/riscv-tests" rev-parse HEAD) benchmarks/dhrystone + guest/bench/dhrystone; flags: $DHRY_FLAGS, main: -Ddebug_printf=bridgev_dhry_printf, dhrystone.c: -DPASS2 (rv64: + $RV_ARCH)"
-  (cd "$OUT" && sha256sum coremark-rv64.elf coremark-native dhrystone-rv64.elf dhrystone-native)
+  echo "fpbench: guest/bench/fp/fpbench.c; flags: $FP_FLAGS -lm (rv64: + $RV_ARCH)"
+  (cd "$OUT" && sha256sum coremark-rv64.elf coremark-native dhrystone-rv64.elf dhrystone-native \
+    fpbench-rv64.elf fpbench-native)
 } > "$OUT/BUILDINFO.txt"
-echo "build-bench: built 4 benchmarks into ${OUT#"$ROOT"/}"
+echo "build-bench: built 6 benchmarks into ${OUT#"$ROOT"/}"

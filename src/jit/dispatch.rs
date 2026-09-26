@@ -80,6 +80,9 @@ pub struct JitOptions {
     /// `--profile-tbs`: sample the host RIP (SIGPROF, 1 kHz of CPU time) and report the
     /// hottest TBs in `stats` (D44).
     pub profile_tbs: bool,
+    /// `--no-inline-fp` clears this: every FP instruction runs through `helper_interp_one`
+    /// (the Phase 5 behaviour, for measurements; D47).
+    pub inline_fp: bool,
 }
 
 impl Default for JitOptions {
@@ -99,6 +102,7 @@ impl Default for JitOptions {
             pin: vec![2, 1, 10, 15],
             dump_ir: None,
             profile_tbs: false,
+            inline_fp: true,
         }
     }
 }
@@ -248,8 +252,8 @@ impl Jit {
 
     /// The TB for guest `pc` in the given FP variant (D47), translating it on a miss.
     pub fn tb_for_variant(&mut self, pc: u64, mem: &DirectMem, fp_slow: bool) -> u32 {
-        // Only the IR back end has two variants.
-        let fp_slow = fp_slow && self.opts.regalloc != RegAlloc::None;
+        // Only the IR back end has two variants; without inline FP only the slow one is used.
+        let fp_slow = (fp_slow || !self.opts.inline_fp) && self.opts.regalloc != RegAlloc::None;
         if let Some(id) = self.cache.lookup(pc, fp_slow) {
             return id;
         }
@@ -495,6 +499,7 @@ impl Jit {
         let start = self.cm.rx_base();
         signal::set_jit_range(start, start + self.cm.size() as u64, self.tr.fault_exit);
         self.stats.entries += 1;
+        let icount_before = cpu.icount;
         // SAFETY: `host` is a TB placed in this Jit's code buffer (still mapped: we own it),
         // every chained target and jump-cache entry points into the current generation of
         // that buffer (tag check above), and mem_base/helper_mem were just set to the live
@@ -517,9 +522,9 @@ impl Jit {
             r => panic!("JIT exit with unknown reason {r} at pc {:#x}", cpu.pc),
         };
         // After the host-fault refund: everything charged and not refunded has retired.
-        let retired = (cpu.budget_ref - cpu.budget) as u64;
-        cpu.icount += retired;
-        self.stats.retired += retired;
+        // helper_interp_one folds its share into icount on the way (D30), so count the delta.
+        cpu.icount += (cpu.budget_ref - cpu.budget) as u64;
+        self.stats.retired += cpu.icount - icount_before;
         self.stats.jalr += std::mem::take(&mut cpu.prof_jalr);
         let slot = (code & 3) as u8;
         self.last_exit = (slot < 2 && reason == exit::NONE).then_some((
