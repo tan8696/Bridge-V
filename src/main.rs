@@ -9,7 +9,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use bridgev::elf::{Elf, PF_X};
 use bridgev::isa::{decode_parts, disasm};
-use bridgev::system::bare::{self, BareResult};
+use bridgev::jit::code_mem::WxMode;
+use bridgev::jit::{EngineKind, JitOptions};
+use bridgev::system::bare::{self, BareOptions, BareResult};
 use bridgev::user::{self, RunOptions};
 
 #[derive(Parser)]
@@ -35,8 +37,32 @@ enum Mode {
 enum Engine {
     /// Reference interpreter.
     Interp,
-    /// JIT translator (Phase 2).
+    /// JIT translator.
     Jit,
+    /// JIT checked against the interpreter after every translation block.
+    Lockstep,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Wx {
+    /// memfd mapped twice: RW view for writing, RX view for executing.
+    Dualmap,
+    /// One mapping, toggled RW/RX with mprotect around every write.
+    Mprotect,
+}
+
+/// Parse a size with an optional K/M/G suffix (powers of 1024).
+fn parse_size(s: &str) -> Result<usize, String> {
+    let (num, mul) = match s.as_bytes().last() {
+        Some(b'K' | b'k') => (&s[..s.len() - 1], 1 << 10),
+        Some(b'M' | b'm') => (&s[..s.len() - 1], 1 << 20),
+        Some(b'G' | b'g') => (&s[..s.len() - 1], 1 << 30),
+        _ => (s, 1),
+    };
+    num.parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_mul(mul))
+        .ok_or_else(|| format!("invalid size `{s}`"))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -65,6 +91,30 @@ enum Command {
         /// Log every syscall on stderr (user mode).
         #[arg(long)]
         strace: bool,
+        /// Maximum guest instructions per translation block.
+        #[arg(long, default_value_t = 128, value_parser = clap::value_parser!(u32).range(1..=4096))]
+        max_block: u32,
+        /// Code cache size (K/M/G suffix, at most 1G).
+        #[arg(long, default_value = "256M", value_parser = parse_size)]
+        code_cache: usize,
+        /// How the code cache enforces W^X.
+        #[arg(long, value_enum, default_value = "dualmap")]
+        wx: Wx,
+        /// Use only baseline x86-64 in generated code (ignore BMI2, FMA, ...).
+        #[arg(long)]
+        no_host_features: bool,
+        /// Write every translation block's host code to this directory.
+        #[arg(long)]
+        dump_x86: Option<PathBuf>,
+        /// Append JIT symbols to /tmp/perf-<pid>.map.
+        #[arg(long)]
+        perf_map: bool,
+        /// Make the `time` CSR follow the instruction count (reproducible runs).
+        #[arg(long)]
+        deterministic: bool,
+        /// Testing only: deliberately miscompile ADDI (lockstep must catch it).
+        #[arg(long, hide = true)]
+        inject_bug: bool,
         /// Guest executable.
         elf: PathBuf,
         /// Arguments passed to the guest program.
@@ -105,14 +155,16 @@ fn print_stats(icount: u64, start: Instant) {
     );
 }
 
-fn run_bare(elf: &Path, max_insns: Option<u64>, trace: bool, stats: bool) -> Result<ExitCode> {
+fn run_bare(elf: &Path, opts: BareOptions, stats: bool) -> Result<ExitCode> {
     let data = std::fs::read(elf).with_context(|| format!("reading {}", elf.display()))?;
     let start = Instant::now();
-    let (result, icount) = bare::run(&data, max_insns.unwrap_or(100_000_000), trace)?;
+    let r = bare::run(&data, &opts)?;
+    let icount = r.icount;
     if stats {
         print_stats(icount, start);
+        eprintln!("bridgev: {}", r.engine_stats);
     }
-    Ok(match result {
+    Ok(match r.result {
         BareResult::Pass => {
             println!("PASS");
             ExitCode::SUCCESS
@@ -136,6 +188,7 @@ fn run_user(elf: &Path, args: Vec<String>, opts: RunOptions, stats: bool) -> Res
     let r = user::run(elf, &argv, &envs, opts)?;
     if stats {
         print_stats(r.icount, start);
+        eprintln!("bridgev: {}", r.engine_stats);
     }
     Ok(ExitCode::from(r.exit_code as u8))
 }
@@ -182,19 +235,56 @@ fn main() -> ExitCode {
             trace,
             stats,
             strace,
+            max_block,
+            code_cache,
+            wx,
+            no_host_features,
+            dump_x86,
+            perf_map,
+            deterministic,
+            inject_bug,
             elf,
             args,
         } => {
-            if engine == Engine::Jit {
-                return not_implemented("run --engine=jit", 2);
+            let engine = match engine {
+                Engine::Interp => EngineKind::Interp,
+                Engine::Jit => EngineKind::Jit,
+                Engine::Lockstep => EngineKind::Lockstep,
+            };
+            if trace.is_some() && engine != EngineKind::Interp {
+                eprintln!("bridgev: --trace is only supported with --engine=interp");
+                return ExitCode::from(EXIT_NOT_IMPLEMENTED);
             }
+            let jit = JitOptions {
+                max_block: max_block as usize,
+                code_cache,
+                wx: match wx {
+                    Wx::Dualmap => WxMode::DualMap,
+                    Wx::Mprotect => WxMode::Mprotect,
+                },
+                host_features: !no_host_features,
+                dump_x86,
+                perf_map,
+                inject_bug,
+            };
             match mode {
-                Mode::Bare => run_bare(&elf, max_insns, trace.is_some(), stats),
+                Mode::Bare => {
+                    let opts = BareOptions {
+                        max_insns: max_insns.unwrap_or(100_000_000),
+                        trace: trace.is_some(),
+                        engine,
+                        jit,
+                    };
+                    run_bare(&elf, opts, stats)
+                }
                 Mode::User => {
                     let opts = RunOptions {
                         trace: trace.is_some(),
                         strace,
                         max_insns,
+                        engine,
+                        jit,
+                        deterministic,
                     };
                     run_user(&elf, args, opts, stats)
                 }

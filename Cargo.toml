@@ -20,6 +20,11 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.189"
 rustc-hash = "2.1.3"
+# Optional: x86 disassembly in --dump-x86 files and lockstep reports (`--features disasm`).
+iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder", "intel"], optional = true }
+
+[features]
+disasm = ["dep:iced-x86"]
 
 [dev-dependencies]
 iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder", "intel", "instr_info"] }

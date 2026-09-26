@@ -29,7 +29,7 @@ pub struct Block {
     pub fetch_fault: Option<Exception>,
 }
 
-/// Why `Interp::run` returned.
+/// Why `Engine::run` returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
     /// User mode: ECALL at `cpu.pc`; the caller services the syscall.
@@ -40,6 +40,8 @@ pub enum Stop {
     Limit,
     /// Bare mode: the guest wrote this nonzero value to `tohost`.
     Tohost(u64),
+    /// Lockstep: the JIT and the interpreter disagreed (details already printed).
+    Diverged,
 }
 
 /// Execution environment of `Interp::run`.
@@ -54,6 +56,54 @@ pub struct Env {
     pub trace: bool,
 }
 
+/// An execution engine: the interpreter, the JIT, or the lockstep checker (CLAUDE.md §5).
+pub trait Engine {
+    /// Execute until a `Stop` condition, or until `max_insns` more instructions have retired
+    /// (checked at block boundaries).
+    fn run(&mut self, cpu: &mut CpuState, mem: &mut DirectMem, env: &Env, max_insns: u64) -> Stop;
+    /// Guest code may have changed (FENCE.I, `mmap`/`munmap` of executable memory,
+    /// `riscv_flush_icache`): drop all decoded or translated code.
+    fn flush(&mut self);
+    /// Engine statistics for `--stats` (empty if none).
+    fn stats(&self) -> String {
+        String::new()
+    }
+}
+
+/// Deliver the outcome of a block the way the environment requires: in user mode ECALLs and
+/// exceptions stop execution (`Err`), otherwise they trap into guest privileged code.
+/// `Flush` must be handled by the caller (it owns the code cache).
+pub fn deliver(exit: BlockExit, env: &Env, cpu: &mut CpuState) -> Result<(), Stop> {
+    match exit {
+        BlockExit::Continue | BlockExit::Flush => Ok(()),
+        BlockExit::Ecall => {
+            if env.user_mode {
+                return Err(Stop::Ecall);
+            }
+            let c = ecall_cause(cpu);
+            cpu.take_trap(Exception { cause: c, tval: 0 }, false);
+            Ok(())
+        }
+        BlockExit::Trap(e) => {
+            if env.user_mode {
+                return Err(Stop::Fault(e));
+            }
+            cpu.take_trap(e, false);
+            Ok(())
+        }
+    }
+}
+
+/// The `tohost` check done at every block boundary in bare mode.
+#[inline]
+pub fn tohost_written(mem: &DirectMem, env: &Env) -> Option<u64> {
+    let th = env.tohost?;
+    match mem.load(th, 8) {
+        Ok(0) | Err(_) => None,
+        Ok(v) => Some(v),
+    }
+}
+
 #[derive(Default)]
 pub struct Interp {
     cache: FxHashMap<u64, Rc<Block>>,
@@ -61,13 +111,88 @@ pub struct Interp {
     pub blocks_built: u64,
 }
 
-enum Flow {
+/// Result of executing one instruction (`step`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flow {
+    /// Fall through to the next instruction.
     Next,
+    /// Control transfer to this pc (the instruction retired).
     Jump(u64),
+    /// The instruction raised an exception (it did not retire).
     Trap(Exception),
+    /// ECALL (not retired yet: the environment services it).
     Ecall,
     /// FENCE.I: flush the block cache, continue at the next instruction.
     Flush,
+}
+
+/// How `exec_block` ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockExit {
+    /// Execution continues at `cpu.pc`.
+    Continue,
+    /// ECALL at `cpu.pc`.
+    Ecall,
+    /// Exception at `cpu.pc` (not yet delivered).
+    Trap(Exception),
+    /// FENCE.I retired; `cpu.pc` is the next instruction. Decoded code must be flushed.
+    Flush,
+}
+
+/// Execute the pre-decoded instructions of one block starting at `cpu.pc`, updating `pc` and
+/// `icount` exactly as the architecture requires. Traps are returned, not delivered. Shared by
+/// the interpreter, the JIT's lockstep checker and (via `step`) the JIT fallback helper.
+pub fn exec_block(
+    cpu: &mut CpuState,
+    mem: &mut DirectMem,
+    insns: &[Decoded],
+    fetch_fault: Option<Exception>,
+    trace: bool,
+) -> BlockExit {
+    let mut pc = cpu.pc;
+    for d in insns {
+        if trace {
+            eprintln!("{pc:016x}: {:08x}  {}", d.raw, disasm(&d.inst));
+        }
+        match step(cpu, mem, d, pc) {
+            Flow::Next => {
+                pc = pc.wrapping_add(d.len as u64);
+                cpu.icount += 1;
+            }
+            Flow::Jump(target) => {
+                cpu.icount += 1;
+                cpu.pc = target;
+                return BlockExit::Continue;
+            }
+            Flow::Flush => {
+                cpu.icount += 1;
+                cpu.pc = pc.wrapping_add(d.len as u64);
+                return BlockExit::Flush;
+            }
+            Flow::Ecall => {
+                cpu.pc = pc;
+                return BlockExit::Ecall;
+            }
+            Flow::Trap(e) => {
+                cpu.pc = pc;
+                return BlockExit::Trap(e);
+            }
+        }
+    }
+    cpu.pc = pc;
+    match fetch_fault {
+        Some(e) => BlockExit::Trap(e),
+        None => BlockExit::Continue,
+    }
+}
+
+/// ECALL cause for the current privilege level.
+pub fn ecall_cause(cpu: &CpuState) -> u64 {
+    match cpu.prv {
+        prv::U => cause::ECALL_U,
+        prv::S => cause::ECALL_S,
+        _ => cause::ECALL_M,
+    }
 }
 
 impl Interp {
@@ -104,78 +229,43 @@ impl Interp {
             if cpu.icount >= limit {
                 return Stop::Limit;
             }
-            if let Some(th) = env.tohost {
-                match mem.load(th, 8) {
-                    Ok(0) | Err(_) => {}
-                    Ok(v) => return Stop::Tohost(v),
-                }
+            if let Some(v) = tohost_written(mem, env) {
+                return Stop::Tohost(v);
             }
             let block = self.block(cpu.pc, mem);
-            let mut pc = cpu.pc;
-            let mut left_block = false;
-            for d in &block.insns {
-                if env.trace {
-                    eprintln!("{pc:016x}: {:08x}  {}", d.raw, disasm(&d.inst));
-                }
-                match exec(cpu, mem, d, pc) {
-                    Flow::Next => {
-                        pc = pc.wrapping_add(d.len as u64);
-                        cpu.icount += 1;
-                    }
-                    Flow::Jump(target) => {
-                        cpu.icount += 1;
-                        cpu.pc = target;
-                        left_block = true;
-                        break;
-                    }
-                    Flow::Flush => {
-                        cpu.icount += 1;
-                        cpu.pc = pc.wrapping_add(d.len as u64);
-                        self.flush();
-                        left_block = true;
-                        break;
-                    }
-                    Flow::Ecall => {
-                        cpu.pc = pc;
-                        if env.user_mode {
-                            return Stop::Ecall;
-                        }
-                        let c = match cpu.prv {
-                            prv::U => cause::ECALL_U,
-                            prv::S => cause::ECALL_S,
-                            _ => cause::ECALL_M,
-                        };
-                        cpu.take_trap(Exception { cause: c, tval: 0 }, false);
-                        left_block = true;
-                        break;
-                    }
-                    Flow::Trap(e) => {
-                        cpu.pc = pc;
-                        if env.user_mode {
-                            return Stop::Fault(e);
-                        }
-                        cpu.take_trap(e, false);
-                        left_block = true;
-                        break;
-                    }
-                }
+            let exit = exec_block(cpu, mem, &block.insns, block.fetch_fault, env.trace);
+            if exit == BlockExit::Flush {
+                self.flush();
             }
-            if !left_block {
-                cpu.pc = pc;
-                if let Some(e) = block.fetch_fault {
-                    if env.user_mode {
-                        return Stop::Fault(e);
-                    }
-                    cpu.take_trap(e, false);
-                }
+            if let Err(stop) = deliver(exit, env, cpu) {
+                return stop;
             }
         }
+    }
+}
+
+impl Engine for Interp {
+    fn run(&mut self, cpu: &mut CpuState, mem: &mut DirectMem, env: &Env, max_insns: u64) -> Stop {
+        Interp::run(self, cpu, mem, env, max_insns)
+    }
+
+    fn flush(&mut self) {
+        Interp::flush(self);
+    }
+
+    fn stats(&self) -> String {
+        format!("interp: {} blocks decoded", self.blocks_built)
     }
 }
 
 /// Decode a block starting at `pc`, stopping at a block-ending instruction, a page boundary,
 /// `MAX_BLOCK` instructions, or a fetch fault (recorded in `fetch_fault`).
 pub fn build_block(pc: u64, mem: &DirectMem) -> Block {
+    build_block_max(pc, mem, MAX_BLOCK)
+}
+
+/// `build_block` with an instruction limit of `max` (≥ 1).
+pub fn build_block_max(pc: u64, mem: &DirectMem, max: usize) -> Block {
     let mut insns = Vec::new();
     let mut a = pc;
     let fault = |tval| Exception {
@@ -205,7 +295,7 @@ pub fn build_block(pc: u64, mem: &DirectMem) -> Block {
         a = a.wrapping_add(d.len as u64);
         let end = d.inst.ends_block();
         insns.push(d);
-        if end || insns.len() >= MAX_BLOCK || a & 0xfff == 0 {
+        if end || insns.len() >= max || a & 0xfff == 0 {
             return Block {
                 insns,
                 fetch_fault: None,
@@ -273,7 +363,9 @@ pub fn aluw(op: AluWOp, a: u64, b: u64) -> u64 {
 }
 
 #[inline(always)]
-fn exec(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Flow {
+/// Execute one decoded instruction at `pc` (the interpreter's semantics, used by the JIT's
+/// fallback helper for everything it does not lower natively, D14).
+pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Flow {
     let illegal = Flow::Trap(Exception::illegal(d.raw));
     let next_pc = pc.wrapping_add(d.len as u64);
     match d.inst {

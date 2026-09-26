@@ -7,8 +7,10 @@
 //!
 //! Guest permissions are tracked in a two-level page table (`PageProt`) and enforced by the
 //! checked accessors below, so the interpreter can never fault the host: a bad guest access
-//! becomes a `MemFault`. Host pages are always mapped read/write; host-level protection that
-//! mirrors guest permissions is introduced with the JIT's direct accesses (Phase 2/8).
+//! becomes a `MemFault`. Host page protection mirrors the guest permissions (`host_prot`), so
+//! the JIT's unchecked `[rbx + g]` accesses fault on the host exactly where the interpreter
+//! would report a fault (D23, D27); the JIT's SIGSEGV handler turns that into a guest
+//! exception. Execute-only guest pages stay host-readable (the decoder reads them).
 
 use std::ptr;
 
@@ -52,6 +54,21 @@ pub struct DirectMem {
     reserve: *mut u8,
     base: *mut u8,
     prot: PageProt,
+    /// Lockstep checking: every successful `store` appends `(addr, size, old value)`.
+    pub write_log: Option<Vec<(u64, u64, u64)>>,
+}
+
+/// Host protection for guest permissions `p`: readable if the guest may read or execute
+/// (instruction fetch reads through the host mapping), writable if the guest may write.
+fn host_prot(p: u8) -> libc::c_int {
+    let mut h = libc::PROT_NONE;
+    if p & (prot::R | prot::X | prot::W) != 0 {
+        h |= libc::PROT_READ;
+    }
+    if p & prot::W != 0 {
+        h |= libc::PROT_WRITE;
+    }
+    h
 }
 
 // SAFETY: DirectMem owns its mapping exclusively; it is only accessed through &self/&mut self.
@@ -94,6 +111,7 @@ impl DirectMem {
             // SAFETY: GUARD < len, so the offset stays inside the reservation.
             base: unsafe { reserve.add(GUARD) },
             prot: PageProt::new(),
+            write_log: None,
         })
     }
 
@@ -126,7 +144,7 @@ impl DirectMem {
             libc::mmap(
                 self.base.add(start as usize) as *mut libc::c_void,
                 (end - start) as usize,
-                libc::PROT_READ | libc::PROT_WRITE,
+                host_prot(p),
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED | libc::MAP_NORESERVE,
                 -1,
                 0,
@@ -185,8 +203,28 @@ impl DirectMem {
                 "mprotect of unmapped range {start:#x}..{end:#x}"
             )));
         }
+        self.set_host_prot(start, end, host_prot(p))?;
         for page in start / PAGE_SIZE..end / PAGE_SIZE {
             self.prot.set(page, p | MAPPED);
+        }
+        Ok(())
+    }
+
+    fn set_host_prot(&mut self, start: u64, end: u64, h: libc::c_int) -> Result<(), MapError> {
+        // SAFETY: [start, end) is page-aligned, inside the reservation and mapped (callers
+        // check), so mprotect only changes pages we own.
+        let r = unsafe {
+            libc::mprotect(
+                self.base.add(start as usize) as *mut libc::c_void,
+                (end - start) as usize,
+                h,
+            )
+        };
+        if r != 0 {
+            return Err(MapError(format!(
+                "mprotect of guest {start:#x}..{end:#x} failed: {}",
+                std::io::Error::last_os_error()
+            )));
         }
         Ok(())
     }
@@ -242,7 +280,11 @@ impl DirectMem {
     #[inline]
     pub fn store(&mut self, addr: u64, size: u64, val: u64) -> Result<(), MemFault> {
         self.check(addr, size, prot::W, Access::Store)?;
-        // SAFETY: as in `load`; host pages are always writable.
+        let old = self.write_log.is_some().then(|| self.peek(addr, size));
+        if let (Some(log), Some(old)) = (self.write_log.as_mut(), old) {
+            log.push((addr, size, old));
+        }
+        // SAFETY: as in `load`; guest-writable pages are host-writable (`host_prot`).
         unsafe {
             let p = self.base.add(addr as usize);
             match size {
@@ -300,10 +342,63 @@ impl DirectMem {
     }
 
     /// Copy `data` into mapped guest memory regardless of guest permissions (loader use).
+    /// Pages that are not host-writable are made writable for the copy and restored after.
     pub fn write_bytes(&mut self, addr: GuestVirt, data: &[u8]) -> Result<(), MemFault> {
-        self.slice_mut(addr, data.len() as u64, MAPPED)?
-            .copy_from_slice(data);
+        if data.is_empty() {
+            return Ok(());
+        }
+        self.check(addr.0, data.len() as u64, MAPPED, Access::Store)?;
+        let (start, end) = (page_floor(addr.0), page_ceil(addr.0 + data.len() as u64));
+        let rw = libc::PROT_READ | libc::PROT_WRITE;
+        self.set_host_prot(start, end, rw)
+            .expect("mprotect of a mapped guest range");
+        // SAFETY: range checked as mapped and made host-writable just above.
+        unsafe {
+            ptr::copy_nonoverlapping(data.as_ptr(), self.base.add(addr.0 as usize), data.len());
+        }
+        for page in start / PAGE_SIZE..end / PAGE_SIZE {
+            let h = host_prot(self.prot.get(page) & prot::RWX);
+            if h != rw {
+                let a = page * PAGE_SIZE;
+                self.set_host_prot(a, a + PAGE_SIZE, h)
+                    .expect("mprotect of a mapped guest page");
+            }
+        }
         Ok(())
+    }
+
+    /// Read `size` (1, 2, 4 or 8) bytes without a permission check. The caller guarantees the
+    /// range is host-readable (it was just written, or is guest-readable).
+    pub fn peek(&self, addr: u64, size: u64) -> u64 {
+        assert!(addr.checked_add(size).is_some_and(|e| e <= GUEST_SPACE));
+        // SAFETY: in the reservation; readability is the caller's contract (a violation is a
+        // host SIGSEGV, never memory corruption).
+        unsafe {
+            let p = self.base.add(addr as usize);
+            match size {
+                1 => *p as u64,
+                2 => ptr::read_unaligned(p as *const u16) as u64,
+                4 => ptr::read_unaligned(p as *const u32) as u64,
+                _ => ptr::read_unaligned(p as *const u64),
+            }
+        }
+    }
+
+    /// Undo stores recorded in a write log (newest first), restoring the old bytes.
+    pub fn undo_writes(&mut self, log: &[(u64, u64, u64)]) {
+        for &(addr, size, old) in log.iter().rev() {
+            // SAFETY: each entry records a store that succeeded, so the range is mapped and
+            // guest-writable, hence host-writable.
+            unsafe {
+                let p = self.base.add(addr as usize);
+                match size {
+                    1 => *p = old as u8,
+                    2 => ptr::write_unaligned(p as *mut u16, old as u16),
+                    4 => ptr::write_unaligned(p as *mut u32, old as u32),
+                    _ => ptr::write_unaligned(p as *mut u64, old),
+                }
+            }
+        }
     }
 }
 

@@ -13,11 +13,7 @@ fn version_exits_zero() {
 
 #[test]
 fn unimplemented_subcommands_exit_two() {
-    for args in [
-        vec!["run", "--engine", "jit", "x.elf"],
-        vec!["boot", "--kernel", "Image"],
-        vec!["bench", "coremark"],
-    ] {
+    for args in [vec!["boot", "--kernel", "Image"], vec!["bench", "coremark"]] {
         let out = run_bridgev(&args);
         assert_eq!(out.code, Some(2), "{args:?}: stderr: {}", out.stderr);
         assert!(
@@ -52,4 +48,53 @@ fn guest_helper_skips_or_finds_hello() {
     if let Some(path) = common::guest_elf("hello") {
         assert!(path.is_file());
     }
+}
+
+/// P2.8: a deliberately miscompiled ADDI must be caught by lockstep, not by the program's
+/// output, and the report must show the TB and the differing register.
+#[test]
+fn lockstep_catches_injected_miscompilation() {
+    let Some(elf) = common::guest_elf("hello") else {
+        return;
+    };
+    let out = run_bridgev([
+        "run",
+        "--engine",
+        "lockstep",
+        "--inject-bug",
+        elf.to_str().unwrap(),
+    ]);
+    assert_eq!(out.code, Some(1), "stderr: {}", out.stderr);
+    assert!(out.stderr.contains("lockstep divergence"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("interp") && out.stderr.contains("jit"),
+        "{}",
+        out.stderr
+    );
+    // Without lockstep the same bug silently changes behaviour: the check is what caught it.
+    let ok = run_bridgev(["run", "--engine", "lockstep", elf.to_str().unwrap()]);
+    assert_eq!(ok.code, Some(0), "stderr: {}", ok.stderr);
+}
+
+/// P2.9: --stats reports JIT counters; --dump-x86 writes one .bin/.txt pair per TB.
+#[test]
+fn jit_stats_and_dump() {
+    let Some(elf) = common::guest_elf("hello") else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("bridgev-dump-{}", std::process::id()));
+    let out = run_bridgev([
+        "run",
+        "--engine",
+        "jit",
+        "--stats",
+        "--dump-x86",
+        dir.to_str().unwrap(),
+        elf.to_str().unwrap(),
+    ]);
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert!(out.stderr.contains("TBs translated"), "{}", out.stderr);
+    let n = std::fs::read_dir(&dir).unwrap().count();
+    assert!(n >= 2 && n.is_multiple_of(2), "{n} dump files");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

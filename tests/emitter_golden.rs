@@ -116,7 +116,11 @@ fn check(bytes: &[u8], mnem: Mnemonic, ops: &[E]) {
                     OpKind::Immediate64 | OpKind::Immediate8to64 | OpKind::Immediate32to64 => 64,
                     k => panic!("operand {n} is {k:?}, not an immediate: {}", ctx()),
                 };
-                let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+                let mask = if bits == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << bits) - 1
+                };
                 assert_eq!(i.immediate(n) & mask, v & mask, "{}", ctx());
             }
             E::T(t) => {

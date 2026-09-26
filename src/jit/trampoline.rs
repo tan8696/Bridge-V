@@ -1,2 +1,291 @@
-//! `enter_jit` / `exit_jit` trampolines and the helper address table, generated at startup
-//! (CLAUDE.md §8.4). Phase 2 (P2.4).
+//! `enter_jit` / `exit_jit` / `fault_exit` trampolines and the helper address table, generated
+//! into the start of the code buffer (CLAUDE.md §8.4). Also the Rust helpers JIT code calls.
+//!
+//! Buffer prefix layout:
+//! ```text
+//!   +0   helper table: one 8-byte absolute address per helper (called via `call [rip+d32]`)
+//!   ...  enter_jit(rdi = &CpuState, rsi = TB entry) -> rax
+//!   ...  exit_jit (rax = exit code)
+//!   ...  fault_exit (the SIGSEGV handler redirects RIP here)
+//! ```
+
+use std::mem::offset_of;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use crate::backend::x86::emit::{Alu, Asm, Mem, Size};
+use crate::backend::x86::regs::{CPU, CPU_BIAS, MEM_BASE, Reg};
+use crate::cpu::state::{CpuState, exit};
+use crate::interp::{Flow, step};
+use crate::isa::decode_parts;
+use crate::mem::direct::DirectMem;
+
+use super::code_mem::CodeMem;
+
+/// Indexes into the helper table.
+pub mod helper {
+    /// `helper_interp_one(cpu, raw, pc) -> u64` (D14).
+    pub const INTERP_ONE: usize = 0;
+    pub const COUNT: usize = 1;
+}
+
+/// `[rbp + disp]` addressing a `CpuState` field at byte offset `off` (RBP is biased, §8.1).
+pub fn cpu_field(off: usize) -> Mem {
+    Mem::base(CPU, off as i32 - CPU_BIAS)
+}
+
+/// Exit-code slot meaning "look at `cpu.exit_reason`" (§8.4). Slots 0/1 are direct exits.
+pub const SLOT_SPECIAL: u64 = 2;
+
+/// Addresses of the generated trampolines (RX view).
+#[derive(Clone, Copy, Debug)]
+pub struct Trampolines {
+    pub enter: u64,
+    pub exit: u64,
+    pub fault_exit: u64,
+    pub helper_table: u64,
+    /// End of the prefix (first TB address).
+    pub end: u64,
+}
+
+type EnterFn = extern "sysv64" fn(*mut CpuState, u64) -> u64;
+
+impl Trampolines {
+    /// Generate the prefix into an empty code buffer and seal it (it survives flushes).
+    pub fn generate(cm: &mut CodeMem) -> Trampolines {
+        let helpers: [u64; helper::COUNT] = [helper_interp_one as *const () as u64];
+        let origin = cm.next_addr();
+        let mut a = Asm::new(origin);
+        let helper_table = a.here();
+        for h in helpers {
+            a.data64(h);
+        }
+        a.align(16, 0);
+
+        // enter_jit: save callee-saved registers, align the stack, set up RBP/RBX, jump.
+        let enter = a.here();
+        for r in [Reg::Rbp, Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15] {
+            a.push(r);
+        }
+        // Entry RSP ≡ 8 (mod 16); six pushes + 8 make it ≡ 0, as every `call` needs (§8.2).
+        a.alu_ri(Size::B64, Alu::Sub, Reg::Rsp, 8);
+        a.lea(CPU, Mem::base(Reg::Rdi, CPU_BIAS));
+        a.load(
+            Size::B64,
+            MEM_BASE,
+            cpu_field(offset_of!(CpuState, mem_base)),
+        );
+        // Phase 2 keeps every guest register in CpuState; pinned R12–R15 arrive in Phase 4.
+        a.jmp_rm(Reg::Rsi);
+
+        // exit_jit: restore and return RAX to enter_jit's caller.
+        a.align(16, 0);
+        let exit = a.here();
+        a.alu_ri(Size::B64, Alu::Add, Reg::Rsp, 8);
+        for r in [Reg::R15, Reg::R14, Reg::R13, Reg::R12, Reg::Rbx, Reg::Rbp] {
+            a.pop(r);
+        }
+        a.ret();
+
+        // fault_exit: entered from the SIGSEGV handler with the faulting JIT frame's registers
+        // (RBP intact, RSP = enter_jit's RSP since JIT code never pushes).
+        a.align(16, 0);
+        let fault_exit = a.here();
+        a.store_imm(
+            Size::B32,
+            cpu_field(offset_of!(CpuState, exit_reason)),
+            exit::HOST_FAULT as i32,
+        );
+        a.mov_r32_imm(Reg::Rax, SLOT_SPECIAL as u32);
+        a.jmp_abs(exit);
+
+        let code = a.finish();
+        cm.place(origin, &code)
+            .expect("code buffer too small for trampolines");
+        cm.seal_prefix();
+        Trampolines {
+            enter,
+            exit,
+            fault_exit,
+            helper_table,
+            end: origin + code.len() as u64,
+        }
+    }
+
+    /// Address of helper table slot `idx` (for `call [rip + d32]`).
+    pub fn helper_slot(&self, idx: usize) -> u64 {
+        assert!(idx < helper::COUNT);
+        self.helper_table + 8 * idx as u64
+    }
+
+    /// Run JIT code at `entry` until it exits; returns the exit code (§8.4).
+    ///
+    /// # Safety
+    /// `entry` must be the start of a translation block in the code buffer these trampolines
+    /// were generated into, and that buffer must still be mapped. `cpu.mem_base` must be the
+    /// base of the guest space the block was translated for, and `cpu.helper_mem` must point
+    /// to that live `DirectMem`.
+    pub unsafe fn enter(&self, cpu: &mut CpuState, entry: u64) -> u64 {
+        // SAFETY: `self.enter` is the enter_jit trampoline generated above, which follows the
+        // SysV ABI (callee-saved registers restored, stack aligned) for this signature.
+        let f: EnterFn = unsafe { std::mem::transmute(self.enter as *const u8) };
+        f(cpu as *mut CpuState, entry)
+    }
+}
+
+/// Execute one instruction with the interpreter (D14). Called from JIT code with all guest
+/// state in `CpuState` and `cpu.icount` up to date. Returns 0 to continue with the next
+/// instruction, 1 to leave the block (`cpu.pc`, `cpu.exit_reason` and, for exceptions,
+/// `exc_cause`/`exc_tval` are set; `icount` counts the instruction if it retired).
+///
+/// `raw` holds the instruction bits (16 or 32 of them). Never unwinds into JIT code.
+///
+/// # Safety
+/// `cpu` must point to a live `CpuState` whose `helper_mem` points to the live `DirectMem` of
+/// the same guest, neither otherwise borrowed for the duration of the call.
+pub unsafe extern "sysv64" fn helper_interp_one(cpu: *mut CpuState, raw: u64, pc: u64) -> u64 {
+    let r = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: JIT code passes RBP - 128, the CpuState it runs on; `helper_mem` was set
+        // by the dispatcher to the guest's DirectMem, which is not otherwise borrowed while
+        // JIT code runs.
+        let cpu = unsafe { &mut *cpu };
+        // SAFETY: see above.
+        let mem = unsafe { &mut *(cpu.helper_mem as *mut DirectMem) };
+        let d = decode_parts::<()>(raw as u16, || Ok((raw >> 16) as u16)).expect("infallible");
+        match step(cpu, mem, &d, pc) {
+            Flow::Next => 0,
+            Flow::Jump(target) => {
+                cpu.icount += 1;
+                cpu.pc = target;
+                cpu.exit_reason = exit::NONE;
+                1
+            }
+            Flow::Flush => {
+                cpu.icount += 1;
+                cpu.pc = pc.wrapping_add(d.len as u64);
+                cpu.exit_reason = exit::FLUSH;
+                1
+            }
+            Flow::Trap(e) => {
+                cpu.pc = pc;
+                cpu.exc_cause = e.cause;
+                cpu.exc_tval = e.tval;
+                cpu.exit_reason = exit::EXCEPTION;
+                1
+            }
+            Flow::Ecall => {
+                cpu.pc = pc;
+                cpu.exit_reason = exit::ECALL;
+                1
+            }
+        }
+    }));
+    r.unwrap_or_else(|_| {
+        eprintln!("bridgev: panic in JIT helper; aborting");
+        std::process::abort()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jit::code_mem::WxMode;
+
+    fn setup() -> (CodeMem, Trampolines) {
+        let mut cm = CodeMem::new(1 << 20, WxMode::DualMap).unwrap();
+        let t = Trampolines::generate(&mut cm);
+        (cm, t)
+    }
+
+    /// A block that increments `cpu.x[5]` and exits with code 7.
+    fn inc_block(cm: &mut CodeMem, t: &Trampolines) -> u64 {
+        let mut a = Asm::new(cm.next_addr());
+        let x5 = cpu_field(8 * 5);
+        a.load(Size::B64, Reg::Rax, x5);
+        a.alu_ri(Size::B64, Alu::Add, Reg::Rax, 1);
+        a.store(Size::B64, x5, Reg::Rax);
+        a.mov_r32_imm(Reg::Rax, 7);
+        a.jmp_abs(t.exit);
+        let o = a.origin();
+        cm.place(o, &a.finish()).unwrap()
+    }
+
+    #[test]
+    fn enter_block_exit() {
+        let (mut cm, t) = setup();
+        let b = inc_block(&mut cm, &t);
+        let mut cpu = CpuState::new_user(0);
+        cpu.x[5] = 41;
+        // SAFETY: `b` is a complete block in this buffer that only touches cpu.x[5].
+        let code = unsafe { t.enter(&mut cpu, b) };
+        assert_eq!((code, cpu.x[5]), (7, 42));
+        assert_eq!(unsafe { t.enter(&mut cpu, b) }, 7);
+        assert_eq!(cpu.x[5], 43);
+    }
+
+    /// Callee-saved registers survive a block that clobbers all of them (checked from an
+    /// `asm!` harness, since Rust code cannot observe RBX/RBP directly).
+    #[test]
+    fn callee_saved_registers_preserved() {
+        let (mut cm, t) = setup();
+        let mut a = Asm::new(cm.next_addr());
+        for r in [Reg::Rbx, Reg::Rbp, Reg::R12, Reg::R13, Reg::R14, Reg::R15] {
+            a.mov_imm(r, 0xDEAD_0000 + r.num() as u64);
+        }
+        a.mov_r32_imm(Reg::Rax, 5);
+        a.jmp_abs(t.exit);
+        let o = a.origin();
+        let block = cm.place(o, &a.finish()).unwrap();
+        let mut cpu = CpuState::new_user(0);
+        let (mut r12, mut r13, mut r14, mut r15) = (0x12u64, 0x13u64, 0x14u64, 0x15u64);
+        let (rbx_after, rbp_after, ret): (u64, u64, u64);
+        // SAFETY: the asm saves and restores RBX/RBP itself, realigns the stack for the call,
+        // and declares every other register it or the callee may clobber.
+        unsafe {
+            std::arch::asm!(
+                "push rbx",
+                "push rbp",
+                "mov rbx, 0xB0B0",
+                "mov rbp, 0xB1B1",
+                "mov r11, rsp",
+                "and rsp, -16",
+                "push r11",
+                "sub rsp, 8",
+                "call {enter}",
+                "add rsp, 8",
+                "pop rsp",
+                "mov r8, rbx",
+                "mov r9, rbp",
+                "pop rbp",
+                "pop rbx",
+                enter = in(reg) t.enter,
+                lateout("r8") rbx_after,
+                lateout("r9") rbp_after,
+                in("rdi") &mut *cpu as *mut CpuState,
+                in("rsi") block,
+                inout("r12") r12,
+                inout("r13") r13,
+                inout("r14") r14,
+                inout("r15") r15,
+                lateout("rax") ret,
+                out("r11") _,
+                clobber_abi("sysv64"),
+            );
+        }
+        assert_eq!(ret, 5);
+        assert_eq!((rbx_after, rbp_after), (0xB0B0, 0xB1B1));
+        assert_eq!((r12, r13, r14, r15), (0x12, 0x13, 0x14, 0x15));
+    }
+
+    #[test]
+    fn prefix_survives_reset() {
+        let (mut cm, t) = setup();
+        let first = cm.next_addr();
+        assert!(first >= t.end);
+        inc_block(&mut cm, &t);
+        cm.reset();
+        assert_eq!(cm.next_addr(), first);
+        let b = inc_block(&mut cm, &t);
+        let mut cpu = CpuState::new_user(0);
+        assert_eq!(unsafe { t.enter(&mut cpu, b) }, 7);
+    }
+}

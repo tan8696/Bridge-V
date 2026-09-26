@@ -8,7 +8,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::cpu::state::CpuState;
 use crate::elf::Elf;
-use crate::interp::{Env, Interp, Stop};
+use crate::interp::{Env, Stop};
+use crate::jit::{EngineKind, JitOptions, make_engine};
 use crate::mem::direct::DirectMem;
 use crate::mem::{GuestVirt, prot};
 
@@ -25,9 +26,37 @@ pub enum BareResult {
     Timeout,
 }
 
-/// Load `elf_bytes` and run it to completion (or `max_insns`). Returns the result and the
-/// number of retired instructions.
-pub fn run(elf_bytes: &[u8], max_insns: u64, trace: bool) -> Result<(BareResult, u64)> {
+/// Options for `run`.
+#[derive(Clone, Debug)]
+pub struct BareOptions {
+    pub max_insns: u64,
+    pub trace: bool,
+    pub engine: EngineKind,
+    pub jit: JitOptions,
+}
+
+impl Default for BareOptions {
+    fn default() -> Self {
+        BareOptions {
+            max_insns: 100_000_000,
+            trace: false,
+            engine: EngineKind::Interp,
+            jit: JitOptions::default(),
+        }
+    }
+}
+
+/// Outcome of `run`.
+#[derive(Clone, Debug)]
+pub struct BareRun {
+    pub result: BareResult,
+    /// Retired instructions.
+    pub icount: u64,
+    pub engine_stats: String,
+}
+
+/// Load `elf_bytes` and run it to completion (or `max_insns`).
+pub fn run(elf_bytes: &[u8], opts: &BareOptions) -> Result<BareRun> {
     let elf = Elf::parse(elf_bytes)?;
     let tohost = elf.symbol("tohost").context("ELF has no `tohost` symbol")?;
     let mut mem = DirectMem::new()?;
@@ -43,14 +72,18 @@ pub fn run(elf_bytes: &[u8], max_insns: u64, trace: bool) -> Result<(BareResult,
     let env = Env {
         user_mode: false,
         tohost: Some(tohost),
-        trace,
+        trace: opts.trace,
     };
-    let mut interp = Interp::new();
-    let result = match interp.run(&mut cpu, &mut mem, &env, max_insns) {
+    let mut engine = make_engine(opts.engine, &opts.jit)?;
+    let result = match engine.run(&mut cpu, &mut mem, &env, opts.max_insns) {
         Stop::Tohost(1) => BareResult::Pass,
         Stop::Tohost(v) => BareResult::Fail(v >> 1),
         Stop::Limit => BareResult::Timeout,
         other => bail!("unexpected stop in bare mode: {other:?}"),
     };
-    Ok((result, cpu.icount))
+    Ok(BareRun {
+        result,
+        icount: cpu.icount,
+        engine_stats: engine.stats(),
+    })
 }

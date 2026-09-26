@@ -1,0 +1,177 @@
+//! `--engine=lockstep`: differential testing of the JIT against the interpreter, one TB at a
+//! time (CLAUDE.md §21 item 4, P2.8).
+//!
+//! For every TB: snapshot the CPU, run the interpreter over exactly the TB's instructions with
+//! a memory write log, record the resulting state and the new value of every written address,
+//! undo the writes and restore the CPU, then run the JIT's translation of the same TB and
+//! compare registers, pc, icount, fcsr, privilege, reservation, CSRs, exit kind and memory at
+//! every logged address. The first divergence prints the guest disassembly, the host code and
+//! the differences, and stops the run. The `time` CSR is made deterministic (icount-based) so
+//! both runs read the same value.
+
+use std::io;
+
+use crate::cpu::state::CpuState;
+use crate::interp::{BlockExit, Engine, Env, Stop, deliver, exec_block, tohost_written};
+
+use super::dispatch::{Jit, JitOptions, dump_tb_text};
+
+pub struct Lockstep {
+    jit: Jit,
+    /// TBs executed and found identical.
+    pub checked: u64,
+    /// Reused buffers: the write log and the interpreter's new values.
+    log: Vec<(u64, u64, u64)>,
+    writes: Vec<(u64, u64, u64)>,
+}
+
+impl Lockstep {
+    pub fn new(opts: JitOptions) -> io::Result<Lockstep> {
+        Ok(Lockstep {
+            jit: Jit::new(opts)?,
+            checked: 0,
+            log: Vec::new(),
+            writes: Vec::new(),
+        })
+    }
+}
+
+/// Architectural differences between the interpreter's (`i`) and the JIT's (`j`) state.
+pub fn compare(i: &CpuState, j: &CpuState) -> Vec<String> {
+    // Fast path (runs once per TB): no formatting unless something differs.
+    if i.x == j.x
+        && i.f == j.f
+        && (i.pc, i.icount, i.res_addr, i.res_val, i.res_valid)
+            == (j.pc, j.icount, j.res_addr, j.res_val, j.res_valid)
+        && (i.fflags, i.frm, i.prv) == (j.fflags, j.frm, j.prv)
+        && i.csr == j.csr
+    {
+        return Vec::new();
+    }
+    let mut d = Vec::new();
+    let mut cmp = |name: &str, a: u64, b: u64| {
+        if a != b {
+            d.push(format!("{name}: interp {a:#x}, jit {b:#x}"));
+        }
+    };
+    for r in 0..32 {
+        cmp(&format!("x{r}"), i.x[r], j.x[r]);
+    }
+    for r in 0..32 {
+        cmp(&format!("f{r}"), i.f[r], j.f[r]);
+    }
+    cmp("pc", i.pc, j.pc);
+    cmp("icount", i.icount, j.icount);
+    cmp("fflags", i.fflags as u64, j.fflags as u64);
+    cmp("frm", i.frm as u64, j.frm as u64);
+    cmp("prv", i.prv as u64, j.prv as u64);
+    cmp("res_addr", i.res_addr, j.res_addr);
+    cmp("res_val", i.res_val, j.res_val);
+    cmp("res_valid", i.res_valid, j.res_valid);
+    let (a, b) = (&i.csr, &j.csr);
+    for (name, x, y) in [
+        ("mstatus", a.mstatus, b.mstatus),
+        ("mepc", a.mepc, b.mepc),
+        ("mcause", a.mcause, b.mcause),
+        ("mtval", a.mtval, b.mtval),
+        ("mtvec", a.mtvec, b.mtvec),
+        ("mscratch", a.mscratch, b.mscratch),
+        ("sepc", a.sepc, b.sepc),
+        ("scause", a.scause, b.scause),
+        ("stval", a.stval, b.stval),
+        ("stvec", a.stvec, b.stvec),
+        ("sscratch", a.sscratch, b.sscratch),
+        ("satp", a.satp, b.satp),
+        ("mie", a.mie, b.mie),
+        ("mip", a.mip, b.mip),
+        ("medeleg", a.medeleg, b.medeleg),
+        ("mideleg", a.mideleg, b.mideleg),
+        ("instret_offset", a.instret_offset, b.instret_offset),
+        ("cycle_offset", a.cycle_offset, b.cycle_offset),
+    ] {
+        cmp(name, x, y);
+    }
+    if d.is_empty() && i.csr != j.csr {
+        d.push("other CSR state differs".into());
+    }
+    d
+}
+
+impl Engine for Lockstep {
+    fn run(
+        &mut self,
+        cpu: &mut CpuState,
+        mem: &mut crate::mem::direct::DirectMem,
+        env: &Env,
+        max_insns: u64,
+    ) -> Stop {
+        cpu.csr.deterministic_time = true;
+        let limit = cpu.icount.saturating_add(max_insns);
+        loop {
+            if cpu.icount >= limit {
+                return Stop::Limit;
+            }
+            if let Some(v) = tohost_written(mem, env) {
+                return Stop::Tohost(v);
+            }
+            let id = self.jit.tb_for(cpu.pc, mem);
+
+            // Reference run.
+            let snapshot = cpu.clone();
+            self.log.clear();
+            mem.write_log = Some(std::mem::take(&mut self.log));
+            let tb = self.jit.tb(id);
+            let iexit = exec_block(cpu, mem, &tb.insns, tb.fetch_fault, false);
+            self.log = mem.write_log.take().expect("write log enabled above");
+            self.writes.clear();
+            self.writes
+                .extend(self.log.iter().map(|&(a, s, _)| (a, s, mem.peek(a, s))));
+            let icpu = std::mem::replace(cpu, snapshot);
+            mem.undo_writes(&self.log);
+
+            // JIT run from the same state.
+            let jexit = self.jit.exec_tb(cpu, mem, id);
+            let mut diffs = compare(&icpu, cpu);
+            if iexit != jexit {
+                diffs.push(format!("exit: interp {iexit:?}, jit {jexit:?}"));
+            }
+            for &(a, s, v) in &self.writes {
+                let j = mem.peek(a, s);
+                if j != v {
+                    diffs.push(format!("mem[{a:#x}; {s}]: interp {v:#x}, jit {j:#x}"));
+                }
+            }
+            if !diffs.is_empty() {
+                let tb = self.jit.tb(id);
+                eprintln!(
+                    "bridgev: lockstep divergence after {} identical TBs\n{}differences:",
+                    self.checked,
+                    dump_tb_text(tb.guest_pc, &tb.insns, tb.host, self.jit.tb_code(id))
+                );
+                for d in &diffs {
+                    eprintln!("  {d}");
+                }
+                return Stop::Diverged;
+            }
+            self.checked += 1;
+            if jexit == BlockExit::Flush {
+                self.jit.flush();
+            }
+            if let Err(stop) = deliver(jexit, env, cpu) {
+                return stop;
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        self.jit.flush();
+    }
+
+    fn stats(&self) -> String {
+        format!(
+            "lockstep: {} TBs identical; {}",
+            self.checked,
+            self.jit.stats()
+        )
+    }
+}

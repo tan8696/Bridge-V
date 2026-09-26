@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::ffi::CString;
 
-use crate::interp::Interp;
+use crate::interp::Engine;
 use crate::mem::{GuestVirt, PAGE_SIZE, page_ceil, prot};
 
 use super::loader::{MMAP_TOP, Process};
@@ -111,7 +111,7 @@ fn write_guest(p: &mut Process, addr: u64, bytes: &[u8]) -> i64 {
 
 impl Syscalls {
     /// Service the ECALL at `p.cpu.pc`.
-    pub fn dispatch(&mut self, p: &mut Process, interp: &mut Interp) -> SysOut {
+    pub fn dispatch(&mut self, p: &mut Process, interp: &mut dyn Engine) -> SysOut {
         let nr = p.cpu.x[17];
         let a: [u64; 6] = std::array::from_fn(|i| p.cpu.x[10 + i]);
         let r = self.handle(p, interp, nr, a);
@@ -127,7 +127,7 @@ impl Syscalls {
         r
     }
 
-    fn handle(&mut self, p: &mut Process, interp: &mut Interp, nr: u64, a: [u64; 6]) -> SysOut {
+    fn handle(&mut self, p: &mut Process, interp: &mut dyn Engine, nr: u64, a: [u64; 6]) -> SysOut {
         use SysOut::Ret;
         let ret = |v: Result<i64, i64>| Ret(v.unwrap_or_else(|e| e));
         match nr {
@@ -489,7 +489,7 @@ impl Syscalls {
         }
     }
 
-    fn mmap(&self, p: &mut Process, interp: &mut Interp, a: [u64; 6]) -> i64 {
+    fn mmap(&self, p: &mut Process, interp: &mut dyn Engine, a: [u64; 6]) -> i64 {
         const MAP_FIXED: u64 = 0x10;
         const MAP_ANONYMOUS: u64 = 0x20;
         const MAP_FIXED_NOREPLACE: u64 = 0x10_0000;
@@ -548,7 +548,7 @@ impl Syscalls {
         start as i64
     }
 
-    fn munmap(&self, p: &mut Process, interp: &mut Interp, addr: u64, len: u64) -> i64 {
+    fn munmap(&self, p: &mut Process, interp: &mut dyn Engine, addr: u64, len: u64) -> i64 {
         if !addr.is_multiple_of(PAGE_SIZE) || len == 0 {
             return -EINVAL;
         }

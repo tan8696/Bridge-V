@@ -7,9 +7,24 @@ use std::mem::offset_of;
 use super::csr::{Csrs, fs, mstatus};
 use super::trap::prv;
 
+/// Values of `CpuState::exit_reason` when JIT code returns to the dispatcher (D25).
+pub mod exit {
+    /// Plain exit: continue at `pc`.
+    pub const NONE: u32 = 0;
+    /// ECALL at `pc`.
+    pub const ECALL: u32 = 1;
+    /// Exception at `pc`: `exc_cause`, `exc_tval`.
+    pub const EXCEPTION: u32 = 2;
+    /// FENCE.I retired: flush translated code, continue at `pc`.
+    pub const FLUSH: u32 = 3;
+    /// Host SIGSEGV inside JIT code: `fault_rip`, `fault_addr` (resolved by the dispatcher).
+    pub const HOST_FAULT: u32 = 4;
+}
+
 /// Architectural state of one hart. The first fields have fixed offsets that generated code
 /// relies on; `csr` (Rust-only) must stay last.
 #[repr(C, align(64))]
+#[derive(Clone)]
 pub struct CpuState {
     /// Integer registers; `x[0]` is always 0.
     pub x: [u64; 32],
@@ -36,6 +51,15 @@ pub struct CpuState {
     /// Dynamic rounding mode (fcsr[7:5]).
     pub frm: u8,
     _pad1: [u8; 6],
+    /// Exception raised by JIT code or a JIT helper (`exit_reason == EXIT_EXCEPTION`).
+    pub exc_cause: u64,
+    pub exc_tval: u64,
+    /// Host fault recorded by the SIGSEGV handler (`exit_reason == EXIT_HOST_FAULT`): the
+    /// faulting host RIP (inside the code buffer) and host data address.
+    pub fault_rip: u64,
+    pub fault_addr: u64,
+    /// `*mut DirectMem` of the running guest, for JIT helpers (set by the dispatcher).
+    pub helper_mem: u64,
     pub csr: Csrs,
 }
 
@@ -56,6 +80,11 @@ const _: () = {
     assert!(offset_of!(CpuState, f) == 0x140);
     assert!(offset_of!(CpuState, fflags) == 0x240);
     assert!(offset_of!(CpuState, frm) == 0x241);
+    assert!(offset_of!(CpuState, exc_cause) == 0x248);
+    assert!(offset_of!(CpuState, exc_tval) == 0x250);
+    assert!(offset_of!(CpuState, fault_rip) == 0x258);
+    assert!(offset_of!(CpuState, fault_addr) == 0x260);
+    assert!(offset_of!(CpuState, helper_mem) == 0x268);
 };
 
 impl CpuState {
@@ -78,6 +107,11 @@ impl CpuState {
             fflags: 0,
             frm: 0,
             _pad1: [0; 6],
+            exc_cause: 0,
+            exc_tval: 0,
+            fault_rip: 0,
+            fault_addr: 0,
+            helper_mem: 0,
             csr: Csrs::default(),
         })
     }

@@ -1,10 +1,11 @@
-//! Official riscv-tests under the interpreter (P1.13): every test of the Phase 1 suites must
-//! write `tohost = 1`. The ELFs are built by `tools/build-riscv-tests.sh` and validated against
-//! QEMU in Phase 0 (D20).
+//! Official riscv-tests under every engine (P1.13, P2.7, P2.8): every test of the Phase 1
+//! suites must write `tohost = 1`. The ELFs are built by `tools/build-riscv-tests.sh` and
+//! validated against QEMU in Phase 0 (D20).
 
 mod common;
 
-use bridgev::system::bare::{self, BareResult};
+use bridgev::jit::{EngineKind, JitOptions};
+use bridgev::system::bare::{self, BareOptions, BareResult};
 
 /// Suites that must pass under the interpreter (`p` = physical-memory environment).
 const SUITES: &[&str] = &[
@@ -16,8 +17,7 @@ const SUITES: &[&str] = &[
     "rv64ud-p-",
 ];
 
-#[test]
-fn phase1_suites_pass_under_interpreter() {
+fn run_suites(engine: EngineKind, jit: JitOptions) {
     let dir = common::repo_root().join("guest/build/riscv-tests");
     let Ok(rd) = std::fs::read_dir(&dir) else {
         common::guest_elf("riscv-tests/missing"); // skip locally, fail in CI
@@ -34,14 +34,51 @@ fn phase1_suites_pass_under_interpreter() {
         "no riscv-tests found in {}",
         dir.display()
     );
+    let opts = BareOptions {
+        max_insns: 10_000_000,
+        engine,
+        jit,
+        ..BareOptions::default()
+    };
     let mut failures = Vec::new();
     for name in &names {
         let data = std::fs::read(dir.join(name)).unwrap();
-        match bare::run(&data, 10_000_000, false) {
-            Ok((BareResult::Pass, _)) => {}
+        match bare::run(&data, &opts) {
+            Ok(r) if r.result == BareResult::Pass => {}
             other => failures.push(format!("{name}: {other:?}")),
         }
     }
-    eprintln!("{} riscv-tests run, {} failed", names.len(), failures.len());
+    eprintln!(
+        "{engine:?}: {} riscv-tests run, {} failed",
+        names.len(),
+        failures.len()
+    );
     assert!(failures.is_empty(), "failures:\n{}", failures.join("\n"));
+}
+
+#[test]
+fn phase1_suites_pass_under_interpreter() {
+    run_suites(EngineKind::Interp, JitOptions::default());
+}
+
+#[test]
+fn phase1_suites_pass_under_jit() {
+    run_suites(EngineKind::Jit, JitOptions::default());
+}
+
+#[test]
+fn phase1_suites_pass_under_lockstep() {
+    run_suites(EngineKind::Lockstep, JitOptions::default());
+}
+
+/// The fallback W^X mode and baseline-only host code must be just as correct.
+#[test]
+fn phase1_suites_pass_under_jit_mprotect_baseline_small_blocks() {
+    let jit = JitOptions {
+        wx: bridgev::jit::code_mem::WxMode::Mprotect,
+        host_features: false,
+        max_block: 3,
+        ..JitOptions::default()
+    };
+    run_suites(EngineKind::Lockstep, jit);
 }

@@ -1,6 +1,6 @@
-//! Linux user-mode programs under the interpreter (P1.14–P1.16): every guest program built by
-//! `tools/build-guests.sh` must produce byte-identical stdout and the same exit status as
-//! `qemu-riscv64` did when `tests/data/expected/` was recorded (D20).
+//! Linux user-mode programs under every engine (P1.14–P1.16, P2.7, P2.8): every guest program
+//! built by `tools/build-guests.sh` must produce byte-identical stdout and the same exit status
+//! as `qemu-riscv64` did when `tests/data/expected/` was recorded (D20).
 
 mod common;
 
@@ -20,14 +20,16 @@ fn expected(key: &str) -> (Vec<u8>, i32, Vec<String>) {
     (out, code, args)
 }
 
-fn check(elf: &Path, key: &str) -> Result<(), String> {
+fn check(engine: &[&str], elf: &Path, key: &str) -> Result<(), String> {
     let (want_out, want_code, args) = expected(key);
-    let mut cmd = vec!["run".to_string(), elf.to_string_lossy().into_owned()];
+    let mut cmd: Vec<String> = vec!["run".to_string()];
+    cmd.extend(engine.iter().map(|s| s.to_string()));
+    cmd.push(elf.to_string_lossy().into_owned());
     cmd.extend(args);
     let out = common::run_bridgev(&cmd);
     if out.stdout.as_bytes() != want_out.as_slice() || out.code != Some(want_code) {
         return Err(format!(
-            "{}: exit {:?} (want {want_code})\n--- stdout ---\n{}\n--- expected ---\n{}\n--- stderr ---\n{}",
+            "{} {engine:?}: exit {:?} (want {want_code})\n--- stdout ---\n{}\n--- expected ---\n{}\n--- stderr ---\n{}",
             elf.display(),
             out.code,
             out.stdout,
@@ -38,8 +40,7 @@ fn check(elf: &Path, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[test]
-fn guest_programs_match_qemu_reference() {
+fn run_all(engine: &[&str]) {
     let dir = common::repo_root().join("guest/build");
     let mut elfs: Vec<_> = std::fs::read_dir(&dir)
         .map(|rd| {
@@ -62,16 +63,44 @@ fn guest_programs_match_qemu_reference() {
             Some((name, _)) => name.to_string(),
             None => format!("asm-{stem}"),
         };
-        if let Err(e) = check(elf, &key) {
+        if let Err(e) = check(engine, elf, &key) {
             failures.push(e);
         }
     }
     eprintln!(
-        "{} guest programs run, {} failed",
+        "{engine:?}: {} guest programs run, {} failed",
         elfs.len(),
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+#[test]
+fn guest_programs_match_qemu_reference() {
+    run_all(&[]);
+}
+
+#[test]
+fn guest_programs_match_qemu_reference_jit() {
+    run_all(&["--engine", "jit"]);
+}
+
+#[test]
+fn guest_programs_match_qemu_reference_lockstep() {
+    run_all(&["--engine", "lockstep"]);
+}
+
+#[test]
+fn guest_programs_match_qemu_reference_jit_mprotect_baseline() {
+    run_all(&[
+        "--engine",
+        "jit",
+        "--wx",
+        "mprotect",
+        "--no-host-features",
+        "--max-block",
+        "7",
+    ]);
 }
 
 /// P1.14: parse the initial stack back and check argc/argv/envp/auxv.

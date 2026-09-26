@@ -66,7 +66,7 @@ const MEDELEG_WMASK: u64 = 0xb3ff;
 const SV39_SUPPORTED: bool = false;
 
 /// Supervisor/machine CSR storage. Lives at the end of `CpuState`: JIT code never touches it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Csrs {
     pub mstatus: u64,
     pub medeleg: u64,
@@ -96,6 +96,9 @@ pub struct Csrs {
     pub cycle_offset: u64,
     /// Origin of the `time` CSR (10 MHz, CLAUDE.md §15).
     pub time_origin: Instant,
+    /// `--deterministic`: `time` = icount / 10 instead of the host clock, so runs (and
+    /// lockstep comparisons) are reproducible.
+    pub deterministic_time: bool,
 }
 
 impl Default for Csrs {
@@ -126,6 +129,7 @@ impl Default for Csrs {
             instret_offset: 0,
             cycle_offset: 0,
             time_origin: Instant::now(),
+            deterministic_time: false,
         }
     }
 }
@@ -158,6 +162,9 @@ impl CpuState {
     }
 
     fn time_now(&self) -> u64 {
+        if self.csr.deterministic_time {
+            return self.icount / 10;
+        }
         // 10 MHz timebase: 100 ns per tick.
         (self.csr.time_origin.elapsed().as_nanos() / 100) as u64
     }
