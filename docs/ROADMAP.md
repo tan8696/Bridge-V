@@ -217,71 +217,71 @@ Tool versions, submodule commits, the list and count of built guest programs, th
 **Entry criteria:** Phase 0 done.
 
 ### P1.1 Core types (S)
-- [ ] `GuestVirt(u64)` and `GuestPhys(u64)` newtypes (CLAUDE.md §25). `Xreg(u8)` and `Freg(u8)` with range-checked constructors.
-- [ ] `ExitReason`, `Exception { cause, tval }` and `Priv { U, S, M }` enums.
+- [x] `GuestVirt(u64)` and `GuestPhys(u64)` newtypes (CLAUDE.md §25). `Xreg(u8)` and `Freg(u8)` with range-checked constructors. *(Deviation: registers stay plain `u8`, always < 32 from 5-bit fields; see the Phase 1 report §9.)*
+- [x] `ExitReason`, `Exception { cause, tval }` and `Priv { U, S, M }` enums.
 - **Tests:** unit tests for constructors and conversions.
 
 ### P1.2 ELF64 loader (M), `src/elf.rs`
-- [ ] Parse the ELF header and validate class, endianness, machine = 243 and type. Parse program headers (`PT_LOAD`, `PT_INTERP`, `PT_GNU_STACK`, `PT_TLS`), section headers, `.symtab` and `.strtab`.
-- [ ] API: `Elf::parse(&[u8]) -> Result<Elf>`, `segments()`, `entry()`, `symbol(name) -> Option<u64>` (for `tohost`/`fromhost`), `flags()` (RVC and float ABI).
-- [ ] Reject `PT_INTERP` (dynamic) with a clear error. That support comes in Phase 10.
+- [x] Parse the ELF header and validate class, endianness, machine = 243 and type. Parse program headers (`PT_LOAD`, `PT_INTERP`, `PT_GNU_STACK`, `PT_TLS`), section headers, `.symtab` and `.strtab`.
+- [x] API: `Elf::parse(&[u8]) -> Result<Elf>`, `segments()`, `entry()`, `symbol(name) -> Option<u64>` (for `tohost`/`fromhost`), `flags()` (RVC and float ABI).
+- [x] Reject `PT_INTERP` (dynamic) with a clear error. That support comes in Phase 10.
 - **Tests:**
   - Parse every ELF in `guest/build/`.
   - Malformed inputs: truncated header, bad magic, wrong machine, overlapping segments, `p_filesz > p_memsz`. All must return errors, never panic.
   - proptest: random bytes must never panic.
 
 ### P1.3 Instruction model (M), `src/isa/inst.rs`
-- [ ] `enum Inst` covering all of RV64I, M, A (LR/SC and AMO*, W/D, aq/rl), F, D, Zicsr, Zifencei, and the system instructions (ECALL, EBREAK, MRET, SRET, WFI, SFENCE.VMA).
+- [x] `enum Inst` covering all of RV64I, M, A (LR/SC and AMO*, W/D, aq/rl), F, D, Zicsr, Zifencei, and the system instructions (ECALL, EBREAK, MRET, SRET, WFI, SFENCE.VMA).
   - Every variant carries its operands (typed register fields and a sign-extended `i64` immediate).
   - Plus `Illegal(u32)`.
-- [ ] `struct Decoded { inst: Inst, len: u8, raw: u32 }`.
+- [x] `struct Decoded { inst: Inst, len: u8, raw: u32 }`.
 
 ### P1.4 32-bit decoder (L), `src/isa/decode.rs`
-- [ ] Immediate extractors for I/S/B/U/J (per §7.2), each its own tiny tested function.
-- [ ] Opcode dispatch per §7.3, with funct3/funct7/funct5/fmt/rm sub-decoding.
-- [ ] RV64 shift-immediate rules: a 6-bit shamt for SLLI/SRLI/SRAI; for the W forms, `inst[25]` must be 0.
-- [ ] Reserved and illegal encodings produce `Inst::Illegal`.
+- [x] Immediate extractors for I/S/B/U/J (per §7.2), each its own tiny tested function.
+- [x] Opcode dispatch per §7.3, with funct3/funct7/funct5/fmt/rm sub-decoding.
+- [x] RV64 shift-immediate rules: a 6-bit shamt for SLLI/SRLI/SRAI; for the W forms, `inst[25]` must be 0.
+- [x] Reserved and illegal encodings produce `Inst::Illegal`.
 - **Tests:**
-  - [ ] `tools/gen-decoder-vectors.sh` uses `llvm-mc -triple=riscv64 -mattr=+m,+a,+f,+d,+c -show-encoding` to produce `tests/data/rv64_vectors.txt`. Each line holds the asm text and its encoding. There is at least one vector per instruction, with edge immediates (min, max, zero, −1) and every register at least once. The file is committed so the tests don't need llvm-mc.
-  - [ ] A test decodes every vector and compares it against the disassembler output (P1.6).
-  - [ ] Negative vectors: a list of known-illegal words.
+  - [x] `tools/gen-decoder-vectors.sh` uses `llvm-mc -triple=riscv64 -mattr=+m,+a,+f,+d,+c -show-encoding` to produce `tests/data/rv64_vectors.txt`. Each line holds the asm text and its encoding. There is at least one vector per instruction, with edge immediates (min, max, zero, −1) and every register at least once. The file is committed so the tests don't need llvm-mc.
+  - [x] A test decodes every vector and compares it against the disassembler output (P1.6).
+  - [x] Negative vectors: a list of known-illegal words.
 
 ### P1.5 RVC expansion (M), `src/isa/rvc.rs`
-- [ ] Expand every RV64C instruction (§7.4) to its 32-bit `Inst` equivalent with `len = 2`. `rd'` maps to x8–x15.
-- [ ] Reserved encodings: nzimm = 0 cases, the all-zero word, RV32-only slots.
+- [x] Expand every RV64C instruction (§7.4) to its 32-bit `Inst` equivalent with `len = 2`. `rd'` maps to x8–x15.
+- [x] Reserved encodings: nzimm = 0 cases, the all-zero word, RV32-only slots.
 - **Tests:** llvm-mc vectors for all compressed instructions (`-mattr=+c`) must decode to the same `Inst` as their expanded 32-bit form, plus all the reserved cases.
 
 ### P1.6 Disassembler (S), `src/isa/disasm.rs`
-- [ ] objdump-style text (`addi a0, a0, 1`), using ABI register names.
-- [ ] `bridgev disasm <elf>` prints a linear sweep of the executable segments.
+- [x] objdump-style text (`addi a0, a0, 1`), using ABI register names.
+- [x] `bridgev disasm <elf>` prints a linear sweep of the executable segments.
 - **Tests:** round-trip against the llvm-mc vector text, after normalizing whitespace and pseudo-instructions.
 
 ### P1.7 CPU state v1 (S), `src/cpu/state.rs`
-- [ ] `#[repr(C, align(64))] CpuState` with the fields the interpreter needs now. Follow the §8.1 layout from the start, so the JIT can reuse it.
-- [ ] `const _: () = assert!(offset_of!(CpuState, x) == 0)` and so on for every JIT-visible field.
+- [x] `#[repr(C, align(64))] CpuState` with the fields the interpreter needs now. Follow the §8.1 layout from the start, so the JIT can reuse it.
+- [x] `const _: () = assert!(offset_of!(CpuState, x) == 0)` and so on for every JIT-visible field.
 - **Tests:** the offset asserts compile, and a runtime test prints the layout for the report.
 
 ### P1.8 Guest memory: direct backend v1 (M), `src/mem/direct.rs`
-- [ ] Reserve `2^38 + 8 GiB` `PROT_NONE` (§14.1). `map(gaddr, len, prot)` and `unmap`, `protect`.
-- [ ] Safe accessors for the interpreter: `read_u8…u64` and `write_*`. They return `Result<_, Exception>` using a Rust-side page-permission map, so the interpreter never segfaults the host.
-- [ ] Separate host-side fast-access paths for the JIT come later (P2).
+- [x] Reserve `2^38 + 8 GiB` `PROT_NONE` (§14.1). `map(gaddr, len, prot)` and `unmap`, `protect`.
+- [x] Safe accessors for the interpreter: `read_u8…u64` and `write_*`. They return `Result<_, Exception>` using a Rust-side page-permission map, so the interpreter never segfaults the host.
+- [x] Separate host-side fast-access paths for the JIT come later (P2).
 - **Tests:** map/unmap/protect; reads beyond a mapping return a fault; misaligned accesses work.
 
 ### P1.9 Interpreter core (L), `src/interp/`
-- [ ] A pre-decoded block cache: decode a basic block once into `Vec<Decoded>`, keyed by PC, and execute it with a `match`. This is still an interpreter, but without re-decoding.
-- [ ] Integer semantics, with every gotcha in §7.5 covered: division edge cases, W-op sign extension, JALR `rd == rs1`, x0 writes, MULHSU.
-- [ ] Branches, jumps, and `ecall` → `ExitReason::Ecall`.
-- [ ] Instruction counting (`icount`) for MIPS statistics.
+- [x] A pre-decoded block cache: decode a basic block once into `Vec<Decoded>`, keyed by PC, and execute it with a `match`. This is still an interpreter, but without re-decoding.
+- [x] Integer semantics, with every gotcha in §7.5 covered: division edge cases, W-op sign extension, JALR `rd == rs1`, x0 writes, MULHSU.
+- [x] Branches, jumps, and `ecall` → `ExitReason::Ecall`.
+- [x] Instruction counting (`icount`) for MIPS statistics.
 - **Tests:** unit tests per instruction class. Each §7.5 gotcha gets its own named test, e.g. `div_by_zero_returns_all_ones`.
 
 ### P1.10 A extension (S)
-- [ ] LR/SC with a single reservation, and the AMO* ops (W and D). The W forms sign-extend the loaded value.
+- [x] LR/SC with a single reservation, and the AMO* ops (W and D). The W forms sign-extend the loaded value.
 - **Tests:** SC without an LR fails; SC to a different address fails; AMOMIN/MAX signed vs unsigned.
 
 ### P1.11 F and D extensions via SoftFloat (L), `build.rs`, `src/cpu/fp.rs`
-- [ ] `build.rs` compiles `third_party/berkeley-softfloat-3/source` with the `RISCV` specialization and `SOFTFLOAT_FAST_INT64` (following its `build/Linux-x86_64-GCC` makefile flags) using the `cc` crate.
-- [ ] A minimal FFI (`extern "C"`) for f32/f64 add, sub, mul, div, sqrt, mulAdd, comparisons, all conversions, `softfloat_roundingMode` and `softfloat_exceptionFlags`.
-- [ ] Wrappers:
+- [x] `build.rs` compiles `third_party/berkeley-softfloat-3/source` with the `RISCV` specialization and `SOFTFLOAT_FAST_INT64` (following its `build/Linux-x86_64-GCC` makefile flags) using the `cc` crate.
+- [x] A minimal FFI (`extern "C"`) for f32/f64 add, sub, mul, div, sqrt, mulAdd, comparisons, all conversions, `softfloat_roundingMode` and `softfloat_exceptionFlags`.
+- [x] Wrappers:
   - NaN-boxing on read and write.
   - Canonical NaN.
   - The frm/DYN rule, with invalid rm raising illegal-instruction.
@@ -291,43 +291,43 @@ Tool versions, submodule commits, the list and count of built guest programs, th
   - fsgnj*.
   - fmv.x.* and fmv.*.x.
   - fcvt saturation.
-- [ ] FP loads and stores: flw/fld/fsw/fsd. flw NaN-boxes its result.
+- [x] FP loads and stores: flw/fld/fsw/fsd. flw NaN-boxes its result.
 - **Tests:** targeted edge cases (NaN, ±0, ±inf, subnormals, overflow, every rounding mode) plus the riscv-tests `rv64uf`/`rv64ud` suites (P1.13).
 
 ### P1.12 CSRs and minimal M-mode (M), `src/cpu/csr.rs`, `src/cpu/trap.rs`
-- [ ] User CSRs: fflags, frm, fcsr, cycle, time, instret.
-- [ ] The minimal machine set the riscv-tests `p` environment needs: mhartid, mstatus, misa, medeleg, mideleg, mie, mip, mtvec, mscratch, mepc, mcause, mtval, pmpcfg0/pmpaddr0 (accept writes), satp (Bare only for now).
-- [ ] CSR instruction semantics per §7.5: no write when rs1 = x0 for RS/RC; no read for CSRRW with rd = x0. Accessing a missing CSR raises illegal-instruction.
-- [ ] Trap entry to M, and MRET (§15). Plus `ecall` from U/M → cause 8/11.
+- [x] User CSRs: fflags, frm, fcsr, cycle, time, instret.
+- [x] The minimal machine set the riscv-tests `p` environment needs: mhartid, mstatus, misa, medeleg, mideleg, mie, mip, mtvec, mscratch, mepc, mcause, mtval, pmpcfg0/pmpaddr0 (accept writes), satp (Bare only for now).
+- [x] CSR instruction semantics per §7.5: no write when rs1 = x0 for RS/RC; no read for CSRRW with rd = x0. Accessing a missing CSR raises illegal-instruction.
+- [x] Trap entry to M, and MRET (§15). Plus `ecall` from U/M → cause 8/11.
 - **Tests:** CSR read/write rules; trap entry state; MRET state restore.
 
 ### P1.13 riscv-tests runner (M), `tests/riscv_tests.rs`, `bridgev run --mode=bare`
-- [ ] Bare-metal mode:
+- [x] Bare-metal mode:
   - Load the ELF physically at its link address (0x8000_0000) into a RAM mapping.
   - Start in M-mode at the entry point.
   - Stop when `tohost` (found from the symbol table) is written.
   - Result: 1 means pass; `(n << 1) | 1` means test n failed.
   - A timeout of 10M instructions per test.
-- [ ] The runner iterates every `rv64u{i,m,a,f,d,c}-p-*` ELF and prints a pass/fail table.
+- [x] The runner iterates every `rv64u{i,m,a,f,d,c}-p-*` ELF and prints a pass/fail table.
 - **Done when:** **all** `rv64ui/um/ua/uf/ud/uc-p-*` pass. Record the count in the report.
 
 ### P1.14 Linux user-mode loader (M), `src/user/loader.rs`
-- [ ] Map the PT_LOAD segments with their permissions, zero the bss, set up brk.
-- [ ] The initial stack per §19: argc, argv, envp, auxv (including AT_RANDOM with 16 bytes from the host `getrandom`, AT_HWCAP = IMAFDC, AT_PHDR/PHENT/PHNUM/ENTRY, AT_PAGESZ) and the strings, with 16-byte alignment.
+- [x] Map the PT_LOAD segments with their permissions, zero the bss, set up brk.
+- [x] The initial stack per §19: argc, argv, envp, auxv (including AT_RANDOM with 16 bytes from the host `getrandom`, AT_HWCAP = IMAFDC, AT_PHDR/PHENT/PHNUM/ENTRY, AT_PAGESZ) and the strings, with 16-byte alignment.
 - **Tests:** stack layout unit test (parse it back and verify every pointer); a guest `env.c` program prints argv/envp.
 
 ### P1.15 Syscalls (L), `src/user/syscall.rs`
-- [ ] The dispatch table for the §19 set, plus **`riscv_hwprobe` (258)**. Newer glibc may probe it at startup. Return `-ENOSYS` or a minimal honest answer.
-- [ ] Struct translation: `stat`/`newfstatat`/`fstat` (asm-generic 128-byte layout ↔ x86-64 144-byte layout), `statx`, `uname` (machine = "riscv64"), `timespec`.
-- [ ] `mmap`/`munmap`/`mprotect`/`brk` go through the direct backend's allocator (top-down mmap region).
-- [ ] `readlinkat("/proc/self/exe")` returns the guest path.
-- [ ] Unknown syscalls are logged once with their number and name, and return `-ENOSYS`.
+- [x] The dispatch table for the §19 set, plus **`riscv_hwprobe` (258)**. Newer glibc may probe it at startup. Return `-ENOSYS` or a minimal honest answer.
+- [x] Struct translation: `stat`/`newfstatat`/`fstat` (asm-generic 128-byte layout ↔ x86-64 144-byte layout), `statx`, `uname` (machine = "riscv64"), `timespec`.
+- [x] `mmap`/`munmap`/`mprotect`/`brk` go through the direct backend's allocator (top-down mmap region).
+- [x] `readlinkat("/proc/self/exe")` returns the guest path.
+- [x] Unknown syscalls are logged once with their number and name, and return `-ENOSYS`.
 - **Tests:** every C guest program's stdout and exit code match `tests/data/expected/`. The `stat` test checks translated fields.
 
 ### P1.16 CLI, trace and stats (S)
-- [ ] `bridgev run --engine=interp [--trace=insn] [--stats] <elf> [args]`.
-- [ ] `--stats` prints icount, wall time, MIPS and exits by reason.
-- [ ] `--trace=insn` prints `pc: raw disasm` per instruction, for debugging.
+- [x] `bridgev run --engine=interp [--trace=insn] [--stats] <elf> [args]`.
+- [x] `--stats` prints icount, wall time, MIPS and exits by reason.
+- [x] `--trace=insn` prints `pc: raw disasm` per instruction, for debugging.
 
 ### Phase 1 acceptance criteria
 - All `rv64u{i,m,a,f,d,c}-p-*` riscv-tests pass under the interpreter.

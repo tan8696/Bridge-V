@@ -325,3 +325,6 @@ impl Inst {
         )
     }
 }
+
+// A decoded instruction stays compact: 16 bytes (tag + small fields + one i64 immediate).
+const _: () = assert!(std::mem::size_of::<Inst>() == 16);

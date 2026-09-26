@@ -4,7 +4,7 @@ This document explains Bridge-V from the ground up, for readers ranging from "ne
 - The exact engineering specification is [`CLAUDE.md`](../CLAUDE.md).
 - The build plan is [`ROADMAP.md`](ROADMAP.md).
 
-> **Status (2026-09-26):** design complete, implementation not started. The descriptions below explain how Bridge-V *is designed* to work. The numbers under "Performance" are targets, not results. They are replaced with measurements as phases complete (see `docs/phase-reports/`).
+> **Status (2026-09-26):** Phase 1 complete. The **reference interpreter** runs real RISC-V Linux programs: all 110 official riscv-tests of the RV64GC user suites pass, 30 test programs match QEMU byte for byte, and CoreMark validates, at 127–176 MIPS interpreted. The JIT (the translator this document mostly describes) starts in Phase 2. Numbers under "Performance" are still targets until the JIT phases measure them (see `docs/phase-reports/`).
 
 ---
 
@@ -274,7 +274,7 @@ Everything else stays on the fast path.
 
 ## 12. Project status and how it will be used
 
-- **Now:** design and plan complete ([`CLAUDE.md`](../CLAUDE.md), [`ROADMAP.md`](ROADMAP.md)). Implementation starts at Phase 0.
+- **Now:** Phases 0–1 are complete: the toolchain, CI, the decoder and disassembler, and the reference interpreter with Linux user-mode emulation (`bridgev run program.elf` works). The next phase is the naive JIT.
 - **Milestone A (required):** CoreMark and Dhrystone run under both the interpreter and the JIT, with a printed speedup table.
 - **Milestone B (stretch):** Linux 6.6 boots to a BusyBox shell.
 - **Planned usage:**

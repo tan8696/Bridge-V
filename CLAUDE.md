@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 0 (setup) complete.** Next up: Phase 1, task P1.1 (`docs/ROADMAP.md`). |
+| Phase | **Phase 1 (front end + interpreter) complete.** Next up: Phase 2, task P2.1 (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-00-setup.md` |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-01-interpreter.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-26 |
@@ -72,6 +72,9 @@ Update this table at the end of every phase.
 | D19 | Process | The detailed plan lives in `docs/ROADMAP.md`, and §24 here is its summary. **Every phase ends with a detailed report** at `docs/phase-reports/phase-NN-<name>.md`, based on `TEMPLATE.md`. A phase isn't done without its report. | Owner requirement: a written account of what was done, how it works and how it was verified, after every phase. |
 | D20 | Reference validation | Guest programs are checked against `qemu-riscv64` 8.2.2 with byte-exact stdout and exit codes (`tests/data/expected/`). riscv-tests are validated under `qemu-system-riscv64 -M spike` (HTIF). Tests QEMU itself gets wrong are listed in `tests/data/qemu-known-failures.txt` (XFAIL, and an XPASS is an error). | Every input is proven valid before bridgev runs it, so a future failure is bridgev's bug, not a bad test binary. |
 | D21 | riscv-tests scope and build | Only the RV64GC + privileged suites are built (rv64ui/um/ua/uf/ud/uc `-p`/`-v`, rv64si/mi `-p`: 244 ELFs). Ubuntu-toolchain flags: `-no-pie -fno-pic -Wl,--build-id=none`. rv64ua is built directly with `-march=rv64g`, excluding `amocas_*` (Zacas). | Upstream compiles rv64ua with `zacas_zabha`, which binutils 2.42 rejects. PIC turns `la` into GOT loads, and the build-id note displaced `_start` from 0x80000000. |
+| D22 | Decoder oracle | Golden decoder vectors come from `llvm-mc -M no-aliases` (`tools/gen-decoder-vectors.py`, committed as `tests/data/rv64_vectors.txt`). The disassembler matches LLVM's canonical text exactly, and LLVM's own compressed encodings cross-check the RVC expansion. | An independent oracle for decode *and* disassembly. The tests don't need LLVM at run time. |
+| D23 | Guest permissions (Phase 1) | Host pages of the direct backend stay RW. Guest R/W/X live in a two-level per-page table checked on every interpreter access. Host `mprotect` mirroring the guest arrives with the JIT's unchecked `[rbx+g]` accesses (Phase 2) and SMC write-protection (Phase 8). | The interpreter is memory-safe against any guest, and the design stays simple until the JIT needs host-level protection. |
+| D24 | Sv39 gating | `satp` accepts only Bare mode until Phase 7 (`SV39_SUPPORTED` in `cpu/csr.rs`). | A guest can't enable translation that isn't implemented yet and have it silently ignored. |
 
 ---
 
@@ -176,7 +179,8 @@ Bridge-V/
 │   │   ├── state.rs          ← #[repr(C)] CpuState + offset_of! asserts
 │   │   ├── csr.rs            ← CSR file, read/write side effects, counters
 │   │   ├── trap.rs           ← exception/interrupt entry, MRET/SRET, delegation
-│   │   └── fp.rs             ← FP helpers (SoftFloat wrapper), NaN-boxing, fflags
+│   │   ├── fp.rs             ← FP helpers (SoftFloat wrapper), NaN-boxing, fflags
+│   │   └── softfloat_shim.c  ← accessors for SoftFloat's thread-local state
 │   ├── interp/               ← reference interpreter (pre-decoded block cache)
 │   ├── ir/
 │   │   ├── ops.rs            ← IR definitions
@@ -207,6 +211,7 @@ Bridge-V/
 │   │   ├── syscall.rs        ← dispatch table + struct translation
 │   │   └── signal.rs         ← host SIGSEGV handler, guest signals (stretch)
 │   ├── system/
+│   │   ├── bare.rs           ← bare-metal HTIF harness for riscv-tests (`run --mode bare`)
 │   │   ├── machine.rs        ← `virt` memory map, reset, boot ROM
 │   │   ├── clint.rs  plic.rs  uart16550.rs  syscon.rs  virtio_mmio.rs(stretch)
 │   │   ├── sbi.rs            ← built-in SBI (D15)
@@ -221,7 +226,8 @@ Bridge-V/
 │   └── linux/                ← kernel .config fragment, busybox .config, initramfs skeleton, build.sh
 ├── third_party/              ← git submodules: riscv-tests, coremark, berkeley-softfloat-3
 ├── tools/                    ← setup.sh, build-guests.sh, build-riscv-tests.sh, ref-run.sh, ref-check.sh,
-│                               ref-riscv-tests.sh (Phase 0); later: bench.sh, boot-linux.sh
+│                               ref-riscv-tests.sh (Phase 0); gen-decoder-vectors.py (Phase 1);
+│                               later: bench.sh, boot-linux.sh
 ├── README.md                 ← short landing page
 ├── docs/
 │   ├── ROADMAP.md            ← detailed phase-by-phase plan (task IDs P<phase>.<n>)
@@ -313,12 +319,13 @@ The offsets are illustrative. **The source of truth is the `offset_of!` compile-
 | 0x000 | `x: [u64; 32]` | GPRs. The `x[0]` slot always holds 0. disp8 from RBP: `8*i − 128`. |
 | 0x100 | `pc: u64` | Written only at block exits, in cold stubs, and before helpers. |
 | 0x108 | `budget: i64` | Decremented in each block prologue (D12). |
-| 0x110 | `exit_reason: u32`, `priv: u8`, `mmu_idx: u8`, … | |
+| 0x110 | `exit_reason: u32` | |
+| 0x114 | `prv: u8` (U=0, S=1, M=3), `mmu_idx: u8` @0x115 | `priv` is a Rust keyword |
 | 0x118 | `icount: u64` | Retired guest instructions (stats, MIPS). |
 | 0x120 | `mem_base: u64` | Direct mode: host address of guest address 0. |
-| 0x128 | `res_addr: u64`, `res_val: u64`, `res_valid` | LR/SC reservation. |
+| 0x128 | `res_addr: u64`, `res_val` @0x130, `res_valid` @0x138 | LR/SC reservation. |
 | 0x140 | `f: [u64; 32]` | FP registers, NaN-boxed. |
-| … | `fcsr` (frm, fflags) | |
+| 0x240 | `fflags: u8`, `frm: u8` @0x241 | fcsr fields (verified by `offset_of!` asserts as of Phase 1) |
 | … | `spill: [u64; 32]` | Spill slots for IR temporaries. |
 | … | `jmp_cache: [{pc:u64, host:u64}; 4096]` | 64 KiB, indexed by `(pc >> 1) & 4095`. |
 | … | `tlb: [[TlbEntry; 256]; NB_MMU_IDX]` | 32 B/entry. MMU indices: U=0, S=1, M/bare=2 (plus MPRV variants if needed). |
