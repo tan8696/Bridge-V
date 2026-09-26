@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 2 (naive JIT) complete.** Next up: Phase 3, task P3.1 (`docs/ROADMAP.md`). |
+| Phase | **Phase 3 (block chaining + jump cache) complete.** Next up: Phase 4, task P4.1 (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-02-naive-jit.md` |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-03-chaining.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-26 |
