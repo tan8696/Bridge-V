@@ -1,0 +1,37 @@
+[package]
+name = "bridge-v"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Dynamic binary translator: RISC-V RV64GC guest code JIT-compiled to native x86-64"
+repository = "https://github.com/tan8696/Bridge-V"
+publish = false
+
+[lib]
+name = "bridgev"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bridgev"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2.189"
+rustc-hash = "2.1.3"
+
+[dev-dependencies]
+iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder", "intel"] }
+proptest = "1.11.0"
+
+[profile.dev]
+# The interpreter and test suites are unbearably slow at opt-level 0.
+opt-level = 1
+
+[profile.release]
+# JIT-called helpers must never unwind across generated code (CLAUDE.md §8.4).
+panic = "abort"
+lto = "thin"
+codegen-units = 1
+debug = 1

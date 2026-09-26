@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Guest build outputs (rebuild with tools/build-guests.sh)
+/guest/build/
+*.elf
+*.o
+*.dtb
+*.cpio
+Image
+
+# Third-party build dirs
+/third_party/*/build/
+/third_party/riscv-tests/isa/*-p-*
+/third_party/riscv-tests/isa/*-v-*
+
+# JIT debug output
+perf-*.map
+*.x86dump
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
