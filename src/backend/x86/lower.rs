@@ -36,6 +36,9 @@ pub struct LowerOptions {
     pub inject_bug: bool,
     /// `--profile-jit`: count JALR executions in `cpu.prof_jalr`.
     pub profile: bool,
+    /// Softmmu (D48): memory accesses go through `helper_interp_one` (this back end has no
+    /// inline TLB path; it exists for measurements).
+    pub softmmu: bool,
 }
 
 /// A chainable exit of the lowered code (offsets from the TB start).
@@ -260,6 +263,10 @@ impl Ctx<'_> {
     /// Lower instruction `idx`. Returns true if it ended the TB (an exit was emitted).
     fn insn(&mut self, d: &Decoded, pc: u64, idx: u32) -> bool {
         let next = pc.wrapping_add(d.len as u64);
+        if self.opts.softmmu && matches!(d.inst, Inst::Load { .. } | Inst::Store { .. }) {
+            self.call_interp(d, pc, idx);
+            return false;
+        }
         match d.inst {
             Inst::Lui { rd, imm } => self.set_x_const(rd, imm as u64),
             Inst::Auipc { rd, imm } => self.set_x_const(rd, pc.wrapping_add(imm as u64)),

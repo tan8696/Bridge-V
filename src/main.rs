@@ -80,6 +80,14 @@ fn parse_pin(s: &str) -> Result<PinList, String> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum MemArg {
+    /// Guest address g at host base + g, no checks in JIT code (user mode).
+    Direct,
+    /// Every access through the software TLB and MMU (always used in bare mode).
+    Softmmu,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Wx {
     /// memfd mapped twice: RW view for writing, RX view for executing.
     Dualmap,
@@ -170,6 +178,9 @@ enum Command {
         /// Run every FP instruction through the interpreter helper (no inline SSE code).
         #[arg(long)]
         no_inline_fp: bool,
+        /// Guest memory backend in user mode (bare mode always uses softmmu).
+        #[arg(long, value_enum, default_value = "direct")]
+        mem: MemArg,
         /// Testing only: deliberately miscompile ADDI (lockstep must catch it).
         #[arg(long, hide = true)]
         inject_bug: bool,
@@ -300,6 +311,7 @@ fn main() -> ExitCode {
             profile_jit,
             profile_tbs,
             no_inline_fp,
+            mem,
             regalloc,
             pin,
             dump_ir,
@@ -361,6 +373,7 @@ fn main() -> ExitCode {
                         jit,
                         deterministic,
                         reg_stats,
+                        softmmu: mem == MemArg::Softmmu,
                     };
                     run_user(&elf, args, opts, stats)
                 }

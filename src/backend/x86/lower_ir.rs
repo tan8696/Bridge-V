@@ -45,6 +45,9 @@ pub struct IrOptions {
     pub pinned: [Option<Reg>; 32],
     /// Test-only miscompilation of `addi` (as in the naive back end).
     pub inject_bug: bool,
+    /// Softmmu (D48): the data MMU index whose TLB loads and stores probe inline; `None` for
+    /// direct memory (`[rbx + addr]`).
+    pub softmmu: Option<u8>,
 }
 
 /// A potentially faulting memory access and the state needed to make its fault precise.
@@ -111,6 +114,11 @@ const X0: Xmm = Xmm(0);
 const X1: Xmm = Xmm(1);
 const X2: Xmm = Xmm(2);
 
+/// `helper_mmu_access` info word: size | signed << 4 | store << 5 | MMU index << 8.
+pub fn soft_info(size: u8, signed: bool, store: bool, mmu: u8) -> u32 {
+    size as u32 | (signed as u32) << 4 | (store as u32) << 5 | (mmu as u32) << 8
+}
+
 fn f_mem(r: u8) -> Mem {
     cpu_field(offset_of!(CpuState, f) + 8 * r as usize)
 }
@@ -118,6 +126,37 @@ fn f_mem(r: u8) -> Mem {
 /// The upper half of f register `r` (all ones when it holds a NaN-boxed single).
 fn f_hi(r: u8) -> Mem {
     cpu_field(offset_of!(CpuState, f) + 8 * r as usize + 4)
+}
+
+/// The cold slow path of a softmmu load or store (TLB miss, MMIO, misaligned, fault).
+struct SoftSlow {
+    label: Label,
+    back: Label,
+    /// The fast path's host access, whose fault site holds the state map.
+    access: Label,
+    addr: Reg,
+    off: i32,
+    info: u32,
+    /// Stores: the value (a register, or a constant).
+    val: Option<SoftVal>,
+    /// Loads: the destination register.
+    dst: Option<Reg>,
+    /// Guest instructions from this one to the TB end (budget refund around the call, D30).
+    rest: u32,
+}
+
+#[derive(Clone, Copy)]
+enum SoftVal {
+    Reg(Reg),
+    Const(u64),
+}
+
+/// Registers the slow path saves in `cpu.fault_regs` around its helper call: the pool and the
+/// budget register (every caller-saved register JIT code may hold a value in).
+const SOFT_SAVE: [Reg; 7] = [Rax, Rcx, Rdx, Rsi, Rdi, Reg::R8, BUDGET_REG];
+
+fn fault_reg(r: Reg) -> Mem {
+    cpu_field(offset_of!(CpuState, fault_regs) + 8 * r.num() as usize)
 }
 
 struct Stub {
@@ -152,6 +191,7 @@ struct Ctx<'a> {
     pc: u64,
     idx: u32,
     fixups: Vec<Fixup>,
+    soft: Vec<SoftSlow>,
 }
 
 fn is_pool(r: Reg) -> bool {
@@ -320,6 +360,7 @@ impl Ctx<'_> {
 
     fn emit_stubs(&mut self) {
         self.emit_fixups();
+        self.emit_soft_slow();
         for s in std::mem::take(&mut self.stubs) {
             self.a.bind(s.label);
             if s.refund > 0 {
@@ -669,8 +710,29 @@ impl Ctx<'_> {
         self.ra.release(&[addr]);
         let prefer = if is_pool(ra) { Some(ra) } else { None };
         let d = self.ra.def(&mut self.a, dst, prefer, &[ra])?;
-        self.record_site(ra, off, size, false);
-        let m = Mem::bi(MEM_BASE, ra, Scale::S1, off);
+        let mut back = None;
+        let m = match self.opts.softmmu {
+            None => {
+                self.record_site(ra, off, size, false);
+                Mem::bi(MEM_BASE, ra, Scale::S1, off)
+            }
+            Some(mmu) => {
+                let (slow, b, access) = self.tlb_probe(ra, off, size, mmu, false);
+                back = Some(b);
+                self.soft.push(SoftSlow {
+                    label: slow,
+                    back: b,
+                    access,
+                    addr: ra,
+                    off,
+                    info: soft_info(size, signed, false, mmu),
+                    val: None,
+                    dst: Some(d),
+                    rest: self.n - self.idx,
+                });
+                Mem::base(R11, 0)
+            }
+        };
         let a = &mut self.a;
         match (size, signed) {
             (8, _) => a.load(Size::B64, d, m),
@@ -681,37 +743,175 @@ impl Ctx<'_> {
             (1, true) => a.movsx(Size::B64, Size::B8, d, m),
             _ => a.movzx(Size::B8, d, m),
         }
+        if let Some(b) = back {
+            self.a.bind(b);
+        }
         self.ra.release(&[dst]);
         Ok(())
     }
 
     fn store(&mut self, addr: V, off: i32, val: V, size: u8) -> Result<()> {
         let ra = self.ra.get(&mut self.a, addr, &[])?;
-        let m = Mem::bi(MEM_BASE, ra, Scale::S1, off);
         let sz = match size {
             1 => Size::B8,
             2 => Size::B16,
             4 => Size::B32,
             _ => Size::B64,
         };
-        match self.ra.const_of(val) {
-            Some(c) if size < 8 || c as i64 == c as i32 as i64 => {
-                let c = match size {
-                    1 => c as u8 as i32,
-                    2 => c as u16 as i32,
-                    _ => c as i32,
+        let imm = match self.ra.const_of(val) {
+            Some(c) if size < 8 || c as i64 == c as i32 as i64 => Some(match size {
+                1 => c as u8 as i32,
+                2 => c as u16 as i32,
+                _ => c as i32,
+            }),
+            _ => None,
+        };
+        let rv = match imm {
+            Some(_) => None,
+            None => Some(self.ra.get(&mut self.a, val, &[ra])?),
+        };
+        let mut back = None;
+        let m = match self.opts.softmmu {
+            None => {
+                self.record_site(ra, off, size, true);
+                Mem::bi(MEM_BASE, ra, Scale::S1, off)
+            }
+            Some(mmu) => {
+                let (slow, b, access) = self.tlb_probe(ra, off, size, mmu, true);
+                back = Some(b);
+                let v = match (rv, imm) {
+                    (Some(r), _) => SoftVal::Reg(r),
+                    (None, Some(c)) => SoftVal::Const(c as i64 as u64),
+                    _ => unreachable!(),
                 };
-                self.record_site(ra, off, size, true);
-                self.a.store_imm(sz, m, c);
+                self.soft.push(SoftSlow {
+                    label: slow,
+                    back: b,
+                    access,
+                    addr: ra,
+                    off,
+                    info: soft_info(size, false, true, mmu),
+                    val: Some(v),
+                    dst: None,
+                    rest: self.n - self.idx,
+                });
+                Mem::base(R11, 0)
             }
-            _ => {
-                let rv = self.ra.get(&mut self.a, val, &[ra])?;
-                self.record_site(ra, off, size, true);
-                self.a.store(sz, m, rv);
-            }
+        };
+        match (rv, imm) {
+            (Some(r), _) => self.a.store(sz, m, r),
+            (None, Some(c)) => self.a.store_imm(sz, m, c),
+            _ => unreachable!(),
+        }
+        if let Some(b) = back {
+            self.a.bind(b);
         }
         self.ra.release(&[addr, val]);
         Ok(())
+    }
+
+    /// The inline TLB probe (§14.4, D48): leaves the host address in R11 on a hit, jumps to
+    /// the returned slow label on a miss. Returns (slow, back, access): `back` must be bound
+    /// right after the access, `access` is bound here, at the access instruction, and has the
+    /// fault site with the state map.
+    ///
+    /// ```text
+    ///   lea r11, [addr + off]            ; guest virtual address
+    ///   mov r10, r11
+    ///   shr r10, 7                       ; (va >> 12) << 5: entry offset...
+    ///   and r10d, (TLB_SIZE - 1) << 5    ; ...within this MMU index's TLB
+    ///   and r11, -4096 | (size - 1)      ; page | misalignment bits
+    ///   cmp r11, [rbp + r10 + tag]       ; addr_read / addr_write
+    ///   jne slow
+    ///   lea r11, [addr + off]
+    ///   add r11, [rbp + r10 + addend]    ; host address
+    /// ```
+    fn tlb_probe(
+        &mut self,
+        ra: Reg,
+        off: i32,
+        size: u8,
+        mmu: u8,
+        store: bool,
+    ) -> (Label, Label, Label) {
+        use crate::mem::tlb::TLB_SIZE;
+        let tlb = offset_of!(CpuState, tlb) + mmu as usize * TLB_SIZE * 32;
+        let tag = tlb as i32 - CPU_BIAS + if store { 8 } else { 0 };
+        let addend = tlb as i32 - CPU_BIAS + 24;
+        let (slow, back, access) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
+        let a = &mut self.a;
+        a.lea(R11, Mem::base(ra, off));
+        a.mov_rr(Size::B64, R10, R11);
+        a.shift_ri(Size::B64, Shift::Shr, R10, 12 - 5);
+        a.alu_ri(Size::B32, Alu::And, R10, ((TLB_SIZE - 1) << 5) as i32);
+        a.alu_ri(Size::B64, Alu::And, R11, -4096 | (size as i32 - 1));
+        a.alu_rm(Size::B64, Alu::Cmp, R11, Mem::bi(CPU, R10, Scale::S1, tag));
+        a.jcc(Cond::Ne, slow);
+        a.lea(R11, Mem::base(ra, off));
+        a.alu_rm(
+            Size::B64,
+            Alu::Add,
+            R11,
+            Mem::bi(CPU, R10, Scale::S1, addend),
+        );
+        self.record_site(ra, off, size, store);
+        self.a.bind(access);
+        (slow, back, access)
+    }
+
+    /// The slow paths of the softmmu accesses (D48): save the caller-saved registers in
+    /// `cpu.fault_regs`, call `helper_mmu_access(cpu, va, info, val)` with the budget of the
+    /// unretired instructions refunded (so the helper can fold `icount`, D30), restore the
+    /// registers, and either continue with the loaded value or leave through the fault exit,
+    /// where the dispatcher rebuilds the state from the fault site and `fault_regs`.
+    fn emit_soft_slow(&mut self) {
+        for s in std::mem::take(&mut self.soft) {
+            let a = &mut self.a;
+            a.bind(s.label);
+            for r in SOFT_SAVE {
+                a.store(Size::B64, fault_reg(r), r);
+            }
+            // Arguments, read from the saved copies (the argument registers may hold them).
+            let saved = |r: Reg| SOFT_SAVE.contains(&r);
+            if saved(s.addr) {
+                a.load(Size::B64, Rsi, fault_reg(s.addr));
+                a.lea(Rsi, Mem::base(Rsi, s.off));
+            } else {
+                a.lea(Rsi, Mem::base(s.addr, s.off));
+            }
+            match s.val {
+                Some(SoftVal::Reg(r)) if saved(r) => a.load(Size::B64, Rcx, fault_reg(r)),
+                Some(SoftVal::Reg(r)) => a.mov_rr(Size::B64, Rcx, r),
+                Some(SoftVal::Const(c)) => a.mov_imm(Rcx, c),
+                None => {}
+            }
+            a.mov_r32_imm(Rdx, s.info);
+            a.lea(R10, Mem::base(BUDGET_REG, s.rest as i32));
+            a.store(Size::B64, budget_mem(), R10);
+            a.lea(Rdi, Mem::base(CPU, -CPU_BIAS));
+            a.call_indirect_abs(self.tr.helper_slot(helper::MMU_ACCESS));
+            a.mov_rr(Size::B64, R11, Rax);
+            for r in SOFT_SAVE {
+                a.load(Size::B64, r, fault_reg(r));
+            }
+            a.alu_ri(
+                Size::B32,
+                Alu::Cmp,
+                field(offset_of!(CpuState, exit_reason)),
+                0,
+            );
+            let fault = a.new_label();
+            a.jcc(Cond::Ne, fault);
+            if let Some(d) = s.dst {
+                a.mov_rr(Size::B64, d, R11);
+            }
+            a.jmp(s.back);
+            a.bind(fault);
+            a.lea_label(R10, s.access);
+            a.store(Size::B64, field(offset_of!(CpuState, fault_rip)), R10);
+            a.mov_r32_imm(Rax, ((self.tb_id as u64) << 2 | SLOT_SPECIAL) as u32);
+            a.jmp_abs(self.tr.exit);
+        }
     }
 
     fn interp(&mut self, raw: u32, pc: u64, idx: u32) -> Result<()> {
@@ -1107,6 +1307,7 @@ pub fn translate(
         pc: b.pc,
         idx: 0,
         fixups: Vec::new(),
+        soft: Vec::new(),
     };
     if c.n > 0 {
         c.a.alu_ri(Size::B64, Alu::Sub, BUDGET_REG, c.n as i32);

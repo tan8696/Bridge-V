@@ -72,6 +72,8 @@ pub fn run(elf_bytes: &[u8], opts: &BareOptions) -> Result<BareRun> {
             .map_err(|f| anyhow::anyhow!("loading segment: {f:?}"))?;
     }
     let mut cpu = CpuState::new_machine(elf.entry);
+    // Bare metal is system mode: every access is translated (Bare/Sv39, D48).
+    cpu.softmmu = 1;
     let env = Env {
         user_mode: false,
         tohost: Some(tohost),

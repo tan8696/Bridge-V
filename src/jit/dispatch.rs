@@ -22,14 +22,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cpu::state::{CpuState, JcEntry, exit, jc_index};
 use crate::cpu::trap::Exception;
-use crate::interp::{BlockExit, Engine, Env, Stop, build_block_max, deliver, tohost_written};
+use crate::interp::{
+    Block, BlockExit, Engine, Env, Stop, build_block_max, build_block_soft, deliver,
+    deliver_interrupt, exec_block, tohost_written,
+};
 use crate::isa::disasm;
 use crate::isa::inst::{Inst, LoadOp, StoreOp};
 use crate::mem::direct::DirectMem;
-use crate::mem::{Access, MemFault};
+use crate::mem::{Access, MemFault, mmu, tlb};
 use crate::user::signal;
 
-use super::cache::{ExitSlot, TbCache, TranslationBlock};
+use super::cache::{ExitSlot, TbCache, TbKey, TranslationBlock};
 use super::chain;
 use super::code_mem::{CodeMem, Full, WxMode};
 use super::perfmap::PerfMap;
@@ -117,6 +120,8 @@ pub struct JitStats {
     pub fence_flushes: u64,
     /// Dispatcher → JIT entries.
     pub entries: u64,
+    /// Softmmu: page-straddling instructions run in the interpreter.
+    pub interpreted: u64,
     /// Guest instructions retired in JIT code.
     pub retired: u64,
     /// Exits by `exit_reason` (`exit::*`).
@@ -155,6 +160,21 @@ pub struct Jit {
     last_exit: Option<(u32, u8, u64)>,
     /// Guest register → pinned host register (empty with `RegAlloc::None`).
     pinned: [Option<Reg>; 32],
+    /// Softmmu: (TB flags, `CpuState::mmu_gen`) the jump-cache contents were filled under.
+    jc_ctx: (u8, u64),
+}
+
+/// `TbKey::flags` bit marking a softmmu translation (D48).
+pub const FLAG_SOFT: u8 = 0x80;
+
+/// Where the dispatcher continues at `cpu.pc` (`Jit::select`).
+pub enum Next {
+    /// Run this TB.
+    Tb(u32),
+    /// A 32-bit instruction straddles a page boundary (softmmu): interpret it.
+    Straddle,
+    /// Fetching at `cpu.pc` faults.
+    Fault(Exception),
 }
 
 /// Output of either back end.
@@ -219,6 +239,7 @@ impl Jit {
             jc_version: 0,
             last_exit: None,
             pinned,
+            jc_ctx: (0, 0),
         })
     }
 
@@ -250,20 +271,49 @@ impl Jit {
         self.tb_for_variant(pc, mem, false)
     }
 
-    /// The TB for guest `pc` in the given FP variant (D47), translating it on a miss.
+    /// The TB for guest `pc` in the given FP variant (D47), translating it on a miss (direct
+    /// memory).
     pub fn tb_for_variant(&mut self, pc: u64, mem: &DirectMem, fp_slow: bool) -> u32 {
-        // Only the IR back end has two variants; without inline FP only the slow one is used.
-        let fp_slow = (fp_slow || !self.opts.inline_fp) && self.opts.regalloc != RegAlloc::None;
-        if let Some(id) = self.cache.lookup(pc, fp_slow) {
+        let key = TbKey::direct(pc, self.variant(fp_slow));
+        self.tb_for_key(key, None, |max| build_block_max(pc, mem, max))
+    }
+
+    /// Only the IR back end has two FP variants; without inline FP only the slow one is used.
+    fn variant(&self, fp_slow: bool) -> bool {
+        (fp_slow || !self.opts.inline_fp) && self.opts.regalloc != RegAlloc::None
+    }
+
+    /// Softmmu (D48): the TB for `cpu.pc` under the current privilege, MMU state and FP state,
+    /// whose code was fetched from physical page `ppage`.
+    pub fn tb_for_soft(&mut self, cpu: &mut CpuState, mem: &mut DirectMem, ppage: u64) -> u32 {
+        let didx = tlb::data_idx(cpu);
+        let key = TbKey {
+            pc: cpu.pc,
+            slow: self.variant(fp_slow(cpu)),
+            flags: FLAG_SOFT | tlb::fetch_idx(cpu) | didx << 2,
+            ppage,
+        };
+        let pc = cpu.pc;
+        self.tb_for_key(key, Some(didx), |max| build_block_soft(pc, cpu, mem, max))
+    }
+
+    fn tb_for_key(
+        &mut self,
+        key: TbKey,
+        soft: Option<u8>,
+        build: impl FnOnce(usize) -> Block,
+    ) -> u32 {
+        if let Some(id) = self.cache.lookup_key(&key) {
             return id;
         }
+        let pc = key.pc;
         let t0 = Instant::now();
-        let block = build_block_max(pc, mem, self.opts.max_block);
+        let block = build(self.opts.max_block);
         let (mut insns, mut fetch_fault) = (block.insns, block.fetch_fault);
         let (host, out) = loop {
             let origin = self.cm.next_addr();
             let id = self.cache.next_id();
-            let out = match self.translate_insns(&insns, fetch_fault, pc, origin, id, fp_slow) {
+            let out = match self.translate_insns(&insns, fetch_fault, key, origin, id, soft) {
                 Ok(out) => out,
                 Err(OutOfSlots) => {
                     // Too many values live at once for the spill area: translate a shorter
@@ -322,6 +372,11 @@ impl Jit {
                 }
             })
         });
+        // A CSR write may change the MMU flags the successor must be looked up with (D48).
+        let chainable = soft.is_none()
+            || !insns
+                .last()
+                .is_some_and(|d| matches!(d.inst, Inst::Csr { .. }));
         let id = self.cache.insert(TranslationBlock {
             guest_pc: pc,
             insns,
@@ -334,7 +389,8 @@ impl Jit {
             incoming: Vec::new(),
             valid: true,
             fault_sites: out.fault_sites,
-            fp_slow,
+            key,
+            chainable,
         });
         self.stats.translate_time += t0.elapsed();
         id
@@ -345,15 +401,17 @@ impl Jit {
         &self,
         insns: &[crate::isa::Decoded],
         fetch_fault: Option<Exception>,
-        pc: u64,
+        key: TbKey,
         origin: u64,
         id: u32,
-        fp_slow: bool,
+        soft: Option<u8>,
     ) -> Result<Translated, OutOfSlots> {
+        let (pc, fp_slow) = (key.pc, key.slow);
         if self.opts.regalloc == RegAlloc::None {
             let lopts = LowerOptions {
                 inject_bug: self.opts.inject_bug,
                 profile: self.opts.profile,
+                softmmu: soft.is_some(),
             };
             let o = lower::translate(insns, fetch_fault, pc, origin, id, &self.tr, lopts);
             return Ok(Translated {
@@ -385,6 +443,7 @@ impl Jit {
             profile: self.opts.profile,
             pinned: self.pinned,
             inject_bug: self.opts.inject_bug,
+            softmmu: soft,
         };
         let o = lower_ir::translate(&ir, origin, id, &self.tr, iopts)?;
         Ok(Translated {
@@ -396,23 +455,68 @@ impl Jit {
         })
     }
 
-    /// The TB to run next at guest `pc`: `tb_for`, then link the previous unlinked direct exit
-    /// to it (§13.3). `may_link` is trivially true in user and bare mode (flat mapping, no
-    /// TbFlags yet); in system mode it will also require the same virtual page.
+    /// The TB to run next at guest `pc` (direct memory): `tb_for_variant`, then link the
+    /// previous unlinked direct exit to it (§13.3).
     pub fn next_tb(&mut self, pc: u64, mem: &DirectMem, fp_slow: bool) -> u32 {
         let id = self.tb_for_variant(pc, mem, fp_slow);
-        if let Some((from, slot, generation)) = self.last_exit.take()
-            // A flush inside `tb_for` renumbers TBs: `from` would be stale.
-            && generation == self.cache.generation
-            && self.opts.chain
-            && chain::link(&mut self.cache, &mut self.cm, from, slot, id)
+        self.link_last(id);
+        id
+    }
+
+    /// What to run at `cpu.pc`, in either memory mode, linking the previous exit to it.
+    pub fn select(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) -> Next {
+        if cpu.softmmu == 0 {
+            return Next::Tb(self.next_tb(cpu.pc, mem, fp_slow(cpu)));
+        }
+        // The jump cache maps virtual pcs to TBs of one flags value and one translation
+        // regime: start over when either changes (D48).
+        let flags = FLAG_SOFT | tlb::fetch_idx(cpu) | tlb::data_idx(cpu) << 2;
+        if self.jc_ctx != (flags, cpu.mmu_gen) {
+            self.jc_ctx = (flags, cpu.mmu_gen);
+            self.jc_version += 1;
+        }
+        let pc = cpu.pc;
+        let ppage = match mmu::fetch_page(cpu, mem, pc) {
+            Ok(p) => p,
+            Err(e) => {
+                self.last_exit = None;
+                return Next::Fault(e);
+            }
+        };
+        if pc & 0xfff == 0xffe && mmu::fetch16(cpu, mem, pc).is_ok_and(|h| h & 3 == 3) {
+            self.last_exit = None;
+            return Next::Straddle;
+        }
+        let id = self.tb_for_soft(cpu, mem, ppage);
+        self.link_last(id);
+        Next::Tb(id)
+    }
+
+    /// Link the previous unlinked direct exit to TB `id` if allowed (§13.3): in softmmu mode
+    /// only within one virtual page, between TBs of the same flags, and never after a CSR
+    /// instruction (D48).
+    fn link_last(&mut self, id: u32) {
+        let Some((from, slot, generation)) = self.last_exit.take() else {
+            return;
+        };
+        // A flush inside `tb_for` renumbers TBs: `from` would be stale.
+        if generation != self.cache.generation || !self.opts.chain {
+            return;
+        }
+        let (f, t) = (self.cache.get(from), self.cache.get(id));
+        let soft = f.key.flags & FLAG_SOFT != 0;
+        if !f.chainable
+            || f.key.flags != t.key.flags
+            || (soft && f.guest_pc >> 12 != t.guest_pc >> 12)
         {
+            return;
+        }
+        if chain::link(&mut self.cache, &mut self.cm, from, slot, id) {
             self.stats.chain_links += 1;
             if self.opts.dump_x86.is_some() {
                 self.log_link(from, slot, id);
             }
         }
-        id
     }
 
     /// `--dump-x86`: record a chain patch in `links.txt` (the patched instruction's bytes).
@@ -519,6 +623,7 @@ impl Jit {
             }),
             exit::FLUSH => BlockExit::Flush,
             exit::HOST_FAULT => BlockExit::Trap(self.resolve_host_fault(cpu, mem)),
+            exit::MMU_FAULT => BlockExit::Trap(self.resolve_mmu_fault(cpu)),
             r => panic!("JIT exit with unknown reason {r} at pc {:#x}", cpu.pc),
         };
         // After the host-fault refund: everything charged and not refunded has retired.
@@ -533,6 +638,21 @@ impl Jit {
             self.cache.generation,
         ));
         exit
+    }
+
+    /// A softmmu slow path raised an exception (`exc_cause`/`exc_tval`): make the guest state
+    /// precise at the faulting access from its fault site (D48).
+    fn resolve_mmu_fault(&self, cpu: &mut CpuState) -> Exception {
+        let rip = cpu.fault_rip;
+        let tb = self
+            .cache
+            .find_host(rip)
+            .unwrap_or_else(|| panic!("softmmu fault at {rip:#x} outside any TB"));
+        apply_site(tb, cpu, rip);
+        Exception {
+            cause: cpu.exc_cause,
+            tval: cpu.exc_tval,
+        }
     }
 
     /// Turn a host SIGSEGV in JIT code into a precise guest exception: find the guest
@@ -607,6 +727,15 @@ impl Jit {
         any
     }
 
+    /// Softmmu: run the single instruction at `cpu.pc` in the interpreter (one that straddles
+    /// a page boundary, whose translation would depend on two pages).
+    pub fn interpret_one(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) -> BlockExit {
+        let pc = cpu.pc;
+        let b = build_block_soft(pc, cpu, mem, 1);
+        self.stats.interpreted += 1;
+        exec_block(cpu, mem, &b.insns, b.fetch_fault, false)
+    }
+
     fn flush_all(&mut self) {
         self.cache.flush();
         self.cm.reset();
@@ -625,12 +754,21 @@ impl Engine for Jit {
             if let Some(v) = tohost_written(mem, env) {
                 return Stop::Tohost(v);
             }
-            let id = self.next_tb(cpu.pc, mem, fp_slow(cpu));
-            // The first TB always runs whole, like an interpreter block, so a budget smaller
-            // than it cannot stall progress; chained TBs then respect the remaining budget.
-            let n = self.cache.get(id).insns.len() as u64;
-            let budget = (limit - cpu.icount).min(self.opts.slice).max(n);
-            let exit = self.exec(cpu, mem, id, budget as i64);
+            if cpu.softmmu != 0 {
+                deliver_interrupt(cpu, env);
+            }
+            let exit = match self.select(cpu, mem) {
+                Next::Tb(id) => {
+                    // The first TB always runs whole, like an interpreter block, so a budget
+                    // smaller than it cannot stall progress; chained TBs then respect the
+                    // remaining budget.
+                    let n = self.cache.get(id).insns.len() as u64;
+                    let budget = (limit - cpu.icount).min(self.opts.slice).max(n);
+                    self.exec(cpu, mem, id, budget as i64)
+                }
+                Next::Straddle => self.interpret_one(cpu, mem),
+                Next::Fault(e) => BlockExit::Trap(e),
+            };
             if exit == BlockExit::Flush {
                 self.flush();
             }
@@ -761,6 +899,24 @@ impl Jit {
 /// register was (host registers from the SIGSEGV snapshot, spill slots, constants or another
 /// register's home); pinned registers were already stored by `exit_jit` (§15).
 fn resolve_site(tb: &TranslationBlock, cpu: &mut CpuState, mem: &DirectMem, rip: u64) -> Exception {
+    let site = apply_site(tb, cpu, rip);
+    let regs = cpu.fault_regs;
+    let addr = regs[site.addr.num() as usize].wrapping_add(site.off as i64 as u64);
+    let size = site.size as u64;
+    let g = cpu.fault_addr.wrapping_sub(mem.base() as u64);
+    let tval = if g.wrapping_sub(addr) < size { g } else { addr };
+    let access = if site.store {
+        Access::Store
+    } else {
+        Access::Load
+    };
+    Exception::from(MemFault { access, addr: tval })
+}
+
+/// Make the guest state precise at the fault site at host `rip` (§15, D37): write the dirty
+/// guest registers home from `cpu.fault_regs`/slots/constants, set `pc`, refund the budget of
+/// the instructions that did not retire.
+fn apply_site<'a>(tb: &'a TranslationBlock, cpu: &mut CpuState, rip: u64) -> &'a FaultSite {
     let off = (rip - tb.host) as u32;
     let site = tb
         .fault_sites
@@ -789,16 +945,7 @@ fn resolve_site(tb: &TranslationBlock, cpu: &mut CpuState, mem: &DirectMem, rip:
     cpu.pc = site.pc;
     // Instructions idx.. were charged by the prologue but did not retire.
     cpu.budget += (tb.insns.len() as u32 - site.idx) as i64;
-    let addr = regs[site.addr.num() as usize].wrapping_add(site.off as i64 as u64);
-    let size = site.size as u64;
-    let g = cpu.fault_addr.wrapping_sub(mem.base() as u64);
-    let tval = if g.wrapping_sub(addr) < size { g } else { addr };
-    let access = if site.store {
-        Access::Store
-    } else {
-        Access::Load
-    };
-    Exception::from(MemFault { access, addr: tval })
+    site
 }
 
 /// Guest disassembly plus host code of one TB (`--dump-x86`, lockstep reports).

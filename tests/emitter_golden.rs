@@ -689,6 +689,37 @@ fn absolute_branches_and_rip_relative() {
 }
 
 #[test]
+fn lea_rip_relative_label() {
+    for r in Reg::ALL {
+        for back in [false, true] {
+            let b = asm(|a| {
+                let l = a.new_label();
+                if back {
+                    a.bind(l);
+                    a.nop(3);
+                    a.lea_label(r, l);
+                } else {
+                    a.lea_label(r, l);
+                    a.nop(5);
+                    a.bind(l);
+                }
+            });
+            let at = if back { 3 } else { 0 };
+            let i = decode(&b[at..]);
+            assert_eq!(
+                (i.mnemonic(), i.len(), i.op0_register()),
+                (Mnemonic::Lea, 7, r64(r))
+            );
+            assert!(i.is_ip_rel_memory_operand());
+            let want = if back { ORIGIN } else { ORIGIN + 12 };
+            // decode() places the instruction at ORIGIN; re-base for the backward case.
+            let got = i.ip_rel_memory_address() + at as u64;
+            assert_eq!(got, want, "{r:?} back={back}");
+        }
+    }
+}
+
+#[test]
 fn write_rel32_patches() {
     // A jmp rel32 at ORIGIN+0x40 (field at +0x41) retargeted to ORIGIN+0x2000 (§28.5).
     let mut buf = asm(|a| {

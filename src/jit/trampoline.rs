@@ -18,6 +18,7 @@ use crate::cpu::state::{CpuState, exit};
 use crate::interp::{Flow, step};
 use crate::isa::decode_parts;
 use crate::mem::direct::DirectMem;
+use crate::mem::{Access, mmu};
 
 use super::code_mem::CodeMem;
 
@@ -25,7 +26,9 @@ use super::code_mem::CodeMem;
 pub mod helper {
     /// `helper_interp_one(cpu, raw, pc) -> u64` (D14).
     pub const INTERP_ONE: usize = 0;
-    pub const COUNT: usize = 1;
+    /// `helper_mmu_access(cpu, va, info, val) -> u64` (softmmu slow path, D48).
+    pub const MMU_ACCESS: usize = 1;
+    pub const COUNT: usize = 2;
 }
 
 /// `[rbp + disp]` addressing a `CpuState` field at byte offset `off` (RBP is biased, §8.1).
@@ -60,7 +63,10 @@ impl Trampolines {
         pinned: &[(u8, Reg)],
         budget_reg: Option<Reg>,
     ) -> Trampolines {
-        let helpers: [u64; helper::COUNT] = [helper_interp_one as *const () as u64];
+        let helpers: [u64; helper::COUNT] = [
+            helper_interp_one as *const () as u64,
+            helper_mmu_access as *const () as u64,
+        ];
         let origin = cm.next_addr();
         let mut a = Asm::new(origin);
         let helper_table = a.here();
@@ -255,6 +261,58 @@ pub unsafe extern "sysv64" fn helper_interp_one(cpu: *mut CpuState, raw: u64, pc
                 cpu.pc = pc;
                 cpu.exit_reason = exit::ECALL;
                 1
+            }
+        }
+    }));
+    r.unwrap_or_else(|_| {
+        eprintln!("bridgev: panic in JIT helper; aborting");
+        std::process::abort()
+    })
+}
+
+/// The softmmu slow path of an inline load or store (D48): translate through the TLB (walking
+/// and filling on a miss), then access RAM or a device; misaligned accesses that cross a page
+/// are split. `info` = size | signed << 4 | store << 5 | MMU index << 8. Returns the loaded
+/// value, sign- or zero-extended. On an exception, sets `exc_cause`/`exc_tval` and
+/// `exit_reason = MMU_FAULT` (the JIT code then leaves through its fault exit).
+///
+/// # Safety
+/// Called only from JIT code with the running `CpuState` (as `helper_interp_one`).
+pub unsafe extern "sysv64" fn helper_mmu_access(
+    cpu: *mut CpuState,
+    va: u64,
+    info: u64,
+    val: u64,
+) -> u64 {
+    let r = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: as in `helper_interp_one`.
+        let cpu = unsafe { &mut *cpu };
+        // SAFETY: as in `helper_interp_one`.
+        let mem = unsafe { &mut *(cpu.helper_mem as *mut DirectMem) };
+        // JIT code refunded the unretired instructions into `budget` (D30).
+        cpu.icount += (cpu.budget_ref - cpu.budget) as u64;
+        cpu.budget_ref = cpu.budget;
+        let size = info & 15;
+        let mmu_idx = (info >> 8) as u8;
+        let r = if info & 32 != 0 {
+            mmu::soft_store(cpu, mem, va, size, val, mmu_idx).map(|_| 0)
+        } else {
+            mmu::soft_load(cpu, mem, va, size, Access::Load, mmu_idx).map(|v| {
+                let sh = 64 - 8 * size as u32;
+                if info & 16 != 0 {
+                    ((v << sh) as i64 >> sh) as u64
+                } else {
+                    v
+                }
+            })
+        };
+        match r {
+            Ok(v) => v,
+            Err(e) => {
+                cpu.exc_cause = e.cause;
+                cpu.exc_tval = e.tval;
+                cpu.exit_reason = exit::MMU_FAULT;
+                0
             }
         }
     }));

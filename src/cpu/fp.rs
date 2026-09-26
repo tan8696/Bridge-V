@@ -12,6 +12,7 @@ use crate::cpu::state::CpuState;
 use crate::cpu::trap::Exception;
 use crate::isa::inst::{FmaOp, FpFmt, FpOp, Inst, IntTy};
 use crate::mem::direct::DirectMem;
+use crate::mem::mmu;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -230,16 +231,18 @@ pub fn exec(
     match *inst {
         Inst::FLoad { fmt, rd, rs1, imm } => {
             let addr = cpu.x[rs1 as usize].wrapping_add(imm as u64);
-            cpu.f[rd as usize] = match fmt {
-                FpFmt::S => nanbox(mem.load(addr, 4)? as u32),
-                FpFmt::D => mem.load(addr, 8)?,
+            let v = match fmt {
+                FpFmt::S => nanbox(mmu::load(cpu, mem, addr, 4)? as u32),
+                FpFmt::D => mmu::load(cpu, mem, addr, 8)?,
             };
+            cpu.f[rd as usize] = v;
         }
         Inst::FStore { fmt, rs1, rs2, imm } => {
             let addr = cpu.x[rs1 as usize].wrapping_add(imm as u64);
             // FSW stores bits [31:0] as they are, without NaN-unboxing.
             let size = if fmt == FpFmt::S { 4 } else { 8 };
-            mem.store(addr, size, cpu.f[rs2 as usize])?;
+            let v = cpu.f[rs2 as usize];
+            mmu::store(cpu, mem, addr, size, v)?;
             return Ok(()); // a store modifies no FP state
         }
         Inst::Fma {

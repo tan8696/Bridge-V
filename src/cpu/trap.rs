@@ -88,6 +88,33 @@ impl CpuState {
     /// Take a trap at `self.pc`: record cause/epc/tval, update the status stack, switch
     /// privilege and jump to the trap vector. Chooses S-mode when the cause is delegated and
     /// the hart is not in M-mode.
+    /// The interrupt to take now, if any (priv spec §3.1.9): M-level interrupts (not
+    /// delegated) when below M or MIE is set, S-level (delegated) ones when below S or in S
+    /// with SIE set. Priority MEI > MSI > MTI > SEI > SSI > STI.
+    pub fn pending_interrupt(&self) -> Option<u64> {
+        let s = &self.csr;
+        let pending = s.mip & s.mie;
+        if pending == 0 {
+            return None;
+        }
+        let m_on = self.prv < prv::M || s.mstatus & ms::MIE != 0;
+        let s_on = self.prv < prv::S || (self.prv == prv::S && s.mstatus & ms::SIE != 0);
+        let pick = |bits: u64| {
+            [11u64, 3, 7, 9, 1, 5]
+                .into_iter()
+                .find(|&c| (bits >> c) & 1 == 1)
+        };
+        let m_ints = pending & !s.mideleg;
+        let s_ints = pending & s.mideleg;
+        if m_on && m_ints != 0 {
+            return pick(m_ints);
+        }
+        if s_on && s_ints != 0 {
+            return pick(s_ints);
+        }
+        None
+    }
+
     pub fn take_trap(&mut self, e: Exception, interrupt: bool) {
         let cause = e.cause | if interrupt { 1 << 63 } else { 0 };
         let deleg = if interrupt {

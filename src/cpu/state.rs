@@ -6,6 +6,7 @@ use std::mem::offset_of;
 
 use super::csr::{Csrs, fs, mstatus};
 use super::trap::prv;
+use crate::mem::tlb::{NB_MMU_IDX, TLB_SIZE, TlbEntry};
 
 /// Values of `CpuState::exit_reason` when JIT code returns to the dispatcher (D25).
 pub mod exit {
@@ -26,7 +27,10 @@ pub mod exit {
     /// A fast-FP-variant TB was entered with FS not Dirty or (dynamic rm) frm not RNE (D47);
     /// nothing executed, continue at `pc` with the matching variant.
     pub const FP_VARIANT: u32 = 7;
-    pub const COUNT: usize = 8;
+    /// A softmmu slow path raised `exc_cause`/`exc_tval` at the fault site whose host address
+    /// is `fault_rip` (the dispatcher makes the state precise, D48).
+    pub const MMU_FAULT: u32 = 8;
+    pub const COUNT: usize = 9;
 }
 
 /// Spill slots for IR temporaries (§8.1, §10).
@@ -71,7 +75,9 @@ pub struct CpuState {
     /// Current privilege level (`prv::U/S/M`).
     pub prv: u8,
     pub mmu_idx: u8,
-    _pad0: [u8; 2],
+    /// 1: memory accesses are translated (softmmu, D48); 0: direct user-mode memory.
+    pub softmmu: u8,
+    _pad0: u8,
     /// Retired guest instructions.
     pub icount: u64,
     /// Direct mode: host address of guest address 0.
@@ -103,7 +109,10 @@ pub struct CpuState {
     pub jc_tag: u64,
     /// `--profile-jit`: JALR executions counted by JIT code.
     pub prof_jalr: u64,
-    _pad2: [u64; 15],
+    /// Bumped whenever virtual-to-physical translation may have changed (TLB flush): engines
+    /// revalidate their virtually keyed caches (decoded blocks, jump cache) against it.
+    pub mmu_gen: u64,
+    _pad2: [u64; 14],
     /// Inline JALR lookup table (§13.4).
     pub jmp_cache: [JcEntry; JC_SIZE],
     /// Register-allocator spill slots for values that are not guest registers (§10).
@@ -112,6 +121,8 @@ pub struct CpuState {
     /// `backend::x86::regs::Reg` number (the SIGSEGV handler copies them from the ucontext);
     /// the dispatcher recovers dirty cached guest registers from them (§15).
     pub fault_regs: [u64; 16],
+    /// Software TLB, one per MMU index (§14.4, D48).
+    pub tlb: [[TlbEntry; TLB_SIZE]; NB_MMU_IDX],
     pub csr: Csrs,
 }
 
@@ -124,6 +135,7 @@ const _: () = {
     assert!(offset_of!(CpuState, exit_reason) == 0x110);
     assert!(offset_of!(CpuState, prv) == 0x114);
     assert!(offset_of!(CpuState, mmu_idx) == 0x115);
+    assert!(offset_of!(CpuState, softmmu) == 0x116);
     assert!(offset_of!(CpuState, icount) == 0x118);
     assert!(offset_of!(CpuState, mem_base) == 0x120);
     assert!(offset_of!(CpuState, res_addr) == 0x128);
@@ -142,6 +154,8 @@ const _: () = {
     assert!(offset_of!(CpuState, prof_jalr) == 0x280);
     assert!(offset_of!(CpuState, jmp_cache) == 0x300);
     assert!(offset_of!(CpuState, spill) == 0x10300);
+    assert!(offset_of!(CpuState, fault_regs) == 0x10500);
+    assert!(offset_of!(CpuState, tlb) == 0x10580);
     assert!(std::mem::size_of::<JcEntry>() == 16);
 };
 
@@ -155,7 +169,8 @@ impl CpuState {
             exit_reason: 0,
             prv: prv::M,
             mmu_idx: 0,
-            _pad0: [0; 2],
+            softmmu: 0,
+            _pad0: 0,
             icount: 0,
             mem_base: 0,
             res_addr: 0,
@@ -173,10 +188,12 @@ impl CpuState {
             budget_ref: 0,
             jc_tag: 0,
             prof_jalr: 0,
-            _pad2: [0; 15],
+            mmu_gen: 0,
+            _pad2: [0; 14],
             jmp_cache: [JcEntry::EMPTY; JC_SIZE],
             spill: [0; SPILL_SLOTS],
             fault_regs: [0; 16],
+            tlb: [[TlbEntry::EMPTY; TLB_SIZE]; NB_MMU_IDX],
             csr: Csrs::default(),
         })
     }

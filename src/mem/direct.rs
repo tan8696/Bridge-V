@@ -14,6 +14,7 @@
 
 use std::ptr;
 
+use super::phys::{Device, Mmio};
 use super::{Access, GuestVirt, MemFault, PAGE_SIZE, page_ceil, page_floor, prot};
 
 /// Size of the guest address space: 2^38 bytes = 256 GiB.
@@ -56,6 +57,8 @@ pub struct DirectMem {
     prot: PageProt,
     /// Lockstep checking: every successful `store` appends `(addr, size, old value)`.
     pub write_log: Option<Vec<(u64, u64, u64)>>,
+    /// System mode: memory-mapped devices outside RAM, sorted by base (P7.3).
+    pub devices: Vec<Device>,
 }
 
 /// Host protection for guest permissions `p`: readable if the guest may read or execute
@@ -112,6 +115,7 @@ impl DirectMem {
             base: unsafe { reserve.add(GUARD) },
             prot: PageProt::new(),
             write_log: None,
+            devices: Vec::new(),
         })
     }
 
@@ -382,6 +386,37 @@ impl DirectMem {
                 _ => ptr::read_unaligned(p as *const u64),
             }
         }
+    }
+
+    /// Add a memory-mapped device at physical `[base, base + size)` (outside RAM).
+    pub fn add_device(&mut self, base: u64, size: u64, dev: Box<dyn Mmio>) {
+        self.devices.push(Device { base, size, dev });
+        self.devices.sort_by_key(|d| d.base);
+    }
+
+    /// Index of the device decoding physical address `pa`.
+    pub fn device_at(&self, pa: u64) -> Option<usize> {
+        let i = self
+            .devices
+            .partition_point(|d| d.base <= pa)
+            .checked_sub(1)?;
+        let d = &self.devices[i];
+        (pa - d.base < d.size).then_some(i)
+    }
+
+    /// Device read; `None` if no device decodes `pa` (an access fault).
+    pub fn mmio_read(&mut self, pa: u64, size: u64) -> Option<u64> {
+        let i = self.device_at(pa)?;
+        let d = &mut self.devices[i];
+        Some(d.dev.read(pa - d.base, size))
+    }
+
+    /// Device write; `None` if no device decodes `pa` (an access fault).
+    pub fn mmio_write(&mut self, pa: u64, size: u64, val: u64) -> Option<()> {
+        let i = self.device_at(pa)?;
+        let d = &mut self.devices[i];
+        d.dev.write(pa - d.base, size, val);
+        Some(())
     }
 
     /// Undo stores recorded in a write log (newest first), restoring the old bytes.

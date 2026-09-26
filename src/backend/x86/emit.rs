@@ -856,6 +856,14 @@ impl Asm {
         }
     }
 
+    /// `lea dst, [rip + disp32]` addressing `label` (`REX.W 8D /r`, ModRM mod=00 rm=101).
+    pub fn lea_label(&mut self, dst: Reg, label: Label) {
+        self.byte(0x48 | (dst.rex_bit() << 2));
+        self.byte(0x8D);
+        self.byte((dst.low3() << 3) | 0b101);
+        self.fixup(label, false);
+    }
+
     /// `jcc rel32` to `label`. Returns the offset of the rel32 field.
     pub fn jcc(&mut self, cond: Cond, label: Label) -> usize {
         self.bytes_raw(&[0x0F, 0x80 + cond as u8]);

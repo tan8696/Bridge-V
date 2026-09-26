@@ -18,9 +18,11 @@ use std::io;
 
 use crate::cpu::csr::Csrs;
 use crate::cpu::state::CpuState;
-use crate::interp::{BlockExit, Engine, Env, Stop, deliver, exec_block, tohost_written};
+use crate::interp::{
+    BlockExit, Engine, Env, Stop, deliver, deliver_interrupt, exec_block, tohost_written,
+};
 
-use super::dispatch::{Jit, JitOptions, dump_tb_text};
+use super::dispatch::{Jit, JitOptions, Next, dump_tb_text};
 
 pub struct Lockstep {
     jit: Jit,
@@ -164,12 +166,31 @@ impl Engine for Lockstep {
             if let Some(v) = tohost_written(mem, env) {
                 return Stop::Tohost(v);
             }
-            let id = self
-                .jit
-                .next_tb(cpu.pc, mem, crate::jit::dispatch::fp_slow(cpu));
+            if cpu.softmmu != 0 {
+                deliver_interrupt(cpu, env);
+            }
+            let id = match self.jit.select(cpu, mem) {
+                Next::Tb(id) => id,
+                // Not compared: the interpreter runs it in both engines.
+                Next::Straddle => {
+                    let exit = self.jit.interpret_one(cpu, mem);
+                    if let Err(stop) = deliver(exit, env, cpu) {
+                        return stop;
+                    }
+                    continue;
+                }
+                Next::Fault(e) => {
+                    if let Err(stop) = deliver(BlockExit::Trap(e), env, cpu) {
+                        return stop;
+                    }
+                    continue;
+                }
+            };
 
-            // Reference run.
+            // Reference run. The TLB is not architectural, but it decides whether a walk (and
+            // its A/D update) happens: both runs start from the same TLB.
             let snapshot = ArchState::capture(cpu);
+            let tlb = cpu.softmmu.ne(&0).then(|| (Box::new(cpu.tlb), cpu.mmu_gen));
             self.log.clear();
             mem.write_log = Some(std::mem::take(&mut self.log));
             let tb = self.jit.tb(id);
@@ -181,6 +202,10 @@ impl Engine for Lockstep {
             let icpu = ArchState::capture(cpu);
             snapshot.restore(cpu);
             mem.undo_writes(&self.log);
+            if let Some((t, g)) = tlb {
+                cpu.tlb = *t;
+                cpu.mmu_gen = g;
+            }
 
             // JIT run from the same state, with a budget of exactly this TB.
             let n = self.jit.tb(id).insns.len() as i64;

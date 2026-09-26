@@ -7,6 +7,8 @@ use std::time::Instant;
 
 use super::state::CpuState;
 use super::trap::prv;
+use crate::mem::mmu::{SATP_BARE, SATP_SV39};
+use crate::mem::tlb;
 
 /// `mstatus` fields.
 pub mod mstatus {
@@ -62,8 +64,6 @@ const MIE_WMASK: u64 = 0xaaa;
 const S_INTS: u64 = 0x222;
 /// Delegable synchronous exceptions: causes 0–9, 12, 13, 15 (not ecall-from-M).
 const MEDELEG_WMASK: u64 = 0xb3ff;
-/// Sv39 translation arrives in Phase 7; until then only Bare may be written to satp.
-const SV39_SUPPORTED: bool = false;
 
 /// Supervisor/machine CSR storage. Lives at the end of `CpuState`: JIT code never touches it.
 #[derive(Clone, Debug, PartialEq)]
@@ -236,6 +236,8 @@ impl CpuState {
             0x344 => s.mip,
             0x3a0..=0x3af if csr & 1 == 0 => s.pmpcfg[((csr - 0x3a0) / 2) as usize],
             0x3b0..=0x3ef => s.pmpaddr[(csr - 0x3b0) as usize],
+            // Debug triggers (tselect, tdata1-3): none implemented; tdata1 type 0 = no trigger.
+            0x7a0..=0x7a3 => 0,
             0xb00 => self.icount.wrapping_add(s.cycle_offset),
             0xb02 => self.icount.wrapping_add(s.instret_offset),
             0xb03..=0xb1f => 0,         // mhpmcounter3..31
@@ -277,6 +279,8 @@ impl CpuState {
         }
         // The writing instruction retires before the new counter value becomes visible.
         let next_icount = self.icount.wrapping_add(1);
+        let old_mstatus = self.csr.mstatus;
+        let mut flush = false;
         let s = &mut self.csr;
         match csr {
             0x100 => {
@@ -294,10 +298,12 @@ impl CpuState {
             // Only SSIP is writable through sip.
             0x144 => s.mip = (s.mip & !(s.mideleg & 2)) | (val & s.mideleg & 2),
             0x180 => {
+                // An unsupported MODE makes the whole write have no effect (priv spec §12.1.11).
                 let mode = val >> 60;
-                if mode == 0 || (mode == 8 && SV39_SUPPORTED) {
+                if mode == SATP_BARE || mode == SATP_SV39 {
                     // MODE (4) + ASID (16, all implemented) + PPN (44) cover all 64 bits.
                     s.satp = val;
+                    flush = true;
                 }
             }
             0x300 => {
@@ -324,10 +330,16 @@ impl CpuState {
             0x344 => s.mip = (s.mip & !S_INTS) | (val & S_INTS),
             0x3a0..=0x3af if csr & 1 == 0 => s.pmpcfg[((csr - 0x3a0) / 2) as usize] = val,
             0x3b0..=0x3ef => s.pmpaddr[(csr - 0x3b0) as usize] = val & ((1 << 54) - 1),
+            0x7a0..=0x7a3 => {}
             0xb00 => s.cycle_offset = val.wrapping_sub(next_icount),
             0xb02 => s.instret_offset = val.wrapping_sub(next_icount),
             0xb03..=0xb1f => {}
             _ => return false,
+        }
+        // MXR changes what loads may read on every MMU index (SUM and MPRV select separate
+        // indices instead, D48).
+        if flush || (old_mstatus ^ self.csr.mstatus) & mstatus::MXR != 0 {
+            tlb::flush_all(self);
         }
         true
     }

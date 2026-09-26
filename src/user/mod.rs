@@ -11,6 +11,7 @@ use anyhow::Result;
 use crate::cpu::trap::{Exception, cause};
 use crate::interp::{Env, Stop};
 use crate::jit::{EngineKind, JitOptions, make_engine};
+use crate::mem::tlb;
 use syscall::{SysOut, Syscalls};
 
 /// Options for `run`.
@@ -26,6 +27,8 @@ pub struct RunOptions {
     pub deterministic: bool,
     /// `--stats=regs`: collect the register-use histogram (interpreter engine only).
     pub reg_stats: bool,
+    /// `--mem=softmmu`: translate every access through the software TLB (D48).
+    pub softmmu: bool,
 }
 
 /// Outcome of a user-mode run.
@@ -52,6 +55,7 @@ fn signal_for(e: &Exception) -> i32 {
 pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> Result<RunResult> {
     let mut p = loader::load(path, args, envs)?;
     p.cpu.csr.deterministic_time = opts.deterministic;
+    p.cpu.softmmu = opts.softmmu as u8;
     let mut engine = make_engine(opts.engine, &opts.jit)?;
     if opts.reg_stats && !engine.enable_reg_stats() {
         anyhow::bail!("--stats=regs needs --engine interp");
@@ -69,6 +73,11 @@ pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> R
         match engine.run(&mut p.cpu, &mut p.mem, &env, left) {
             Stop::Ecall => match sys.dispatch(&mut p, engine.as_mut()) {
                 SysOut::Ret(v) => {
+                    // The user-mode "page table" is the mmap state: drop cached translations
+                    // when it changes (brk, munmap, mremap, mmap, mprotect).
+                    if p.cpu.softmmu != 0 && matches!(p.cpu.x[17], 214 | 215 | 216 | 222 | 226) {
+                        tlb::flush_all(&mut p.cpu);
+                    }
                     p.cpu.x[10] = v as u64;
                     p.cpu.pc += 4; // ECALL has no compressed form
                     p.cpu.icount += 1;

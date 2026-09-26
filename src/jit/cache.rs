@@ -4,8 +4,9 @@
 //!
 //! TBs are numbered in allocation order within a generation. Code is bump-allocated, so TB
 //! host addresses increase with the id and a host RIP is mapped to its TB by binary search.
-//! A full flush drops every TB and starts a new generation (§12). TbFlags (privilege, MMU
-//! index) arrive in Phase 7: translations do not depend on them yet (D28).
+//! A full flush drops every TB and starts a new generation (§12). TBs are keyed by `TbKey`:
+//! guest pc, FP variant (D47) and, with softmmu (D48), the MMU flags the code was lowered for
+//! and the physical page it was fetched from.
 
 use rustc_hash::FxHashMap;
 
@@ -36,6 +37,31 @@ pub struct ExitSlot {
     pub linked: Option<u32>,
 }
 
+/// What a translation depends on besides the guest bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TbKey {
+    /// Guest (virtual) pc.
+    pub pc: u64,
+    /// Slow FP variant: FP instructions run in the interpreter (D47).
+    pub slow: bool,
+    /// Softmmu: fetch MMU index | data MMU index << 2 (D48); 0 in direct mode.
+    pub flags: u8,
+    /// Softmmu: physical page of `pc`; 0 in direct mode.
+    pub ppage: u64,
+}
+
+impl TbKey {
+    /// Key of a direct-mode (user, `--mem=direct`) translation.
+    pub fn direct(pc: u64, slow: bool) -> Self {
+        TbKey {
+            pc,
+            slow,
+            flags: 0,
+            ppage: 0,
+        }
+    }
+}
+
 /// One translated guest basic block.
 pub struct TranslationBlock {
     pub guest_pc: u64,
@@ -56,8 +82,10 @@ pub struct TranslationBlock {
     pub valid: bool,
     /// IR back end: every memory access with its state map (§15); empty for the naive one.
     pub fault_sites: Vec<crate::backend::x86::lower_ir::FaultSite>,
-    /// Slow FP variant: FP instructions run in the interpreter (D47).
-    pub fp_slow: bool,
+    pub key: TbKey,
+    /// May the dispatcher chain its direct exits (false for a softmmu TB ending in a CSR
+    /// instruction, which may change the MMU flags its successor needs, D48)?
+    pub chainable: bool,
 }
 
 impl TranslationBlock {
@@ -76,8 +104,7 @@ impl TranslationBlock {
 #[derive(Default)]
 pub struct TbCache {
     tbs: Vec<TranslationBlock>,
-    /// (guest pc, slow FP variant) → TB.
-    map: FxHashMap<(u64, bool), u32>,
+    map: FxHashMap<TbKey, u32>,
     /// Number of full flushes so far.
     pub generation: u64,
 }
@@ -85,7 +112,11 @@ pub struct TbCache {
 impl TbCache {
     /// The TB for `pc` in the fast (`slow = false`) or slow FP variant (D47).
     pub fn lookup(&self, pc: u64, slow: bool) -> Option<u32> {
-        self.map.get(&(pc, slow)).copied()
+        self.lookup_key(&TbKey::direct(pc, slow))
+    }
+
+    pub fn lookup_key(&self, key: &TbKey) -> Option<u32> {
+        self.map.get(key).copied()
     }
 
     /// Id the next inserted TB will get.
@@ -97,7 +128,7 @@ impl TbCache {
     pub fn insert(&mut self, tb: TranslationBlock) -> u32 {
         debug_assert!(self.tbs.last().is_none_or(|l| l.host < tb.host));
         let id = self.tbs.len() as u32;
-        self.map.insert((tb.guest_pc, tb.fp_slow), id);
+        self.map.insert(tb.key, id);
         self.tbs.push(tb);
         id
     }
@@ -115,7 +146,7 @@ impl TbCache {
     pub fn invalidate(&mut self, id: u32) {
         let tb = &mut self.tbs[id as usize];
         tb.valid = false;
-        let key = (tb.guest_pc, tb.fp_slow);
+        let key = tb.key;
         if self.map.get(&key) == Some(&id) {
             self.map.remove(&key);
         }
@@ -172,7 +203,8 @@ mod tests {
             incoming: Vec::new(),
             valid: true,
             fault_sites: Vec::new(),
-            fp_slow: false,
+            key: TbKey::direct(pc, false),
+            chainable: true,
         }
     }
 

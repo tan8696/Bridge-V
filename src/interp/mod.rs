@@ -16,8 +16,8 @@ use crate::cpu::trap::{Exception, cause, prv};
 use crate::isa::decode_parts;
 use crate::isa::disasm::disasm;
 use crate::isa::inst::*;
-use crate::mem::MemFault;
 use crate::mem::direct::DirectMem;
+use crate::mem::{mmu, tlb};
 use crate::stats::RegStats;
 
 const MAX_BLOCK: usize = 64;
@@ -100,6 +100,21 @@ pub fn deliver(exit: BlockExit, env: &Env, cpu: &mut CpuState) -> Result<(), Sto
     }
 }
 
+/// Take a pending, enabled interrupt (system/bare mode), at a block boundary (§15).
+#[inline]
+pub fn deliver_interrupt(cpu: &mut CpuState, env: &Env) -> bool {
+    if env.user_mode || cpu.csr.mip & cpu.csr.mie == 0 {
+        return false;
+    }
+    match cpu.pending_interrupt() {
+        Some(c) => {
+            cpu.take_trap(Exception { cause: c, tval: 0 }, true);
+            true
+        }
+        None => false,
+    }
+}
+
 /// The `tohost` check done at every block boundary in bare mode.
 #[inline]
 pub fn tohost_written(mem: &DirectMem, env: &Env) -> Option<u64> {
@@ -112,7 +127,10 @@ pub fn tohost_written(mem: &DirectMem, env: &Env) -> Option<u64> {
 
 #[derive(Default)]
 pub struct Interp {
-    cache: FxHashMap<u64, Rc<Block>>,
+    /// Decoded blocks by (virtual pc, fetch MMU index). With softmmu the cache is dropped
+    /// whenever translation may have changed (`CpuState::mmu_gen`).
+    cache: FxHashMap<(u64, u8), Rc<Block>>,
+    mmu_gen: u64,
     /// Blocks decoded so far (statistics).
     pub blocks_built: u64,
     /// `--stats=regs` histogram, when enabled.
@@ -213,16 +231,33 @@ impl Interp {
         self.cache.clear();
     }
 
-    fn block(&mut self, pc: u64, mem: &DirectMem) -> Rc<Block> {
-        if let Some(b) = self.cache.get(&pc) {
+    fn block(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) -> Rc<Block> {
+        let pc = cpu.pc;
+        let key = if cpu.softmmu != 0 {
+            if cpu.mmu_gen != self.mmu_gen {
+                self.cache.clear();
+                self.mmu_gen = cpu.mmu_gen;
+            }
+            (pc, tlb::fetch_idx(cpu))
+        } else {
+            (pc, 0)
+        };
+        if let Some(b) = self.cache.get(&key) {
             return b.clone();
         }
-        let b = Rc::new(build_block(pc, mem));
+        let b = Rc::new(if cpu.softmmu != 0 {
+            build_block_soft(pc, cpu, mem, MAX_BLOCK)
+        } else {
+            build_block(pc, mem)
+        });
         self.blocks_built += 1;
         if let Some(r) = &mut self.reg_stats {
             r.block(&b.insns);
         }
-        self.cache.insert(pc, b.clone());
+        // A block whose first fetch faulted depends on the TLB state: don't keep it.
+        if !(b.insns.is_empty() && cpu.softmmu != 0) {
+            self.cache.insert(key, b.clone());
+        }
         b
     }
 
@@ -243,7 +278,8 @@ impl Interp {
             if let Some(v) = tohost_written(mem, env) {
                 return Stop::Tohost(v);
             }
-            let block = self.block(cpu.pc, mem);
+            deliver_interrupt(cpu, env);
+            let block = self.block(cpu, mem);
             let before = cpu.icount;
             let exit = exec_block(cpu, mem, &block.insns, block.fetch_fault, env.trace);
             if let Some(r) = &mut self.reg_stats {
@@ -291,48 +327,62 @@ pub fn build_block(pc: u64, mem: &DirectMem) -> Block {
     build_block_max(pc, mem, MAX_BLOCK)
 }
 
-/// `build_block` with an instruction limit of `max` (≥ 1).
+/// `build_block` with an instruction limit of `max` (≥ 1), direct memory.
 pub fn build_block_max(pc: u64, mem: &DirectMem, max: usize) -> Block {
+    build_block_by(pc, max, false, |a| mem.fetch16(a).map_err(Exception::from))
+}
+
+/// `build_block` through the current fetch translation (softmmu, D48). A 32-bit instruction
+/// that straddles a page boundary is only included as the first instruction of a block.
+pub fn build_block_soft(pc: u64, cpu: &mut CpuState, mem: &mut DirectMem, max: usize) -> Block {
+    build_block_by(pc, max, true, |a| mmu::fetch16(cpu, mem, a))
+}
+
+fn build_block_by(
+    pc: u64,
+    max: usize,
+    no_straddle: bool,
+    mut fetch: impl FnMut(u64) -> Result<u16, Exception>,
+) -> Block {
     let mut insns = Vec::new();
     let mut a = pc;
-    let fault = |tval| Exception {
-        cause: cause::INSN_ACCESS,
-        tval,
-    };
     loop {
-        let lo = match mem.fetch16(a) {
+        let lo = match fetch(a) {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
                 return Block {
                     insns,
-                    fetch_fault: Some(fault(a)),
+                    fetch_fault: Some(e),
                 };
             }
         };
-        let d = match decode_parts(lo, || mem.fetch16(a.wrapping_add(2))) {
+        if no_straddle && !insns.is_empty() && a & 0xfff == 0xffe && lo & 3 == 3 {
+            return Block {
+                insns,
+                fetch_fault: None,
+            };
+        }
+        let d = match decode_parts(lo, || fetch(a.wrapping_add(2))) {
             Ok(d) => d,
-            // The second halfword of a 32-bit instruction faulted.
-            Err(_) => {
+            // The second halfword of a 32-bit instruction faulted (tval: its address).
+            Err(e) => {
                 return Block {
                     insns,
-                    fetch_fault: Some(fault(a.wrapping_add(2))),
+                    fetch_fault: Some(e),
                 };
             }
         };
         a = a.wrapping_add(d.len as u64);
         let end = d.inst.ends_block();
         insns.push(d);
-        if end || insns.len() >= max || a & 0xfff == 0 {
+        // A block never continues onto another page (§13.2).
+        if end || insns.len() >= max || a & !0xfff != pc & !0xfff {
             return Block {
                 insns,
                 fetch_fault: None,
             };
         }
     }
-}
-
-fn mem_exc(f: MemFault) -> Exception {
-    Exception::from(f)
 }
 
 /// 64-bit ALU semantics (register and immediate forms), CLAUDE.md §7.5.
@@ -426,17 +476,17 @@ pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Fl
             let addr = cpu.x[rs1 as usize].wrapping_add(imm as u64);
             // Loads into x0 still access memory (they may fault).
             let r = match op {
-                LoadOp::Lb => mem.load(addr, 1).map(|v| v as u8 as i8 as u64),
-                LoadOp::Lh => mem.load(addr, 2).map(|v| v as u16 as i16 as u64),
-                LoadOp::Lw => mem.load(addr, 4).map(|v| v as u32 as i32 as u64),
-                LoadOp::Ld => mem.load(addr, 8),
-                LoadOp::Lbu => mem.load(addr, 1),
-                LoadOp::Lhu => mem.load(addr, 2),
-                LoadOp::Lwu => mem.load(addr, 4),
+                LoadOp::Lb => mmu::load(cpu, mem, addr, 1).map(|v| v as u8 as i8 as u64),
+                LoadOp::Lh => mmu::load(cpu, mem, addr, 2).map(|v| v as u16 as i16 as u64),
+                LoadOp::Lw => mmu::load(cpu, mem, addr, 4).map(|v| v as u32 as i32 as u64),
+                LoadOp::Ld => mmu::load(cpu, mem, addr, 8),
+                LoadOp::Lbu => mmu::load(cpu, mem, addr, 1),
+                LoadOp::Lhu => mmu::load(cpu, mem, addr, 2),
+                LoadOp::Lwu => mmu::load(cpu, mem, addr, 4),
             };
             match r {
                 Ok(v) => cpu.set_x(rd, v),
-                Err(f) => return Flow::Trap(mem_exc(f)),
+                Err(e) => return Flow::Trap(e),
             }
         }
         Inst::Store { op, rs1, rs2, imm } => {
@@ -447,8 +497,9 @@ pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Fl
                 StoreOp::Sw => 4,
                 StoreOp::Sd => 8,
             };
-            if let Err(f) = mem.store(addr, size, cpu.x[rs2 as usize]) {
-                return Flow::Trap(mem_exc(f));
+            let v = cpu.x[rs2 as usize];
+            if let Err(e) = mmu::store(cpu, mem, addr, size, v) {
+                return Flow::Trap(e);
             }
         }
         Inst::OpImm { op, rd, rs1, imm } => {
@@ -502,7 +553,8 @@ pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Fl
             if cpu.prv == prv::U || (cpu.prv == prv::S && tvm) {
                 return illegal;
             }
-            // No TLB until Phase 7: nothing to flush.
+            // Flush everything (per-address/ASID flushes are a later optimization, §14.4).
+            tlb::flush_all(cpu);
         }
         Inst::Csr {
             op,
@@ -589,7 +641,7 @@ fn exec_amo(
     let sext = |v: u64| if w { v as u32 as i32 as u64 } else { v };
     match op {
         AmoOp::Lr => {
-            let v = mem.load(addr, size).map_err(mem_exc)?;
+            let v = mmu::load(cpu, mem, addr, size)?;
             cpu.res_addr = addr;
             cpu.res_val = v;
             cpu.res_valid = 1;
@@ -599,13 +651,13 @@ fn exec_amo(
             let ok = cpu.res_valid != 0 && cpu.res_addr == addr;
             cpu.res_valid = 0; // any SC clears the reservation
             if ok {
-                mem.store(addr, size, cpu.x[rs2 as usize])
-                    .map_err(mem_exc)?;
+                let v = cpu.x[rs2 as usize];
+                mmu::store(cpu, mem, addr, size, v)?;
             }
             cpu.set_x(rd, (!ok) as u64);
         }
         _ => {
-            let old = mem.load_for_amo(addr, size).map_err(mem_exc)?;
+            let old = mmu::load_for_amo(cpu, mem, addr, size)?;
             let b = cpu.x[rs2 as usize];
             let (so, sb) = (sext(old) as i64, sext(b) as i64);
             let (uo, ub) = if w {
@@ -625,7 +677,7 @@ fn exec_amo(
                 AmoOp::Maxu => uo.max(ub),
                 AmoOp::Lr | AmoOp::Sc => unreachable!(),
             };
-            mem.store(addr, size, new).map_err(mem_exc)?;
+            mmu::store(cpu, mem, addr, size, new)?;
             cpu.set_x(rd, sext(old));
         }
     }
