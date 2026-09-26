@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 1 (front end + interpreter) complete.** Next up: Phase 2, task P2.1 (`docs/ROADMAP.md`). |
+| Phase | **Phase 2 (naive JIT) complete.** Next up: Phase 3, task P3.1 (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-01-interpreter.md` |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-02-naive-jit.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-26 |
@@ -75,12 +75,17 @@ Update this table at the end of every phase.
 | D22 | Decoder oracle | Golden decoder vectors come from `llvm-mc -M no-aliases` (`tools/gen-decoder-vectors.py`, committed as `tests/data/rv64_vectors.txt`). The disassembler matches LLVM's canonical text exactly, and LLVM's own compressed encodings cross-check the RVC expansion. | An independent oracle for decode *and* disassembly. The tests don't need LLVM at run time. |
 | D23 | Guest permissions (Phase 1) | Host pages of the direct backend stay RW. Guest R/W/X live in a two-level per-page table checked on every interpreter access. Host `mprotect` mirroring the guest arrives with the JIT's unchecked `[rbx+g]` accesses (Phase 2) and SMC write-protection (Phase 8). | The interpreter is memory-safe against any guest, and the design stays simple until the JIT needs host-level protection. |
 | D24 | Sv39 gating | `satp` accepts only Bare mode until Phase 7 (`SV39_SUPPORTED` in `cpu/csr.rs`). | A guest can't enable translation that isn't implemented yet and have it silently ignored. |
+| D25 | JIT exit protocol (Phase 2) | Exit code `rax = (tb_id << 2) \| slot` (slot 0/1 = direct exits, 2 = special). The reason lives in `cpu.exit_reason`: 0 NONE, 1 ECALL, 2 EXCEPTION (`exc_cause`/`exc_tval`), 3 FLUSH (FENCE.I), 4 HOST_FAULT (`fault_rip`/`fault_addr`, set by the SIGSEGV handler). The dispatcher zeroes `exit_reason` before every entry. Supersedes the `tb_ptr \| slot` wording of §8.4. | An index is stable and bounds-checkable, and it can never dangle after a flush, unlike a heap pointer. |
+| D26 | x86 disassembly in the binary | `iced-x86` (decoder + Intel formatter) is also an **optional** runtime dependency behind the `disasm` cargo feature (for `--dump-x86` text and lockstep reports). The default build prints hex plus the matching `objdump` command. It amends D18. | Readable divergence reports on demand, without changing the default dependency set. |
+| D27 | Host protection mirrors guest permissions (Phase 2) | `DirectMem` maps each guest page with host `PROT_READ` if the guest may read, write or execute, plus `PROT_WRITE` if it may write. Loader writes (`write_bytes`) lift protection temporarily. JIT loads and stores are unchecked `[rbx + addr]`. A host SIGSEGV whose RIP is in the code buffer is redirected to `fault_exit`, and the dispatcher maps RIP → TB → `pcmap` → guest pc and recomputes `tval` from `x[rs1] + imm` (or the first faulting byte of a split access). This fulfils D23's deferred step. Execute-only guest pages stay host-readable, so JIT loads from them do not fault (the same as qemu-user). | Zero-cost checks on the hot path, precise guest exceptions, and the same fault reports as the interpreter (proven by `tests/cli.rs::jit_host_fault_is_precise`). |
+| D28 | Phase 2 TB key and helpers | TBs are keyed by guest pc only. Lowering doesn't depend on privilege or FS yet, because CSR, AMO, FP, privileged and illegal instructions all run through `helper_interp_one` (D14), which checks them at run time. `TbFlags` arrive with Phase 7. `cpu.icount` is updated at exits and before helper calls. The `pcmap` records the not-yet-added count per instruction for faults. | Keeps Phase 2 minimal but correct. |
+| D29 | Lockstep determinism | `--engine=lockstep` forces `csr.deterministic_time` (`time` = icount / 10), so the interpreter and the JIT read the same `time` CSR. `--deterministic` enables the same for other engines. | Otherwise every `rdtime` would be a false divergence. |
 
 ---
 
 ## 4. Development environment (verified 2026-09-26, cloud container)
 
-- Host CPU: Intel Xeon @ 2.80 GHz, 4 vCPU, 15 GiB RAM. Flags present: `sse4_2 avx2 avx512f bmi1 bmi2 fma popcnt movbe adx erms`.
+- Host CPU: Intel Xeon @ 2.80 GHz, 4 vCPU, 15 GiB RAM. Containers vary (the Phase 2 measurements ran on a Xeon @ 2.10 GHz), so always record `model name` from `/proc/cpuinfo` with every result. Flags present: `sse4_2 avx2 avx512f bmi1 bmi2 fma popcnt movbe adx erms`.
   - The JIT may use BMI2 (`SHLX/SHRX/SARX`, `MULX`), FMA3 and POPCNT, but **must check features at runtime with `cpuid`** and fall back gracefully.
 - Tools already installed: `rustc`/`cargo` 1.94.1, `gcc`/`g++` 13.3, `clang` 18 (**supports `--target=riscv64`**), `ld.lld`, `llvm-mc`, `llvm-objdump`, `gdb`, `make`, `cmake`, `python3`.
 - Installed by `tools/setup.sh` via apt (it must be re-run in each new container):
@@ -191,14 +196,16 @@ Bridge-V/
 │   ├── backend/x86/
 │   │   ├── emit.rs           ← byte emitter: REX/ModRM/SIB/imm, labels, fixups
 │   │   ├── regs.rs           ← host register enum, pools, pinned map
-│   │   ├── lower.rs          ← IR → x86 (hot path + cold stubs)
-│   │   └── features.rs       ← cpuid (BMI2, FMA, ...)
+│   │   ├── lower.rs          ← Phase 2: Inst → x86 1:1 (all guest regs in CpuState); Phase 4: IR → x86 (hot path + cold stubs)
+│   │   ├── features.rs       ← cpuid (BMI2, FMA, ...)
+│   │   └── disasm.rs         ← host-code dump (iced-x86 with `--features disasm`, else hex)
 │   ├── jit/
 │   │   ├── code_mem.rs       ← dual-mapped / mprotect code buffer (unsafe)
 │   │   ├── trampoline.rs     ← enter_jit / exit_jit / helper thunks (generated at startup)
 │   │   ├── cache.rs          ← TranslationBlock, tb_map, page→TB index, flush
 │   │   ├── chain.rs          ← patch / unpatch exits, incoming lists
-│   │   ├── dispatch.rs       ← main loop
+│   │   ├── dispatch.rs       ← main loop, JitOptions, host-fault resolution
+│   │   ├── lockstep.rs       ← --engine=lockstep (interp vs JIT per TB)
 │   │   └── perfmap.rs        ← /tmp/perf-<pid>.map
 │   ├── mem/
 │   │   ├── direct.rs         ← user-mode host-mapped guest space (unsafe)
@@ -217,7 +224,8 @@ Bridge-V/
 │   │   ├── sbi.rs            ← built-in SBI (D15)
 │   │   └── fdt.rs            ← devicetree blob generator
 │   └── stats.rs
-├── tests/                    ← integration: riscv-tests runner, user programs, lockstep fuzz, emitter golden
+├── tests/                    ← integration: riscv-tests (all engines), user programs (all engines), emitter_golden,
+│                               jit_lowering, cli, decoder_vectors, elf
 │   ├── common/mod.rs         ← guest_elf() / run_bridgev() helpers
 │   └── data/                 ← expected/ (qemu reference outputs), qemu-known-failures.txt
 ├── benches/                  ← benchmark harness (interp vs jit vs qemu vs native)
@@ -326,6 +334,9 @@ The offsets are illustrative. **The source of truth is the `offset_of!` compile-
 | 0x128 | `res_addr: u64`, `res_val` @0x130, `res_valid` @0x138 | LR/SC reservation. |
 | 0x140 | `f: [u64; 32]` | FP registers, NaN-boxed. |
 | 0x240 | `fflags: u8`, `frm: u8` @0x241 | fcsr fields (verified by `offset_of!` asserts as of Phase 1) |
+| 0x248 | `exc_cause`, `exc_tval` @0x250 | exception raised by JIT code or a helper (D25) |
+| 0x258 | `fault_rip`, `fault_addr` @0x260 | written by the SIGSEGV handler (D27) |
+| 0x268 | `helper_mem` | `*mut DirectMem` for JIT helpers (set by the dispatcher) |
 | … | `spill: [u64; 32]` | Spill slots for IR temporaries. |
 | … | `jmp_cache: [{pc:u64, host:u64}; 4096]` | 64 KiB, indexed by `(pc >> 1) & 4095`. |
 | … | `tlb: [[TlbEntry; 256]; NB_MMU_IDX]` | 32 B/entry. MMU indices: U=0, S=1, M/bare=2 (plus MPRV variants if needed). |
@@ -372,7 +383,8 @@ exit_jit (rax = exit code):
     add rsp, 8 ; pop r15 ; pop r14 ; pop r13 ; pop r12 ; pop rbx ; pop rbp ; ret
 ```
 - In Rust: `let enter: extern "sysv64" fn(*mut CpuState, *const u8) -> u64 = transmute(rx_ptr);`. This is the `void (*run_block)(CPUState*)` cast from the brief, with the block address passed as an argument.
-- **Exit code:** `rax = (tb_ptr as u64) | slot`, where `TranslationBlock` is 8-byte aligned. Slots 0 and 1 are chainable direct exits. Slot 2 means "see `cpu.exit_reason`" (exception, ecall, budget, indirect miss, halt, SMC).
+- **Exit code:** `rax = (tb_id << 2) | slot` (D25; originally planned as `tb_ptr | slot`). Slots 0 and 1 are chainable direct exits. Slot 2 means "see `cpu.exit_reason`" (exception, ecall, budget, indirect miss, halt, SMC).
+- **`fault_exit`** (third trampoline): the SIGSEGV handler resumes here. It sets `exit_reason = HOST_FAULT` and jumps to `exit_jit` (JIT code never pushes, so RSP is still `enter_jit`'s).
 - **Rust helpers called from JIT code:** always `extern "sysv64"` and **must never unwind or panic across JIT frames**. Wrap them in `catch_unwind` → abort, or use `panic = "abort"` in the release profile. Call them through an absolute-address table inside the code buffer (`call [rip+disp32]`, `FF 15`) or `mov rax, imm64; call rax`, because Rust code may be more than 2 GiB away (rel32 range).
 
 ---

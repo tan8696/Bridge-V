@@ -8,7 +8,7 @@ It has four core subsystems:
 - guest registers pinned in R12–R15, plus a linear-scan allocator
 - an SV39 software MMU with an inline software TLB
 
-> **Status:** design complete; implementation starting at Phase 0.
+> **Status:** Phases 0–2 complete: reference interpreter plus a naive JIT (hand-written x86-64 encoder, W^X code buffer, lockstep checking). 2.2× the interpreter on CoreMark so far; block chaining (Phase 3) is next. See `docs/phase-reports/`.
 
 | Document | What it covers |
 |---|---|

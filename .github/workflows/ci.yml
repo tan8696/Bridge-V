@@ -38,6 +38,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: cargo clippy (--features disasm)
+        run: cargo clippy --all-targets --features disasm -- -D warnings
+
       - name: Build guest programs
         run: ./tools/build-guests.sh
 

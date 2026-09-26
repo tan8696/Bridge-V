@@ -354,64 +354,64 @@ The instruction coverage table, decoder vector count, the riscv-tests pass table
 **Entry criteria:** Phase 1 done. (P2.1 may start earlier.)
 
 ### P2.1 x86-64 emitter (L), `src/backend/x86/emit.rs`, `regs.rs`
-- [ ] `enum Reg` (RAX…R15, with `.low3()` and `.rex_bit()`), `struct Mem { base, index: Option<(Reg, Scale)>, disp: i32 }` and `enum Cond`.
-- [ ] Core encoders: `rex()`, `modrm()`, `sib()`, `mem_operand()`, handling every §11.1 gotcha (RSP/R12 need SIB; RBP/R13 need disp8; SIL/DIL need REX; disp8 vs disp32 selection).
-- [ ] The instruction set from §11.2: mov (all forms), movsx/movzx/movsxd, lea, the ALU group (reg-reg, reg-mem, reg-imm8/imm32), test, shifts (imm and CL), imul, mul/div/idiv, cqo, setcc, cmovcc, jcc/jmp (rel8/rel32), call (rel32, reg, [rip+d32]), ret, nop (1–9 byte forms), xchg, lock xadd, lock cmpxchg, mfence, push/pop (trampolines only).
-- [ ] Labels and fixups: `new_label()`, `bind(label)`, `jcc_label(cond, label)` (rel32 by default, with an optional short form), and `patch_rel32(at, target)`.
+- [x] `enum Reg` (RAX…R15, with `.low3()` and `.rex_bit()`), `struct Mem { base, index: Option<(Reg, Scale)>, disp: i32 }` and `enum Cond`.
+- [x] Core encoders: `rex()`, `modrm()`, `sib()`, `mem_operand()`, handling every §11.1 gotcha (RSP/R12 need SIB; RBP/R13 need disp8; SIL/DIL need REX; disp8 vs disp32 selection).
+- [x] The instruction set from §11.2: mov (all forms), movsx/movzx/movsxd, lea, the ALU group (reg-reg, reg-mem, reg-imm8/imm32), test, shifts (imm and CL), imul, mul/div/idiv, cqo, setcc, cmovcc, jcc/jmp (rel8/rel32), call (rel32, reg, [rip+d32]), ret, nop (1–9 byte forms), xchg, lock xadd, lock cmpxchg, mfence, push/pop (trampolines only).
+- [x] Labels and fixups: `new_label()`, `bind(label)`, `jcc_label(cond, label)` (rel32 by default, with an optional short form), and `patch_rel32(at, target)`.
 - **Tests** (`tests/emitter_golden.rs`):
-  - [ ] For every instruction form × **all 16 registers** as dst/src/base/index (skipping invalid combinations) × disp ∈ {0, 1, −128, 127, 128, −129, i32::MIN, i32::MAX}: encode, decode with `iced-x86`, and compare the formatted text with the expected text.
-  - [ ] Named regression tests for each gotcha: `[r12]`, `[r13]`, `[rsp+8]`, `[rbp]`, `mov sil, al`, and so on.
-  - [ ] Label tests: forward and backward, near and far.
+  - [x] For every instruction form × **all 16 registers** as dst/src/base/index (skipping invalid combinations) × disp ∈ {0, 1, −128, 127, 128, −129, i32::MIN, i32::MAX}: encode, decode with `iced-x86`, and compare the formatted text with the expected text.
+  - [x] Named regression tests for each gotcha: `[r12]`, `[r13]`, `[rsp+8]`, `[rbp]`, `mov sil, al`, and so on.
+  - [x] Label tests: forward and backward, near and far.
 
 ### P2.2 CPU feature detection (S), `src/backend/x86/features.rs`
-- [ ] `cpuid` for BMI1, BMI2, FMA, POPCNT, LZCNT, AVX2, SSE4.1. A global `HostFeatures`.
-- [ ] `--no-host-features` forces the baseline code paths, so they are tested too.
+- [x] `cpuid` for BMI1, BMI2, FMA, POPCNT, LZCNT, AVX2, SSE4.1. A global `HostFeatures`.
+- [x] `--no-host-features` forces the baseline code paths, so they are tested too.
 
 ### P2.3 Code memory with W^X (M), `src/jit/code_mem.rs`
-- [ ] Dual mapping (memfd, RW + RX views) and the `--wx=mprotect` fallback (§12). A bump allocator with 16-byte alignment, and `flush()`.
-- [ ] Both views stay mapped for the process lifetime. Assert there is never an RWX mapping (a debug-build check via `/proc/self/maps` in tests).
+- [x] Dual mapping (memfd, RW + RX views) and the `--wx=mprotect` fallback (§12). A bump allocator with 16-byte alignment, and `flush()`.
+- [x] Both views stay mapped for the process lifetime. Assert there is never an RWX mapping (a debug-build check via `/proc/self/maps` in tests).
 - **Tests:** "hello JIT": emit `mov eax, 42; ret`, transmute it to `extern "sysv64" fn() -> u64`, call it and get 42. Test both W^X modes. Also check that a write through the RW view is visible through the RX view.
 
 ### P2.4 Trampolines (M), `src/jit/trampoline.rs`
-- [ ] Generate `enter_jit` and `exit_jit` into the code buffer at startup, exactly per §8.4. Pinned registers aren't used yet in Phase 2, but save and restore every callee-saved register anyway.
-- [ ] A helper address table for calls into Rust (`call [rip+disp32]`).
+- [x] Generate `enter_jit` and `exit_jit` into the code buffer at startup, exactly per §8.4. Pinned registers aren't used yet in Phase 2, but save and restore every callee-saved register anyway.
+- [x] A helper address table for calls into Rust (`call [rip+disp32]`).
 - **Tests:**
   - A hand-emitted block increments `cpu.x[5]` and exits with code 7. Verify both.
   - A callee-saved preservation test: an `asm!` harness sets RBX/RBP/R12–R15 to sentinels, calls `enter_jit` with a block that clobbers them, and checks they are restored.
 
 ### P2.5 Translation cache v1 (M), `src/jit/cache.rs`
-- [ ] `TranslationBlock` per §13.1 (the chaining fields can be unused), `tb_map`, allocation of TB metadata, and full flush when the code buffer is full.
-- [ ] Block formation rules per §13.2.
+- [x] `TranslationBlock` per §13.1 (the chaining fields can be unused), `tb_map`, allocation of TB metadata, and full flush when the code buffer is full.
+- [x] Block formation rules per §13.2.
 - **Tests:** a block ends at a branch; a block ends at the page end; a max-length cut; flush-when-full (use a tiny cache size in the test).
 
 ### P2.6 Naive lowering (L), `src/backend/x86/lower.rs` (v1: direct from `Inst`, no IR yet)
-- [ ] For each instruction: load the operands from `CpuState` into R10/R11/RAX…, compute, and store the result back. x0 reads become constant 0, and x0 writes are skipped.
-- [ ] Memory ops in the direct backend: `[rbx + reg + disp32]` with RBX = `mem_base` (load it in `enter_jit`).
-- [ ] Division guards for all four division cases (§7.5). MULH/MULHU/MULHSU.
-- [ ] Block exits:
+- [x] For each instruction: load the operands from `CpuState` into R10/R11/RAX…, compute, and store the result back. x0 reads become constant 0, and x0 writes are skipped.
+- [x] Memory ops in the direct backend: `[rbx + reg + disp32]` with RBX = `mem_base` (load it in `enter_jit`).
+- [x] Division guards for all four division cases (§7.5). MULH/MULHU/MULHSU.
+- [x] Block exits:
   - Branches: `cmp` + `jcc` to two exit stubs. Each stub sets `pc`, sets the exit code, and `jmp exit_jit`.
   - JAL: a direct exit.
   - JALR: compute the target, store `pc`, and take exit slot 2.
-- [ ] ECALL/EBREAK exit with a reason. Unsupported instructions (FP, CSR, AMO at first) use `call helper_interp_one` with a full state sync (D14).
-- [ ] `pcmap` (host offset → guest pc) per TB.
+- [x] ECALL/EBREAK exit with a reason. Unsupported instructions (FP, CSR, AMO at first) use `call helper_interp_one` with a full state sync (D14).
+- [x] `pcmap` (host offset → guest pc) per TB.
 
 ### P2.7 Dispatcher (M), `src/jit/dispatch.rs`
-- [ ] The main loop per §5, without chaining. It handles exit reasons: syscalls (reusing P1.15), exceptions, halt, and the `tohost` write in bare mode.
-- [ ] A SIGSEGV handler (sigaltstack): map host RIP → TB → guest pc via `pcmap`, then report the guest fault and exit 139. (Phase 8 extends this for SMC.)
+- [x] The main loop per §5, without chaining. It handles exit reasons: syscalls (reusing P1.15), exceptions, halt, and the `tohost` write in bare mode.
+- [x] A SIGSEGV handler (sigaltstack): map host RIP → TB → guest pc via `pcmap`, then report the guest fault and exit 139. (Phase 8 extends this for SMC.)
 - **Tests:** all P1 riscv-tests and C programs under `--engine=jit`.
 
 ### P2.8 Lockstep engine (M), `--engine=lockstep`
-- [ ] For each TB:
+- [x] For each TB:
   1. Snapshot the registers.
   2. Run the **interpreter** over the TB's instructions with a **write log** of (addr, old, new).
   3. Undo the logged writes and restore the registers.
   4. Run the **JIT** TB.
   5. Compare all x/f registers, pc and fcsr, and check that memory at every logged address equals the interpreter's new value.
-- [ ] On divergence, print the guest disassembly, the x86 dump (via iced-x86) and the register diff, then abort.
+- [x] On divergence, print the guest disassembly, the x86 dump (via iced-x86) and the register diff, then abort.
 - **Tests:** lockstep over all suites; a deliberately broken lowering (behind a test-only flag) is caught.
 
 ### P2.9 Debug tooling (S)
-- [ ] `--dump-x86` (writes a file per TB and prints disassembly with iced-x86 behind a `disasm` cargo feature), `--perf-map`, and `--stats` (TBs, code bytes, exits by reason, translate vs execute time).
+- [x] `--dump-x86` (writes a file per TB and prints disassembly with iced-x86 behind a `disasm` cargo feature), `--perf-map`, and `--stats` (TBs, code bytes, exits by reason, translate vs execute time).
 
 ### Phase 2 acceptance criteria
 - Every Phase-1 suite passes under `--engine=jit` and `--engine=lockstep` with no divergence.

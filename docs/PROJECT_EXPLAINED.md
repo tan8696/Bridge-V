@@ -4,7 +4,7 @@ This document explains Bridge-V from the ground up, for readers ranging from "ne
 - The exact engineering specification is [`CLAUDE.md`](../CLAUDE.md).
 - The build plan is [`ROADMAP.md`](ROADMAP.md).
 
-> **Status (2026-09-26):** Phase 1 complete. The **reference interpreter** runs real RISC-V Linux programs: all 110 official riscv-tests of the RV64GC user suites pass, 30 test programs match QEMU byte for byte, and CoreMark validates, at 127–176 MIPS interpreted. The JIT (the translator this document mostly describes) starts in Phase 2. Numbers under "Performance" are still targets until the JIT phases measure them (see `docs/phase-reports/`).
+> **Status (2026-09-26):** Phase 2 complete. Bridge-V now **translates guest code into real x86-64 machine code and runs it**. The first (naive) JIT passes everything the interpreter passes: all 110 riscv-tests of the RV64GC user suites and 31 programs byte-identical with QEMU. It is also checked against the interpreter after every translated block ("lockstep"), including 266 million blocks of CoreMark. The naive JIT is 2.2× the interpreter on CoreMark (402 vs 182 million guest instructions per second). Block chaining (Phase 3) and register allocation (Phase 4) come next. Other numbers under "Performance" are still targets (see `docs/phase-reports/`).
 
 ---
 
@@ -274,7 +274,7 @@ Everything else stays on the fast path.
 
 ## 12. Project status and how it will be used
 
-- **Now:** Phases 0–1 are complete: the toolchain, CI, the decoder and disassembler, and the reference interpreter with Linux user-mode emulation (`bridgev run program.elf` works). The next phase is the naive JIT.
+- **Now:** Phases 0–2 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, and a naive JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer and lockstep checking. The next phase is block chaining.
 - **Milestone A (required):** CoreMark and Dhrystone run under both the interpreter and the JIT, with a printed speedup table.
 - **Milestone B (stretch):** Linux 6.6 boots to a BusyBox shell.
 - **Planned usage:**
