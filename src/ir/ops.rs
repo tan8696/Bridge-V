@@ -201,6 +201,40 @@ pub enum ExitKind {
     Fault(Exception),
 }
 
+/// Inline FP arithmetic on `CpuState` f registers (fast TB variant, D47).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Sqrt,
+    Madd,
+    Msub,
+    Nmsub,
+    Nmadd,
+    /// `fcvt.s.d` (the result is single).
+    ToSingle,
+    /// `fcvt.d.s` (the result is double).
+    ToDouble,
+}
+
+/// FP comparisons (`feq` is quiet; `flt`/`fle` signal on any NaN).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FCmpOp {
+    Eq,
+    Lt,
+    Le,
+}
+
+/// Integer source of an inline int→FP conversion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntSrc {
+    W,
+    Wu,
+    L,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     /// Start of guest instruction `idx` of the block, at `pc`.
@@ -273,6 +307,63 @@ pub enum Op {
         kind: ExitKind,
         pc: u64,
     },
+    // ---- FP (fast TB variant only: FS is Dirty and, for `dynrm` ops, frm is RNE; D47) ----
+    /// `dst = f[f]` (all 64 bits).
+    ReadF {
+        dst: V,
+        f: u8,
+    },
+    /// `f[f] = src` (`single`: low 32 bits, NaN-boxed).
+    WriteF {
+        f: u8,
+        src: V,
+        single: bool,
+    },
+    /// Single-precision operand read: `src` if properly NaN-boxed, else the boxed canonical NaN.
+    Unbox {
+        dst: V,
+        src: V,
+    },
+    /// `f[rd] = op(f[rs1], f[rs2], f[rs3])` with RNE, NaN canonicalization and fflags. `raw` is
+    /// the guest instruction (the evaluator executes it).
+    FArith {
+        op: FOp,
+        dbl: bool,
+        rd: u8,
+        rs1: u8,
+        rs2: u8,
+        rs3: u8,
+        dynrm: bool,
+        raw: u32,
+    },
+    /// `dst = f[rs1] op f[rs2]` (0 or 1), with fflags.
+    FCmp {
+        op: FCmpOp,
+        dbl: bool,
+        dst: V,
+        rs1: u8,
+        rs2: u8,
+        raw: u32,
+    },
+    /// `dst = (long ? i64 : sext(i32))(f[rs1])` with RISC-V saturation; `trunc`: RTZ, else RNE.
+    FToI {
+        dst: V,
+        dbl: bool,
+        rs1: u8,
+        long: bool,
+        trunc: bool,
+        dynrm: bool,
+        raw: u32,
+    },
+    /// `f[rd] = src` converted from `from` (RNE).
+    IToF {
+        rd: u8,
+        dbl: bool,
+        src: V,
+        from: IntSrc,
+        dynrm: bool,
+        raw: u32,
+    },
 }
 
 impl Op {
@@ -283,7 +374,11 @@ impl Op {
             | Op::ReadReg { dst, .. }
             | Op::Bin { dst, .. }
             | Op::BinImm { dst, .. }
-            | Op::Load { dst, .. } => Some(dst),
+            | Op::Load { dst, .. }
+            | Op::ReadF { dst, .. }
+            | Op::Unbox { dst, .. }
+            | Op::FCmp { dst, .. }
+            | Op::FToI { dst, .. } => Some(dst),
             _ => None,
         }
     }
@@ -298,6 +393,9 @@ impl Op {
             Op::Store { addr, val, .. } => (Some(addr), Some(val)),
             Op::Branch { a, b, .. } => (Some(a), Some(b)),
             Op::JumpInd { target } => (Some(target), None),
+            Op::WriteF { src, .. } | Op::Unbox { src, .. } | Op::IToF { src, .. } => {
+                (Some(src), None)
+            }
             _ => (None, None),
         };
         a.into_iter().chain(b)
@@ -318,6 +416,7 @@ impl Op {
                 *val = f(*val);
             }
             Op::JumpInd { target } => *target = f(*target),
+            Op::WriteF { src, .. } | Op::Unbox { src, .. } | Op::IToF { src, .. } => *src = f(*src),
             _ => {}
         }
     }
@@ -333,7 +432,36 @@ impl Op {
     pub fn is_pure(&self) -> bool {
         matches!(
             self,
-            Op::Const { .. } | Op::ReadReg { .. } | Op::Bin { .. } | Op::BinImm { .. }
+            Op::Const { .. }
+                | Op::ReadReg { .. }
+                | Op::Bin { .. }
+                | Op::BinImm { .. }
+                | Op::ReadF { .. }
+                | Op::Unbox { .. }
+        )
+    }
+
+    /// An inline FP op: the TB needs the fast-variant guard (FS Dirty, D47).
+    pub fn is_fp(&self) -> bool {
+        matches!(
+            self,
+            Op::ReadF { .. }
+                | Op::WriteF { .. }
+                | Op::Unbox { .. }
+                | Op::FArith { .. }
+                | Op::FCmp { .. }
+                | Op::FToI { .. }
+                | Op::IToF { .. }
+        )
+    }
+
+    /// An inline FP op that rounds with the dynamic rounding mode (needs frm = RNE).
+    pub fn is_dynrm(&self) -> bool {
+        matches!(
+            self,
+            Op::FArith { dynrm: true, .. }
+                | Op::FToI { dynrm: true, .. }
+                | Op::IToF { dynrm: true, .. }
         )
     }
 }
@@ -347,6 +475,11 @@ pub struct Block {
     pub n_insns: u32,
     /// Values are numbered `0..nvals`.
     pub nvals: u32,
+    /// FP instructions were lifted inline: the TB needs the fast-variant guard (FS Dirty), even
+    /// if optimization later removed their ops (e.g. `fmv.x.w x0, …`; D47).
+    pub fp_guard: bool,
+    /// ...and some of them round with the dynamic rounding mode (guard: frm = RNE).
+    pub fp_dyn: bool,
 }
 
 impl Block {
@@ -399,6 +532,59 @@ impl fmt::Display for Op {
             Op::Jump { pc } => write!(f, "jump {pc:#x}"),
             Op::JumpInd { target } => write!(f, "jump [{target}]"),
             Op::Exit { kind, pc } => write!(f, "exit {kind:?} @{pc:#x}"),
+            Op::ReadF { dst, f: r } => write!(f, "{dst} = f{r}"),
+            Op::WriteF { f: r, src, single } => {
+                write!(f, "f{r} = {src}{}", if single { " (boxed)" } else { "" })
+            }
+            Op::Unbox { dst, src } => write!(f, "{dst} = unbox {src}"),
+            Op::FArith {
+                op,
+                dbl,
+                rd,
+                rs1,
+                rs2,
+                rs3,
+                dynrm,
+                ..
+            } => write!(
+                f,
+                "f{rd} = f{op:?}.{} f{rs1}, f{rs2}, f{rs3}{}",
+                if dbl { 'd' } else { 's' },
+                if dynrm { " (dyn rm)" } else { "" }
+            ),
+            Op::FCmp {
+                op,
+                dbl,
+                dst,
+                rs1,
+                rs2,
+                ..
+            } => write!(
+                f,
+                "{dst} = f{op:?}.{} f{rs1}, f{rs2}",
+                if dbl { 'd' } else { 's' }
+            ),
+            Op::FToI {
+                dst,
+                dbl,
+                rs1,
+                long,
+                trunc,
+                ..
+            } => write!(
+                f,
+                "{dst} = fcvt.{}.{}{} f{rs1}",
+                if long { 'l' } else { 'w' },
+                if dbl { 'd' } else { 's' },
+                if trunc { " rtz" } else { "" }
+            ),
+            Op::IToF {
+                rd, dbl, src, from, ..
+            } => write!(
+                f,
+                "f{rd} = fcvt.{}.{from:?} {src}",
+                if dbl { 'd' } else { 's' }
+            ),
         }
     }
 }

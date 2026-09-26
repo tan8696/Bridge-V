@@ -76,6 +76,11 @@ impl Trampolines {
         }
         // Entry RSP ≡ 8 (mod 16); six pushes + 8 make it ≡ 0, as every `call` needs (§8.2).
         a.alu_ri(Size::B64, Alu::Sub, Reg::Rsp, 8);
+        // Guest FP code runs with the default MXCSR and no pending exception flags; exit_jit
+        // folds the flags it raised into fflags (D47). The alignment pad at [rsp] is scratch.
+        let pad = Mem::base(Reg::Rsp, 0);
+        a.store_imm(Size::B32, pad, crate::cpu::fp::MXCSR_DEFAULT as i32);
+        a.ldmxcsr(pad);
         a.lea(CPU, Mem::base(Reg::Rdi, CPU_BIAS));
         a.load(
             Size::B64,
@@ -99,6 +104,7 @@ impl Trampolines {
         if let Some(r) = budget_reg {
             a.store(Size::B64, cpu_field(offset_of!(CpuState, budget)), r);
         }
+        emit_fold_mxcsr(&mut a);
         a.alu_ri(Size::B64, Alu::Add, Reg::Rsp, 8);
         for r in [Reg::R15, Reg::R14, Reg::R13, Reg::R12, Reg::Rbx, Reg::Rbp] {
             a.pop(r);
@@ -151,6 +157,51 @@ impl Trampolines {
     }
 }
 
+/// exit_jit: OR the MXCSR exception flags raised by JIT FP code into `cpu.fflags` (same map
+/// as `fp::mxcsr_to_fflags`). RAX holds the exit code; RCX, RDX, R10 are free at every exit.
+fn emit_fold_mxcsr(a: &mut Asm) {
+    use crate::backend::x86::emit::Shift;
+    let pad = Mem::base(Reg::Rsp, 0);
+    let (m, acc, t) = (Reg::Rcx, Reg::Rdx, Reg::R10);
+    a.stmxcsr(pad);
+    a.load(Size::B32, m, pad);
+    a.mov_r32_imm(acc, 0);
+    // (source bit, destination bit): IE→NV, ZE→DZ, OE→OF, UE→UF, PE→NX.
+    for (from, to) in [(0u8, 4u8), (2, 3), (3, 2), (4, 1), (5, 0)] {
+        a.mov_rr(Size::B32, t, m);
+        if from > 0 {
+            a.shift_ri(Size::B32, Shift::Shr, t, from);
+        }
+        a.alu_ri(Size::B32, Alu::And, t, 1);
+        if to > 0 {
+            a.shift_ri(Size::B32, Shift::Shl, t, to);
+        }
+        a.alu_rr(Size::B32, Alu::Or, acc, t);
+    }
+    a.alu_mr(
+        Size::B8,
+        Alu::Or,
+        cpu_field(offset_of!(CpuState, fflags)),
+        acc,
+    );
+}
+
+/// Fold the host FP flags raised so far by JIT code into `fflags` and reset MXCSR, so the
+/// interpreter (SoftFloat) sees exact fflags (D47).
+fn fold_and_reset_mxcsr(cpu: &mut CpuState) {
+    let mut m: u32 = 0;
+    // SAFETY: stmxcsr to a valid 4-byte location.
+    unsafe { std::arch::asm!("stmxcsr [{}]", in(reg) &mut m, options(nostack)) };
+    cpu.fflags |= crate::cpu::fp::mxcsr_to_fflags(m);
+    reset_mxcsr();
+}
+
+fn reset_mxcsr() {
+    let d = crate::cpu::fp::MXCSR_DEFAULT;
+    // SAFETY: ldmxcsr of the default value (what Rust code expects) from a valid location.
+    unsafe { std::arch::asm!("ldmxcsr [{}]", in(reg) &d, options(nostack, readonly)) };
+}
+
 /// Execute one instruction with the interpreter (D14). Called from JIT code with all guest
 /// state in `CpuState` and the budget charge for this and later instructions of the TB
 /// refunded, so `icount + (budget_ref - budget)` is exact; the helper folds that into
@@ -174,8 +225,12 @@ pub unsafe extern "sysv64" fn helper_interp_one(cpu: *mut CpuState, raw: u64, pc
         let mem = unsafe { &mut *(cpu.helper_mem as *mut DirectMem) };
         cpu.icount += (cpu.budget_ref - cpu.budget) as u64;
         cpu.budget_ref = cpu.budget;
+        fold_and_reset_mxcsr(cpu);
         let d = decode_parts::<()>(raw as u16, || Ok((raw >> 16) as u16)).expect("infallible");
-        match step(cpu, mem, &d, pc) {
+        let flow = step(cpu, mem, &d, pc);
+        // Discard any host flags raised by Rust code in the helper (none expected).
+        reset_mxcsr();
+        match flow {
             Flow::Next => 0,
             Flow::Jump(target) => {
                 cpu.icount += 1;
@@ -246,13 +301,15 @@ mod tests {
         assert_eq!(cpu.x[5], 43);
     }
 
-    /// Callee-saved registers survive a block that clobbers all of them (checked from an
-    /// `asm!` harness, since Rust code cannot observe RBX/RBP directly).
+    /// Callee-saved registers survive a block that clobbers them (checked from an `asm!`
+    /// harness, since Rust code cannot observe RBX/RBP directly). RBP must stay the CpuState
+    /// pointer inside JIT code (§8.3: `exit_jit` folds fflags through it); it is still
+    /// checked, because `enter_jit` itself replaces the caller's RBP.
     #[test]
     fn callee_saved_registers_preserved() {
         let (mut cm, t) = setup();
         let mut a = Asm::new(cm.next_addr());
-        for r in [Reg::Rbx, Reg::Rbp, Reg::R12, Reg::R13, Reg::R14, Reg::R15] {
+        for r in [Reg::Rbx, Reg::R12, Reg::R13, Reg::R14, Reg::R15] {
             a.mov_imm(r, 0xDEAD_0000 + r.num() as u64);
         }
         a.mov_r32_imm(Reg::Rax, 5);

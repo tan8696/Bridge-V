@@ -364,8 +364,9 @@ fn link_then_invalidate_unlinks() {
     };
     // First run: A exits through its stub; the dispatcher then links A → B.
     assert_eq!(run(&mut rig), (11, 3));
-    let ida = rig.jit.tb_for(CODE, &rig.mem);
-    let idb = rig.jit.tb_for(CODE + 20, &rig.mem);
+    // new_user starts with FS = Initial: the dispatcher used the slow FP variant (D47).
+    let ida = rig.jit.tb_for_variant(CODE, &rig.mem, true);
+    let idb = rig.jit.tb_for_variant(CODE + 20, &rig.mem, true);
     let ex = rig.jit.tb(ida).exits[0].unwrap();
     assert_eq!(ex.linked, Some(idb));
     assert_eq!(rig.jit.tb(idb).incoming, vec![(ida, 0)]);
@@ -389,7 +390,7 @@ fn link_then_invalidate_unlinks() {
     let entries = rig.jit.stats.entries;
     assert_eq!(run(&mut rig), (101, 3));
     assert_eq!(rig.jit.stats.entries - entries, 2);
-    let idb2 = rig.jit.tb_for(CODE + 20, &rig.mem);
+    let idb2 = rig.jit.tb_for_variant(CODE + 20, &rig.mem, true);
     assert_ne!(idb2, idb);
     assert_eq!(rig.jit.tb(ida).exits[0].unwrap().linked, Some(idb2));
 }

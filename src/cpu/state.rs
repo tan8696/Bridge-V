@@ -23,7 +23,10 @@ pub mod exit {
     pub const BUDGET: u32 = 5;
     /// JALR target not in the jump cache (§13.4); continue at `pc`.
     pub const LOOKUP: u32 = 6;
-    pub const COUNT: usize = 7;
+    /// A fast-FP-variant TB was entered with FS not Dirty or (dynamic rm) frm not RNE (D47);
+    /// nothing executed, continue at `pc` with the matching variant.
+    pub const FP_VARIANT: u32 = 7;
+    pub const COUNT: usize = 8;
 }
 
 /// Spill slots for IR temporaries (§8.1, §10).

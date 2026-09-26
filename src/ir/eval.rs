@@ -3,6 +3,7 @@
 //! the oracle that separates lifter and optimizer bugs from backend bugs: lift → eval must
 //! equal the interpreter, and every optimizer pass must preserve eval results.
 
+use crate::cpu::fp;
 use crate::cpu::state::CpuState;
 use crate::cpu::trap::Exception;
 use crate::interp::{BlockExit, Flow, step};
@@ -119,6 +120,42 @@ pub fn eval(b: &Block, cpu: &mut CpuState, mem: &mut DirectMem) -> BlockExit {
                 cpu.pc = vals[target.0 as usize];
                 cpu.icount = base + b.n_insns as u64;
                 return BlockExit::Continue;
+            }
+            Op::ReadF { dst, f } => vals[dst.0 as usize] = cpu.f[f as usize],
+            Op::WriteF { f, src, single } => {
+                let v = vals[src.0 as usize];
+                cpu.f[f as usize] = if single { fp::nanbox(v as u32) } else { v };
+            }
+            Op::Unbox { dst, src } => {
+                vals[dst.0 as usize] = fp::nanbox(fp::unbox(vals[src.0 as usize]));
+            }
+            // The complex FP ops run the guest instruction through the interpreter's FP unit
+            // (SoftFloat): the oracle is exactly the reference semantics. Integer operands and
+            // results go through IR values, not x registers (the optimizer may have removed
+            // the WriteReg a source came from): IToF's x[rs1] is set to the source value for
+            // the call, and FCmp/FToI's x[rd] is restored after reading the result.
+            Op::FArith { raw, .. }
+            | Op::FCmp { raw, .. }
+            | Op::FToI { raw, .. }
+            | Op::IToF { raw, .. } => {
+                let d =
+                    decode_parts::<()>(raw as u16, || Ok((raw >> 16) as u16)).expect("infallible");
+                let (rd, rs1) = (((raw >> 7) & 31) as usize, ((raw >> 15) & 31) as usize);
+                let saved = (cpu.x[rd], cpu.x[rs1]);
+                if let Op::IToF { src, .. } = *op {
+                    cpu.x[rs1] = vals[src.0 as usize];
+                }
+                let r = fp::exec(cpu, mem, &d.inst, raw);
+                if let Some(dst) = op.def() {
+                    vals[dst.0 as usize] = cpu.x[rd];
+                }
+                cpu.x[rs1] = saved.1;
+                cpu.x[rd] = saved.0;
+                if let Err(e) = r {
+                    cpu.pc = pc;
+                    cpu.icount = base + idx as u64;
+                    return BlockExit::Trap(e);
+                }
             }
             Op::Exit { kind, pc: p } => {
                 cpu.pc = p;

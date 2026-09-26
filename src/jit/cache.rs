@@ -56,6 +56,8 @@ pub struct TranslationBlock {
     pub valid: bool,
     /// IR back end: every memory access with its state map (§15); empty for the naive one.
     pub fault_sites: Vec<crate::backend::x86::lower_ir::FaultSite>,
+    /// Slow FP variant: FP instructions run in the interpreter (D47).
+    pub fp_slow: bool,
 }
 
 impl TranslationBlock {
@@ -74,14 +76,16 @@ impl TranslationBlock {
 #[derive(Default)]
 pub struct TbCache {
     tbs: Vec<TranslationBlock>,
-    map: FxHashMap<u64, u32>,
+    /// (guest pc, slow FP variant) → TB.
+    map: FxHashMap<(u64, bool), u32>,
     /// Number of full flushes so far.
     pub generation: u64,
 }
 
 impl TbCache {
-    pub fn lookup(&self, pc: u64) -> Option<u32> {
-        self.map.get(&pc).copied()
+    /// The TB for `pc` in the fast (`slow = false`) or slow FP variant (D47).
+    pub fn lookup(&self, pc: u64, slow: bool) -> Option<u32> {
+        self.map.get(&(pc, slow)).copied()
     }
 
     /// Id the next inserted TB will get.
@@ -93,7 +97,7 @@ impl TbCache {
     pub fn insert(&mut self, tb: TranslationBlock) -> u32 {
         debug_assert!(self.tbs.last().is_none_or(|l| l.host < tb.host));
         let id = self.tbs.len() as u32;
-        self.map.insert(tb.guest_pc, id);
+        self.map.insert((tb.guest_pc, tb.fp_slow), id);
         self.tbs.push(tb);
         id
     }
@@ -111,8 +115,9 @@ impl TbCache {
     pub fn invalidate(&mut self, id: u32) {
         let tb = &mut self.tbs[id as usize];
         tb.valid = false;
-        if self.map.get(&tb.guest_pc) == Some(&id) {
-            self.map.remove(&tb.guest_pc);
+        let key = (tb.guest_pc, tb.fp_slow);
+        if self.map.get(&key) == Some(&id) {
+            self.map.remove(&key);
         }
     }
 
@@ -167,6 +172,7 @@ mod tests {
             incoming: Vec::new(),
             valid: true,
             fault_sites: Vec::new(),
+            fp_slow: false,
         }
     }
 
@@ -175,7 +181,7 @@ mod tests {
         let mut c = TbCache::default();
         assert_eq!(c.insert(tb(0x100, 0x1000, 32)), 0);
         assert_eq!(c.insert(tb(0x200, 0x1020, 16)), 1);
-        assert_eq!(c.lookup(0x200), Some(1));
+        assert_eq!(c.lookup(0x200, false), Some(1));
         assert_eq!(c.find_host(0x1000).unwrap().guest_pc, 0x100);
         assert_eq!(c.find_host(0x102f).unwrap().guest_pc, 0x200);
         assert!(c.find_host(0x1030).is_none() && c.find_host(0xfff).is_none());
@@ -183,10 +189,10 @@ mod tests {
         assert_eq!(t.entry_for(0x1009).unwrap().guest_pc, 0x100);
         assert_eq!(t.entry_for(0x100a).unwrap().guest_pc, 0x104);
         c.invalidate(1);
-        assert!(c.lookup(0x200).is_none() && !c.get(1).valid);
+        assert!(c.lookup(0x200, false).is_none() && !c.get(1).valid);
         assert_eq!(c.find_host(0x1020).unwrap().guest_pc, 0x200);
         c.flush();
-        assert!(c.is_empty() && c.lookup(0x100).is_none());
+        assert!(c.is_empty() && c.lookup(0x100, false).is_none());
         assert_eq!(c.generation, 1);
     }
 }

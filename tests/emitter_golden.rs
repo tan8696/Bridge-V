@@ -915,3 +915,163 @@ fn bmi2_shifts_all_registers() {
         [0xC4, 0xE2, 0xE9, 0xF7, 0xC1]
     );
 }
+
+// ------------------------------------------------------------------------------ SSE / FMA3 ----
+
+fn xr(x: Xmm) -> Register {
+    use Register::*;
+    [
+        XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13,
+        XMM14, XMM15,
+    ][x.0 as usize]
+}
+
+fn xmms() -> impl Iterator<Item = Xmm> {
+    (0..16).map(Xmm)
+}
+
+/// P6.1: scalar SSE moves, arithmetic, compares and conversions for every XMM register, XMM
+/// and memory sources, and both precisions.
+#[test]
+fn sse_scalar_forms() {
+    use Mnemonic::*;
+    let mems = some_mems();
+    for dbl in [true, false] {
+        let w = if dbl { 8 } else { 4 };
+        for x in xmms() {
+            for m in &mems {
+                check(
+                    &asm(|a| a.movs_load(dbl, x, *m)),
+                    if dbl { Movsd } else { Movss },
+                    &[E::R(xr(x)), E::M(w, *m)],
+                );
+                check(
+                    &asm(|a| a.movs_store(dbl, *m, x)),
+                    if dbl { Movsd } else { Movss },
+                    &[E::M(w, *m), E::R(xr(x))],
+                );
+            }
+            for y in xmms() {
+                for (op, md, ms) in [
+                    (SseOp::Add, Addsd, Addss),
+                    (SseOp::Sub, Subsd, Subss),
+                    (SseOp::Mul, Mulsd, Mulss),
+                    (SseOp::Div, Divsd, Divss),
+                    (SseOp::Sqrt, Sqrtsd, Sqrtss),
+                ] {
+                    check(
+                        &asm(|a| a.sse_arith(op, dbl, x, y)),
+                        if dbl { md } else { ms },
+                        &[E::R(xr(x)), E::R(xr(y))],
+                    );
+                }
+                check(
+                    &asm(|a| a.comis(dbl, false, x, y)),
+                    if dbl { Ucomisd } else { Ucomiss },
+                    &[E::R(xr(x)), E::R(xr(y))],
+                );
+                check(
+                    &asm(|a| a.comis(dbl, true, x, y)),
+                    if dbl { Comisd } else { Comiss },
+                    &[E::R(xr(x)), E::R(xr(y))],
+                );
+                check(
+                    &asm(|a| a.cvt_fp(dbl, x, y)),
+                    if dbl { Cvtss2sd } else { Cvtsd2ss },
+                    &[E::R(xr(x)), E::R(xr(y))],
+                );
+            }
+            let m = Mem::base(Reg::Rbp, 0xC0 + 8 * x.0 as i32);
+            check(
+                &asm(|a| a.sse_arith(SseOp::Add, dbl, x, m)),
+                if dbl { Addsd } else { Addss },
+                &[E::R(xr(x)), E::M(w, m)],
+            );
+            check(
+                &asm(|a| a.comis(dbl, true, x, m)),
+                if dbl { Comisd } else { Comiss },
+                &[E::R(xr(x)), E::M(w, m)],
+            );
+            for &r in &Reg::ALL {
+                for size in [Size::B32, Size::B64] {
+                    check(
+                        &asm(|a| a.cvt_int_to_fp(dbl, size, x, r)),
+                        if dbl { Cvtsi2sd } else { Cvtsi2ss },
+                        &[E::R(xr(x)), E::R(rs(r, size))],
+                    );
+                    for trunc in [true, false] {
+                        let mn = match (dbl, trunc) {
+                            (true, true) => Cvttsd2si,
+                            (true, false) => Cvtsd2si,
+                            (false, true) => Cvttss2si,
+                            (false, false) => Cvtss2si,
+                        };
+                        check(
+                            &asm(|a| a.cvt_fp_to_int(dbl, size, trunc, r, x)),
+                            mn,
+                            &[E::R(rs(r, size)), E::R(xr(x))],
+                        );
+                    }
+                }
+                check(
+                    &asm(|a| a.mov_to_xmm(Size::B64, x, r)),
+                    Movq,
+                    &[E::R(xr(x)), E::R(r64(r))],
+                );
+                check(
+                    &asm(|a| a.mov_to_xmm(Size::B32, x, r)),
+                    Movd,
+                    &[E::R(xr(x)), E::R(r32(r))],
+                );
+                check(
+                    &asm(|a| a.mov_from_xmm(Size::B64, r, x)),
+                    Movq,
+                    &[E::R(r64(r)), E::R(xr(x))],
+                );
+                check(
+                    &asm(|a| a.mov_from_xmm(Size::B32, r, x)),
+                    Movd,
+                    &[E::R(r32(r)), E::R(xr(x))],
+                );
+            }
+        }
+    }
+    for m in &mems {
+        check(&asm(|a| a.stmxcsr(*m)), Stmxcsr, &[E::M(4, *m)]);
+        check(&asm(|a| a.ldmxcsr(*m)), Ldmxcsr, &[E::M(4, *m)]);
+    }
+}
+
+/// P6.2: FMA3 231 forms, every register triple and a memory source, both precisions.
+#[test]
+fn fma3_forms() {
+    use Mnemonic::*;
+    for dbl in [true, false] {
+        for (op, md, ms) in [
+            (Fma::Madd, Vfmadd231sd, Vfmadd231ss),
+            (Fma::Msub, Vfmsub231sd, Vfmsub231ss),
+            (Fma::Nmadd, Vfnmadd231sd, Vfnmadd231ss),
+            (Fma::Nmsub, Vfnmsub231sd, Vfnmsub231ss),
+        ] {
+            let mn = if dbl { md } else { ms };
+            for d in xmms() {
+                for x in xmms() {
+                    for y in xmms() {
+                        check(
+                            &asm(|a| a.fma231(op, dbl, d, x, y)),
+                            mn,
+                            &[E::R(xr(d)), E::R(xr(x)), E::R(xr(y))],
+                        );
+                    }
+                    for m in some_mems() {
+                        check(
+                            &asm(|a| a.fma231(op, dbl, d, x, m)),
+                            mn,
+                            &[E::R(xr(d)), E::R(xr(x)), E::M(if dbl { 8 } else { 4 }, m)],
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

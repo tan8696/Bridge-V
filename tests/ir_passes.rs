@@ -7,7 +7,7 @@ mod rvgen;
 
 use bridgev::interp::exec_block;
 use bridgev::ir::eval::eval;
-use bridgev::ir::lift::lift;
+use bridgev::ir::lift::{LiftOptions, lift, lift_with};
 use bridgev::ir::ops::Block;
 use bridgev::ir::opt;
 use proptest::prelude::*;
@@ -50,5 +50,26 @@ proptest! {
             let got = h.run(&regs, |cpu, mem, _, _| eval(&cumulative, cpu, mem));
             prop_assert_eq!(&got, &want, "after passes up to {}:\n{}", name, cumulative);
         }
+    }
+
+    /// P6.5: the same with F/D instructions lifted inline (D47), under the fast-variant
+    /// precondition (FS Dirty, frm = RNE) that the TB guard establishes.
+    #[test]
+    fn inline_fp_lift_and_every_pass_match_the_interpreter(
+        code in rvgen::fp_block(),
+        regs in rvgen::regs(),
+        st in rvgen::fp_state(),
+    ) {
+        let st = rvgen::FpState { fs: 3, frm: 0, ..st };
+        let mut h = Harness::new(&code);
+        let init = |c: &mut bridgev::cpu::state::CpuState| st.apply(c);
+        let want = h.run_init(&regs, init, |cpu, mem, insns, ff| exec_block(cpu, mem, insns, ff, false));
+        let lifted = lift_with(&h.insns, h.fetch_fault, CODE, LiftOptions { inline_fp: true, fma: true });
+        let got = h.run_init(&regs, init, |cpu, mem, _, _| eval(&lifted, cpu, mem));
+        prop_assert_eq!(&got, &want, "lifted IR:\n{}", lifted);
+        let mut optimized = lifted.clone();
+        opt::optimize(&mut optimized);
+        let got = h.run_init(&regs, init, |cpu, mem, _, _| eval(&optimized, cpu, mem));
+        prop_assert_eq!(&got, &want, "optimized IR:\n{}", optimized);
     }
 }

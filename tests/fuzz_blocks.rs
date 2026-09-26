@@ -91,7 +91,8 @@ fn run_jit(h: &mut Harness, regs: &[u64; 32], jit: &mut Jit, iters: i64) -> (Out
     jit.flush();
     let mut id = 0;
     let got = h.run(regs, |cpu, mem, _, _| {
-        id = jit.tb_for(CODE, mem);
+        // The FP variant the dispatcher would pick for this state (D47).
+        id = jit.tb_for_variant(CODE, mem, bridgev::jit::dispatch::fp_slow(cpu));
         if iters > 1 {
             jit.link_self_exits(id);
         }

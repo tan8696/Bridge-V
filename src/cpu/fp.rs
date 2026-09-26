@@ -77,6 +77,16 @@ const D_SIGN: u64 = 1 << 63;
 const CANONICAL_NAN_S: u32 = 0x7fc0_0000;
 const CANONICAL_NAN_D: u64 = 0x7ff8_0000_0000_0000;
 
+/// MXCSR value JIT code runs with: all exceptions masked, round to nearest even, no FTZ/DAZ.
+pub const MXCSR_DEFAULT: u32 = 0x1f80;
+
+/// Map the MXCSR exception flags (IE0 DE1 ZE2 OE3 UE4 PE5) to RISC-V fflags (NX0 UF1 OF2 DZ3
+/// NV4); the denormal-operand flag has no RISC-V counterpart (§17, D47).
+pub fn mxcsr_to_fflags(m: u32) -> u8 {
+    let bit = |b: u32| ((m >> b) & 1) as u8;
+    bit(0) << 4 | bit(2) << 3 | bit(3) << 2 | bit(4) << 1 | bit(5)
+}
+
 /// Read a single-precision value: a properly NaN-boxed register yields its low 32 bits,
 /// anything else reads as the canonical NaN.
 #[inline]

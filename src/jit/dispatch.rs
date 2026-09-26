@@ -15,7 +15,7 @@ use crate::backend::x86::features::{self, HostFeatures};
 use crate::backend::x86::lower::{self, ExitInfo, LowerOptions};
 use crate::backend::x86::lower_ir::{self, FaultSite, IrOptions};
 use crate::backend::x86::regs::Reg;
-use crate::ir::lift::lift;
+use crate::ir::lift::{LiftOptions, lift_with};
 use crate::ir::opt::optimize;
 use crate::regalloc::linear_scan::{DLoc, OutOfSlots};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -241,9 +241,16 @@ impl Jit {
         self.cm.read(addr, len)
     }
 
-    /// The TB for guest `pc`, translating it on a miss.
+    /// The fast-FP-variant TB for guest `pc`, translating it on a miss.
     pub fn tb_for(&mut self, pc: u64, mem: &DirectMem) -> u32 {
-        if let Some(id) = self.cache.lookup(pc) {
+        self.tb_for_variant(pc, mem, false)
+    }
+
+    /// The TB for guest `pc` in the given FP variant (D47), translating it on a miss.
+    pub fn tb_for_variant(&mut self, pc: u64, mem: &DirectMem, fp_slow: bool) -> u32 {
+        // Only the IR back end has two variants.
+        let fp_slow = fp_slow && self.opts.regalloc != RegAlloc::None;
+        if let Some(id) = self.cache.lookup(pc, fp_slow) {
             return id;
         }
         let t0 = Instant::now();
@@ -252,7 +259,7 @@ impl Jit {
         let (host, out) = loop {
             let origin = self.cm.next_addr();
             let id = self.cache.next_id();
-            let out = match self.translate_insns(&insns, fetch_fault, pc, origin, id) {
+            let out = match self.translate_insns(&insns, fetch_fault, pc, origin, id, fp_slow) {
                 Ok(out) => out,
                 Err(OutOfSlots) => {
                     // Too many values live at once for the spill area: translate a shorter
@@ -323,6 +330,7 @@ impl Jit {
             incoming: Vec::new(),
             valid: true,
             fault_sites: out.fault_sites,
+            fp_slow,
         });
         self.stats.translate_time += t0.elapsed();
         id
@@ -336,6 +344,7 @@ impl Jit {
         pc: u64,
         origin: u64,
         id: u32,
+        fp_slow: bool,
     ) -> Result<Translated, OutOfSlots> {
         if self.opts.regalloc == RegAlloc::None {
             let lopts = LowerOptions {
@@ -351,7 +360,11 @@ impl Jit {
                 stats: Default::default(),
             });
         }
-        let mut ir = lift(insns, fetch_fault, pc);
+        let lopts = LiftOptions {
+            inline_fp: !fp_slow,
+            fma: self.features.fma,
+        };
+        let mut ir = lift_with(insns, fetch_fault, pc, lopts);
         let before = self.opts.dump_ir.as_ref().map(|_| ir.to_string());
         if self.opts.regalloc == RegAlloc::Linear {
             optimize(&mut ir);
@@ -382,8 +395,8 @@ impl Jit {
     /// The TB to run next at guest `pc`: `tb_for`, then link the previous unlinked direct exit
     /// to it (§13.3). `may_link` is trivially true in user and bare mode (flat mapping, no
     /// TbFlags yet); in system mode it will also require the same virtual page.
-    pub fn next_tb(&mut self, pc: u64, mem: &DirectMem) -> u32 {
-        let id = self.tb_for(pc, mem);
+    pub fn next_tb(&mut self, pc: u64, mem: &DirectMem, fp_slow: bool) -> u32 {
+        let id = self.tb_for_variant(pc, mem, fp_slow);
         if let Some((from, slot, generation)) = self.last_exit.take()
             // A flush inside `tb_for` renumbers TBs: `from` would be stale.
             && generation == self.cache.generation
@@ -493,7 +506,7 @@ impl Jit {
             *n += 1;
         }
         let exit = match reason {
-            exit::NONE | exit::BUDGET | exit::LOOKUP => BlockExit::Continue,
+            exit::NONE | exit::BUDGET | exit::LOOKUP | exit::FP_VARIANT => BlockExit::Continue,
             exit::ECALL => BlockExit::Ecall,
             exit::EXCEPTION => BlockExit::Trap(Exception {
                 cause: cpu.exc_cause,
@@ -570,17 +583,23 @@ impl Jit {
     /// every exit chained into it, drop it from the map and stale the jump cache. Returns
     /// false if no TB exists for `pc`.
     pub fn invalidate_pc(&mut self, pc: u64) -> bool {
-        let Some(id) = self.cache.lookup(pc) else {
-            return false;
-        };
-        self.stats.chain_unlinks +=
-            chain::unlink_incoming(&mut self.cache, &mut self.cm, id) as u64;
-        self.cache.invalidate(id);
-        self.jc_version += 1;
-        if self.last_exit.is_some_and(|(from, _, _)| from == id) {
-            self.last_exit = None;
+        let mut any = false;
+        for slow in [false, true] {
+            let Some(id) = self.cache.lookup(pc, slow) else {
+                continue;
+            };
+            self.stats.chain_unlinks +=
+                chain::unlink_incoming(&mut self.cache, &mut self.cm, id) as u64;
+            self.cache.invalidate(id);
+            if self.last_exit.is_some_and(|(from, _, _)| from == id) {
+                self.last_exit = None;
+            }
+            any = true;
         }
-        true
+        if any {
+            self.jc_version += 1;
+        }
+        any
     }
 
     fn flush_all(&mut self) {
@@ -601,7 +620,7 @@ impl Engine for Jit {
             if let Some(v) = tohost_written(mem, env) {
                 return Stop::Tohost(v);
             }
-            let id = self.next_tb(cpu.pc, mem);
+            let id = self.next_tb(cpu.pc, mem, fp_slow(cpu));
             // The first TB always runs whole, like an interpreter block, so a budget smaller
             // than it cannot stall progress; chained TBs then respect the remaining budget.
             let n = self.cache.get(id).insns.len() as u64;
@@ -629,6 +648,12 @@ impl Engine for Jit {
         };
         self.stats_counters() + &profile
     }
+}
+
+/// Which FP variant (D47) matches the current state: the fast one needs FS = Dirty and frm = RNE.
+pub fn fp_slow(cpu: &CpuState) -> bool {
+    let fs = crate::cpu::csr::mstatus::FS;
+    cpu.csr.mstatus & fs != fs || cpu.frm != 0
 }
 
 impl Jit {
@@ -692,7 +717,7 @@ impl Jit {
              {} full + {} code-change flushes, translate time {:.1} ms; \
              {} dispatcher entries ({:.0} per M guest insns); \
              exits: none {}, ecall {}, exception {}, flush {}, host-fault {}, budget {}, \
-             jump-cache miss {}; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}; \
+             jump-cache miss {}, fp-variant {}; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}; \
              regalloc {:?} (emitted code, all TBs): {} fills, {} spills, {} write-backs, \
              {} moves, {} retranslations",
             s.translated,
@@ -711,6 +736,7 @@ impl Jit {
             s.exits[exit::HOST_FAULT as usize],
             s.exits[exit::BUDGET as usize],
             s.exits[exit::LOOKUP as usize],
+            s.exits[exit::FP_VARIANT as usize],
             if self.opts.chain { "on" } else { "off" },
             s.chain_links,
             s.chain_unlinks,

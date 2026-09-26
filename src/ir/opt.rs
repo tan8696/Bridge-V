@@ -238,6 +238,8 @@ mod tests {
             ops,
             n_insns: 1,
             nvals,
+            fp_guard: false,
+            fp_dyn: false,
         }
     }
 

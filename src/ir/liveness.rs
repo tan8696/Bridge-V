@@ -117,6 +117,8 @@ mod tests {
             ],
             n_insns: 1,
             nvals: 4,
+            fp_guard: false,
+            fp_dyn: false,
         };
         let l = Liveness::compute(&b);
         assert_eq!(

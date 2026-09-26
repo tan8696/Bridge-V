@@ -223,6 +223,63 @@ pub enum ShiftX {
     Sarx,
 }
 
+/// An SSE register (XMM0–XMM15). JIT code uses them only as scratch within one guest FP
+/// instruction (Phase 6, D47); they are caller-saved in the SysV ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Xmm(pub u8);
+
+/// An XMM register or a memory operand (the r/m side of an SSE instruction).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum XRm {
+    X(Xmm),
+    M(Mem),
+}
+
+impl From<Xmm> for XRm {
+    fn from(x: Xmm) -> XRm {
+        XRm::X(x)
+    }
+}
+
+impl From<Mem> for XRm {
+    fn from(m: Mem) -> XRm {
+        XRm::M(m)
+    }
+}
+
+impl XRm {
+    /// The generic ModRM operand (an XMM register is encoded like the GPR of the same number).
+    fn rm(self) -> Rm {
+        match self {
+            XRm::X(x) => Rm::Reg(Reg::ALL[x.0 as usize]),
+            XRm::M(m) => Rm::Mem(m),
+        }
+    }
+}
+
+/// Scalar SSE arithmetic (`F2 0F op` = double, `F3 0F op` = single).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SseOp {
+    Add = 0x58,
+    Mul = 0x59,
+    Sub = 0x5C,
+    Div = 0x5E,
+    Sqrt = 0x51,
+}
+
+/// FMA3 `231` forms: `dst = ±(a * b) ± dst` (VEX.66.0F38, W1 = double, W0 = single).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fma {
+    /// `vfmadd231`: a*b + dst
+    Madd = 0xB9,
+    /// `vfmsub231`: a*b - dst
+    Msub = 0xBB,
+    /// `vfnmadd231`: -(a*b) + dst
+    Nmadd = 0xBD,
+    /// `vfnmsub231`: -(a*b) - dst
+    Nmsub = 0xBF,
+}
+
 /// A branch target inside the buffer being assembled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Label(u32);
@@ -909,6 +966,145 @@ impl Asm {
         if mis != 0 {
             self.nop((align - mis) as usize);
         }
+    }
+
+    // ---------------------------------------------------------------- SSE / FMA3 (Phase 6) ----
+
+    fn sse_prefix(dbl: bool) -> u8 {
+        if dbl { 0xF2 } else { 0xF3 }
+    }
+
+    /// `movsd/movss xmm, m64/m32` (or xmm, xmm).
+    pub fn movs_load(&mut self, dbl: bool, dst: Xmm, src: impl Into<XRm>) {
+        let p = Self::sse_prefix(dbl);
+        self.emit_op(
+            &[p],
+            Flags::default(),
+            &[0x0F, 0x10],
+            dst.0,
+            src.into().rm(),
+        );
+    }
+
+    /// `movsd/movss m64/m32, xmm`.
+    pub fn movs_store(&mut self, dbl: bool, dst: Mem, src: Xmm) {
+        let p = Self::sse_prefix(dbl);
+        self.emit_op(&[p], Flags::default(), &[0x0F, 0x11], src.0, Rm::Mem(dst));
+    }
+
+    /// `addsd/subsd/mulsd/divsd/sqrtsd` (or the `ss` forms): `dst = dst op src` (`sqrt`:
+    /// `dst = sqrt(src)`).
+    pub fn sse_arith(&mut self, op: SseOp, dbl: bool, dst: Xmm, src: impl Into<XRm>) {
+        let p = Self::sse_prefix(dbl);
+        self.emit_op(
+            &[p],
+            Flags::default(),
+            &[0x0F, op as u8],
+            dst.0,
+            src.into().rm(),
+        );
+    }
+
+    /// `ucomisd/ucomiss a, b` (quiet: invalid only for signaling NaNs); `signaling`: `comisd`
+    /// (invalid for any NaN). Unordered sets ZF, PF and CF.
+    pub fn comis(&mut self, dbl: bool, signaling: bool, a: Xmm, b: impl Into<XRm>) {
+        let op = if signaling { 0x2F } else { 0x2E };
+        let pre: &[u8] = if dbl { &[0x66] } else { &[] };
+        self.emit_op(pre, Flags::default(), &[0x0F, op], a.0, b.into().rm());
+    }
+
+    /// `cvtss2sd` (`to_double`) or `cvtsd2ss`.
+    pub fn cvt_fp(&mut self, to_double: bool, dst: Xmm, src: impl Into<XRm>) {
+        // cvtss2sd = F3 0F 5A (source single), cvtsd2ss = F2 0F 5A (source double).
+        let p = Self::sse_prefix(!to_double);
+        self.emit_op(
+            &[p],
+            Flags::default(),
+            &[0x0F, 0x5A],
+            dst.0,
+            src.into().rm(),
+        );
+    }
+
+    /// `cvtsi2sd/cvtsi2ss xmm, r/m32|64` (rounds per MXCSR).
+    pub fn cvt_int_to_fp(&mut self, dbl: bool, size: Size, dst: Xmm, src: impl Into<Rm>) {
+        assert!(matches!(size, Size::B32 | Size::B64));
+        let p = Self::sse_prefix(dbl);
+        let f = Flags {
+            w: size == Size::B64,
+            ..Flags::default()
+        };
+        self.emit_op(&[p], f, &[0x0F, 0x2A], dst.0, src.into());
+    }
+
+    /// `cvt(t)sd2si/cvt(t)ss2si r32|64, xmm/m`: `trunc` = round toward zero (`cvtt`), else
+    /// per MXCSR. Out of range or NaN gives the "integer indefinite" 0x80…0 and sets IE.
+    pub fn cvt_fp_to_int(
+        &mut self,
+        dbl: bool,
+        size: Size,
+        trunc: bool,
+        dst: Reg,
+        src: impl Into<XRm>,
+    ) {
+        assert!(matches!(size, Size::B32 | Size::B64));
+        let p = Self::sse_prefix(dbl);
+        let f = Flags {
+            w: size == Size::B64,
+            ..Flags::default()
+        };
+        let op = if trunc { 0x2C } else { 0x2D };
+        self.emit_op(&[p], f, &[0x0F, op], dst.num(), src.into().rm());
+    }
+
+    /// `movq xmm, r64` / `movd xmm, r32` (`66 [REX.W] 0F 6E`).
+    pub fn mov_to_xmm(&mut self, size: Size, dst: Xmm, src: Reg) {
+        assert!(matches!(size, Size::B32 | Size::B64));
+        let f = Flags {
+            w: size == Size::B64,
+            ..Flags::default()
+        };
+        self.emit_op(&[0x66], f, &[0x0F, 0x6E], dst.0, Rm::Reg(src));
+    }
+
+    /// `movq r64, xmm` / `movd r32, xmm` (`66 [REX.W] 0F 7E`).
+    pub fn mov_from_xmm(&mut self, size: Size, dst: Reg, src: Xmm) {
+        assert!(matches!(size, Size::B32 | Size::B64));
+        let f = Flags {
+            w: size == Size::B64,
+            ..Flags::default()
+        };
+        self.emit_op(&[0x66], f, &[0x0F, 0x7E], src.0, Rm::Reg(dst));
+    }
+
+    /// `stmxcsr m32` (`0F AE /3`).
+    pub fn stmxcsr(&mut self, dst: Mem) {
+        self.emit_digit(&[], Flags::default(), &[0x0F, 0xAE], 3, Rm::Mem(dst));
+    }
+
+    /// `ldmxcsr m32` (`0F AE /2`).
+    pub fn ldmxcsr(&mut self, src: Mem) {
+        self.emit_digit(&[], Flags::default(), &[0x0F, 0xAE], 2, Rm::Mem(src));
+    }
+
+    /// FMA3 `vf[n]madd/msub231sd/ss dst, a, b`: `dst = ±(a*b) ± dst` with one rounding. The
+    /// caller checks `HostFeatures::fma`.
+    pub fn fma231(&mut self, op: Fma, dbl: bool, dst: Xmm, a: Xmm, b: impl Into<XRm>) {
+        let rm = b.into().rm();
+        let (x, bb) = match rm {
+            Rm::Reg(r) => (0, r.rex_bit()),
+            Rm::Mem(m) => (
+                m.index.map_or(0, |(i, _)| i.rex_bit()),
+                m.base.map_or(0, |b| b.rex_bit()),
+            ),
+        };
+        let r = (dst.0 >> 3) & 1;
+        // 3-byte VEX: C4, [~R ~X ~B m-mmmm=00010 (0F38)], [W ~vvvv L=0 pp=01 (66)].
+        self.byte(0xC4);
+        self.byte((r ^ 1) << 7 | (x ^ 1) << 6 | (bb ^ 1) << 5 | 0b00010);
+        self.byte((dbl as u8) << 7 | ((!a.0) & 0xF) << 3 | 0b01);
+        self.byte(op as u8);
+        self.modrm_rm(dst.0 & 7, rm);
     }
 
     pub fn mfence(&mut self) {

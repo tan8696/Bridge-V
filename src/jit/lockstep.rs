@@ -164,7 +164,9 @@ impl Engine for Lockstep {
             if let Some(v) = tohost_written(mem, env) {
                 return Stop::Tohost(v);
             }
-            let id = self.jit.next_tb(cpu.pc, mem);
+            let id = self
+                .jit
+                .next_tb(cpu.pc, mem, crate::jit::dispatch::fp_slow(cpu));
 
             // Reference run.
             let snapshot = ArchState::capture(cpu);

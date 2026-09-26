@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7448b5665ea695cb2392b001aa4d6d98972791f361a3e3b45a5d9ead908a3089 # shrinks to code = [309068755, 1920204867, 115], regs = [0, 0, 0, 0, 0, 133120, 1879048192, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], st = FpState { f: [0, 0, 0, 0, 0, 0, 9218868437227405311, 0, 0, 0, 0, 0, 0, 0, 9221120237041090560, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9218868437227405311, 0, 0, 0, 0, 0, 0, 0], frm: 0, fflags: 0, fs: 3 }
+cc f64277a9684b348687c4c42510e94ce3607fdfc40129bbcac0ffb18c3f7deea9 # shrinks to code = [3758096467, 115], regs = [0, 0, 0, 0, 0, 133120, 1879048192, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], st = FpState { f: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], frm: 0, fflags: 0, fs: 1 }

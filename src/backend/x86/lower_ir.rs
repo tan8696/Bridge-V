@@ -20,12 +20,12 @@
 
 use std::mem::offset_of;
 
-use super::emit::{Alu, Asm, Cond, Label, Mem, Scale, Shift, ShiftX, Size, Unary};
+use super::emit::{Alu, Asm, Cond, Fma, Label, Mem, Scale, Shift, ShiftX, Size, SseOp, Unary, Xmm};
 use super::regs::{BUDGET_REG, CPU, CPU_BIAS, MEM_BASE, Reg};
 use crate::cpu::state::{CpuState, JC_SIZE, exit};
 use crate::cpu::trap::Exception;
 use crate::ir::liveness::{Constraint, constraint};
-use crate::ir::ops::{BinOp, Block, Cond as IrCond, ExitKind, Op, V};
+use crate::ir::ops::{BinOp, Block, Cond as IrCond, ExitKind, FCmpOp, FOp, IntSrc, Op, V};
 use crate::jit::cache::PcEntry;
 use crate::jit::trampoline::{SLOT_SPECIAL, Trampolines, cpu_field, helper};
 use crate::regalloc::linear_scan::{Alloc, AllocStats, DLoc, OutOfSlots, Result, store_const};
@@ -78,6 +78,48 @@ enum PcSrc {
     Rax,
 }
 
+/// Out-of-line FP fix-up code at the TB tail, entered from `label` and returning to `back`.
+enum Fixup {
+    /// `x` = the canonical NaN (a NaN result, or an unboxed single operand).
+    Canon {
+        label: Label,
+        back: Label,
+        x: Xmm,
+        dbl: bool,
+    },
+    /// A NaN FMA result: RISC-V raises NV for (0 × ∞) + c even when c is a quiet NaN, x86 FMA3
+    /// does not (found by the FP fuzzer). Check the multiplicands (a in XMM1; b in XMM2 for
+    /// singles, `f[rs2]` for doubles), OR NV into fflags if needed, then canonicalize.
+    FmaNan {
+        label: Label,
+        back: Label,
+        dbl: bool,
+        rs2: u8,
+    },
+    /// Float→int gave the integer indefinite: NaN and +overflow saturate to the maximum, the
+    /// rest (−overflow, or exactly the minimum) keep the minimum (RISC-V spec §11.7).
+    Saturate {
+        label: Label,
+        back: Label,
+        d: Reg,
+        long: bool,
+        dbl: bool,
+    },
+}
+
+const X0: Xmm = Xmm(0);
+const X1: Xmm = Xmm(1);
+const X2: Xmm = Xmm(2);
+
+fn f_mem(r: u8) -> Mem {
+    cpu_field(offset_of!(CpuState, f) + 8 * r as usize)
+}
+
+/// The upper half of f register `r` (all ones when it holds a NaN-boxed single).
+fn f_hi(r: u8) -> Mem {
+    cpu_field(offset_of!(CpuState, f) + 8 * r as usize + 4)
+}
+
 struct Stub {
     label: Label,
     pc: PcSrc,
@@ -109,6 +151,7 @@ struct Ctx<'a> {
     sites: Vec<FaultSite>,
     pc: u64,
     idx: u32,
+    fixups: Vec<Fixup>,
 }
 
 fn is_pool(r: Reg) -> bool {
@@ -167,7 +210,116 @@ impl Ctx<'_> {
         }
     }
 
+    fn emit_fixups(&mut self) {
+        for f in std::mem::take(&mut self.fixups) {
+            match f {
+                Fixup::Canon {
+                    label,
+                    back,
+                    x,
+                    dbl,
+                } => {
+                    self.a.bind(label);
+                    if dbl {
+                        self.a.movabs(R11, 0x7ff8_0000_0000_0000);
+                        self.a.mov_to_xmm(Size::B64, x, R11);
+                    } else {
+                        self.a.mov_r32_imm(R11, 0x7fc0_0000);
+                        self.a.mov_to_xmm(Size::B32, x, R11);
+                    }
+                    self.a.jmp(back);
+                }
+                Fixup::FmaNan {
+                    label,
+                    back,
+                    dbl,
+                    rs2,
+                } => {
+                    self.a.bind(label);
+                    let (a_zero, nv, canon) =
+                        (self.a.new_label(), self.a.new_label(), self.a.new_label());
+                    let sz = if dbl { Size::B64 } else { Size::B32 };
+                    let load_b = |a: &mut Asm| {
+                        if dbl {
+                            a.load(Size::B64, R10, f_mem(rs2));
+                        } else {
+                            a.mov_from_xmm(Size::B32, R10, X2);
+                        }
+                        a.alu_rr(sz, Alu::Add, R10, R10); // drop the sign
+                    };
+                    // |x| << 1 of an infinity: exponent all ones, fraction zero.
+                    let inf2: u64 = if dbl {
+                        0xffe0_0000_0000_0000
+                    } else {
+                        0xff00_0000
+                    };
+                    let cmp_inf = |a: &mut Asm| {
+                        if dbl {
+                            a.movabs(R11, inf2);
+                            a.alu_rr(Size::B64, Alu::Cmp, R10, R11);
+                        } else {
+                            a.alu_ri(Size::B32, Alu::Cmp, R10, inf2 as u32 as i32);
+                        }
+                    };
+                    self.a.mov_from_xmm(sz, R10, X1);
+                    self.a.alu_rr(sz, Alu::Add, R10, R10);
+                    self.a.test_rr(sz, R10, R10);
+                    self.a.jcc(Cond::E, a_zero);
+                    cmp_inf(&mut self.a);
+                    self.a.jcc(Cond::Ne, canon);
+                    // a = ±inf: invalid if b = ±0.
+                    load_b(&mut self.a);
+                    self.a.test_rr(sz, R10, R10);
+                    self.a.jcc(Cond::Ne, canon);
+                    self.a.jmp(nv);
+                    // a = ±0: invalid if b = ±inf.
+                    self.a.bind(a_zero);
+                    load_b(&mut self.a);
+                    cmp_inf(&mut self.a);
+                    self.a.jcc(Cond::Ne, canon);
+                    self.a.bind(nv);
+                    self.a
+                        .alu_ri(Size::B8, Alu::Or, field(offset_of!(CpuState, fflags)), 16);
+                    self.a.bind(canon);
+                    if dbl {
+                        self.a.movabs(R11, 0x7ff8_0000_0000_0000);
+                        self.a.mov_to_xmm(Size::B64, X0, R11);
+                    } else {
+                        self.a.mov_r32_imm(R11, 0x7fc0_0000);
+                        self.a.mov_to_xmm(Size::B32, X0, R11);
+                    }
+                    self.a.jmp(back);
+                }
+                Fixup::Saturate {
+                    label,
+                    back,
+                    d,
+                    long,
+                    dbl,
+                } => {
+                    self.a.bind(label);
+                    let max = self.a.new_label();
+                    // A NaN source (quiet compare: the conversion already raised NV).
+                    self.a.comis(dbl, false, X0, X0);
+                    self.a.jcc(Cond::P, max);
+                    let sz = if dbl { Size::B64 } else { Size::B32 };
+                    self.a.mov_from_xmm(sz, R11, X0);
+                    self.a.test_rr(sz, R11, R11);
+                    self.a.jcc(Cond::S, back);
+                    self.a.bind(max);
+                    if long {
+                        self.a.movabs(d, i64::MAX as u64);
+                    } else {
+                        self.a.mov_r32_imm(d, i32::MAX as u32);
+                    }
+                    self.a.jmp(back);
+                }
+            }
+        }
+    }
+
     fn emit_stubs(&mut self) {
+        self.emit_fixups();
         for s in std::mem::take(&mut self.stubs) {
             self.a.bind(s.label);
             if s.refund > 0 {
@@ -590,6 +742,219 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    // ------------------------------------------------------------ FP (D47) ----
+
+    /// Load FP operand `r` into `x` (singles: an unboxed value reads as the canonical NaN).
+    fn load_fop(&mut self, dbl: bool, x: Xmm, r: u8) {
+        if dbl {
+            self.a.movs_load(true, x, f_mem(r));
+            return;
+        }
+        let (fix, back) = (self.a.new_label(), self.a.new_label());
+        self.a.alu_ri(Size::B32, Alu::Cmp, f_hi(r), -1);
+        self.a.jcc(Cond::Ne, fix);
+        self.a.movs_load(false, x, f_mem(r));
+        self.a.bind(back);
+        self.fixups.push(Fixup::Canon {
+            label: fix,
+            back,
+            x,
+            dbl: false,
+        });
+    }
+
+    /// RISC-V never propagates NaN payloads: a NaN result becomes the canonical NaN.
+    fn canonicalize(&mut self, dbl: bool, x: Xmm) {
+        let (fix, back) = (self.a.new_label(), self.a.new_label());
+        self.a.comis(dbl, false, x, x);
+        self.a.jcc(Cond::P, fix);
+        self.a.bind(back);
+        self.fixups.push(Fixup::Canon {
+            label: fix,
+            back,
+            x,
+            dbl,
+        });
+    }
+
+    fn store_fresult(&mut self, dbl: bool, rd: u8, x: Xmm) {
+        self.a.movs_store(dbl, f_mem(rd), x);
+        if !dbl {
+            self.a.store_imm(Size::B32, f_hi(rd), -1);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)] // the fields of Op::FArith
+    fn farith(&mut self, op: FOp, dbl: bool, rd: u8, rs1: u8, rs2: u8, rs3: u8) {
+        let res_dbl = match op {
+            FOp::ToSingle => false,
+            FOp::ToDouble => true,
+            _ => dbl,
+        };
+        match op {
+            FOp::Add | FOp::Sub | FOp::Mul | FOp::Div => {
+                let sop = match op {
+                    FOp::Add => SseOp::Add,
+                    FOp::Sub => SseOp::Sub,
+                    FOp::Mul => SseOp::Mul,
+                    _ => SseOp::Div,
+                };
+                self.load_fop(dbl, X0, rs1);
+                if dbl {
+                    self.a.sse_arith(sop, true, X0, f_mem(rs2));
+                } else {
+                    self.load_fop(false, X1, rs2);
+                    self.a.sse_arith(sop, false, X0, X1);
+                }
+            }
+            FOp::Sqrt => {
+                self.load_fop(dbl, X1, rs1);
+                self.a.sse_arith(SseOp::Sqrt, dbl, X0, X1);
+            }
+            FOp::Madd | FOp::Msub | FOp::Nmsub | FOp::Nmadd => {
+                // RISC-V fnmsub = -(a*b) + c is x86 fnmadd; fnmadd = -(a*b) - c is fnmsub.
+                let kind = match op {
+                    FOp::Madd => Fma::Madd,
+                    FOp::Msub => Fma::Msub,
+                    FOp::Nmsub => Fma::Nmadd,
+                    _ => Fma::Nmsub,
+                };
+                self.load_fop(dbl, X0, rs3);
+                self.load_fop(dbl, X1, rs1);
+                if dbl {
+                    self.a.fma231(kind, true, X0, X1, f_mem(rs2));
+                } else {
+                    self.load_fop(false, X2, rs2);
+                    self.a.fma231(kind, false, X0, X1, X2);
+                }
+                let (fix, back) = (self.a.new_label(), self.a.new_label());
+                self.a.comis(dbl, false, X0, X0);
+                self.a.jcc(Cond::P, fix);
+                self.a.bind(back);
+                self.fixups.push(Fixup::FmaNan {
+                    label: fix,
+                    back,
+                    dbl,
+                    rs2,
+                });
+                self.store_fresult(dbl, rd, X0);
+                return;
+            }
+            FOp::ToSingle => self.a.cvt_fp(false, X0, f_mem(rs1)),
+            FOp::ToDouble => {
+                self.load_fop(false, X1, rs1);
+                self.a.cvt_fp(true, X0, X1);
+            }
+        }
+        self.canonicalize(res_dbl, X0);
+        self.store_fresult(res_dbl, rd, X0);
+    }
+
+    fn fcmp(&mut self, op: FCmpOp, dbl: bool, dst: V, rs1: u8, rs2: u8) -> Result<()> {
+        let d = self.ra.def(&mut self.a, dst, None, &[])?;
+        self.load_fop(dbl, X0, rs1);
+        self.load_fop(dbl, X1, rs2);
+        self.a.alu_rr(Size::B32, Alu::Xor, d, d);
+        match op {
+            // Unordered sets ZF = PF = CF = 1: equal needs ZF and not PF (quiet compare).
+            FCmpOp::Eq => {
+                self.a.comis(dbl, false, X0, X1);
+                self.a.setcc(Cond::E, d);
+                self.a.setcc(Cond::Np, R10);
+                self.a.alu_rr(Size::B8, Alu::And, d, R10);
+            }
+            // a < b ⟺ b > a (CF = ZF = 0: false when unordered); signaling compare.
+            FCmpOp::Lt => {
+                self.a.comis(dbl, true, X1, X0);
+                self.a.setcc(Cond::A, d);
+            }
+            FCmpOp::Le => {
+                self.a.comis(dbl, true, X1, X0);
+                self.a.setcc(Cond::Ae, d);
+            }
+        }
+        self.ra.release(&[dst]);
+        Ok(())
+    }
+
+    fn ftoi(&mut self, dst: V, dbl: bool, rs1: u8, long: bool, trunc: bool) -> Result<()> {
+        let d = self.ra.def(&mut self.a, dst, None, &[])?;
+        self.load_fop(dbl, X0, rs1);
+        let size = if long { Size::B64 } else { Size::B32 };
+        self.a.cvt_fp_to_int(dbl, size, trunc, d, X0);
+        if long {
+            self.a.movabs(R11, i64::MIN as u64);
+            self.a.alu_rr(Size::B64, Alu::Cmp, d, R11);
+        } else {
+            self.a.alu_ri(Size::B32, Alu::Cmp, d, i32::MIN);
+        }
+        let (fix, back) = (self.a.new_label(), self.a.new_label());
+        self.a.jcc(Cond::E, fix);
+        self.a.bind(back);
+        if !long {
+            self.a.movsxd(d, d);
+        }
+        self.fixups.push(Fixup::Saturate {
+            label: fix,
+            back,
+            d,
+            long,
+            dbl,
+        });
+        self.ra.release(&[dst]);
+        Ok(())
+    }
+
+    fn itof(&mut self, rd: u8, dbl: bool, src: V, from: IntSrc) -> Result<()> {
+        let r = self.ra.get(&mut self.a, src, &[])?;
+        match from {
+            IntSrc::W => self.a.cvt_int_to_fp(dbl, Size::B32, X0, r),
+            IntSrc::Wu => {
+                self.a.mov_rr(Size::B32, R11, r); // zero-extends
+                self.a.cvt_int_to_fp(dbl, Size::B64, X0, R11);
+            }
+            IntSrc::L => self.a.cvt_int_to_fp(dbl, Size::B64, X0, r),
+        }
+        self.ra.release(&[src]);
+        self.store_fresult(dbl, rd, X0);
+        Ok(())
+    }
+
+    fn read_f(&mut self, dst: V, f: u8) -> Result<()> {
+        let d = self.ra.def(&mut self.a, dst, None, &[])?;
+        self.a.load(Size::B64, d, f_mem(f));
+        self.ra.release(&[dst]);
+        Ok(())
+    }
+
+    fn write_f(&mut self, f: u8, src: V, single: bool) -> Result<()> {
+        let r = self.ra.get(&mut self.a, src, &[])?;
+        self.a.store(Size::B64, f_mem(f), r);
+        if single {
+            self.a.store_imm(Size::B32, f_hi(f), -1);
+        }
+        self.ra.release(&[src]);
+        Ok(())
+    }
+
+    fn unbox(&mut self, dst: V, src: V) -> Result<()> {
+        let r = self.ra.get(&mut self.a, src, &[])?;
+        self.ra.release(&[src]);
+        let prefer = if is_pool(r) { Some(r) } else { None };
+        let d = self.ra.def(&mut self.a, dst, prefer, &[r])?;
+        // No allocator calls from here on: R10/R11 are free.
+        self.a.mov_rr(Size::B64, R10, r);
+        self.a.shift_ri(Size::B64, Shift::Shr, R10, 32);
+        if d != r {
+            self.a.mov_rr(Size::B64, d, r);
+        }
+        self.a.movabs(R11, 0xffff_ffff_7fc0_0000);
+        self.a.alu_ri(Size::B32, Alu::Cmp, R10, -1);
+        self.a.cmov(Size::B64, Cond::Ne, d, R11);
+        self.ra.release(&[dst]);
+        Ok(())
+    }
+
     fn terminator(&mut self, op: &Op) -> Result<()> {
         match *op {
             Op::Branch {
@@ -741,11 +1106,27 @@ pub fn translate(
         sites: Vec::new(),
         pc: b.pc,
         idx: 0,
+        fixups: Vec::new(),
     };
     if c.n > 0 {
         c.a.alu_ri(Size::B64, Alu::Sub, BUDGET_REG, c.n as i32);
         let l = c.stub(PcSrc::Const(b.pc), c.n, exit::BUDGET, SLOT_SPECIAL);
         c.a.jcc(Cond::L, l);
+    }
+    if b.fp_guard {
+        // Fast FP variant guard (D47): FS must be Dirty (so no FP op needs to trap on FS=Off
+        // or mark the state dirty) and, if any op uses the dynamic rounding mode, frm = RNE.
+        // Otherwise leave before executing anything; the dispatcher picks the slow variant.
+        let v = c.stub(PcSrc::Const(b.pc), c.n, exit::FP_VARIANT, SLOT_SPECIAL);
+        let fs = crate::cpu::csr::mstatus::FS as i32;
+        c.a.load(Size::B64, R10, cpu_field(offset_of!(CpuState, csr.mstatus)));
+        c.a.alu_ri(Size::B32, Alu::And, R10, fs);
+        c.a.alu_ri(Size::B32, Alu::Cmp, R10, fs);
+        c.a.jcc(Cond::Ne, v);
+        if b.fp_dyn {
+            c.a.alu_ri(Size::B8, Alu::Cmp, cpu_field(offset_of!(CpuState, frm)), 0);
+            c.a.jcc(Cond::Ne, v);
+        }
     }
     for (i, op) in b.ops.iter().enumerate() {
         c.ra.pos = i as u32;
@@ -781,6 +1162,37 @@ pub fn translate(
                 size,
             } => c.store(addr, off, val, size)?,
             Op::Interp { raw, pc, idx } => c.interp(raw, pc, idx)?,
+            Op::ReadF { dst, f } => c.read_f(dst, f)?,
+            Op::WriteF { f, src, single } => c.write_f(f, src, single)?,
+            Op::Unbox { dst, src } => c.unbox(dst, src)?,
+            Op::FArith {
+                op,
+                dbl,
+                rd,
+                rs1,
+                rs2,
+                rs3,
+                ..
+            } => c.farith(op, dbl, rd, rs1, rs2, rs3),
+            Op::FCmp {
+                op,
+                dbl,
+                dst,
+                rs1,
+                rs2,
+                ..
+            } => c.fcmp(op, dbl, dst, rs1, rs2)?,
+            Op::FToI {
+                dst,
+                dbl,
+                rs1,
+                long,
+                trunc,
+                ..
+            } => c.ftoi(dst, dbl, rs1, long, trunc)?,
+            Op::IToF {
+                rd, dbl, src, from, ..
+            } => c.itof(rd, dbl, src, from)?,
             _ => {
                 c.terminator(op)?;
                 break;
