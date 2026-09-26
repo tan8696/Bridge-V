@@ -16,7 +16,7 @@ This file is the single source of truth for the project: scope, architecture, de
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
 | Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `design-stage.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
-| Blockers | GitHub push is blocked (HTTP 403). The Claude GitHub App needs contents-write access to `tan8696/Bridge-V`. |
+| Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-26 |
 
 Update this table at the end of every phase.

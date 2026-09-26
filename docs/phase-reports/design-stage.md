@@ -25,7 +25,7 @@ It also verified what the development container offers, so that later phases sta
 | Project explainer (`docs/PROJECT_EXPLAINED.md`) | done | For non-specialists as well as interviewers |
 | Phase-report template | done | Mandatory at the end of every phase |
 | `README.md` | done | Short landing page for the GitHub repo |
-| Push to GitHub | **blocked** | See §10 |
+| Push to GitHub | done | Blocked at first (§10); resolved once the Claude GitHub App was installed |
 
 ## 3. What was produced
 - **`CLAUDE.md`**, the single source of truth. The design choices it records:
@@ -76,7 +76,7 @@ None.
 ## 10. Known issues
 - **GitHub push is blocked.** `git push` returns HTTP 403 ("Claude doesn't have GitHub access to tan8696/Bridge-V"). The GitHub connector can read the repository, but writing returns 403 ("Resource not accessible by integration").
   - **Fix (repository owner):** install or configure the Claude GitHub App for the `tan8696` account at <https://github.com/apps/claude/installations/select_target>. Give it access to `Bridge-V` with read and write permission on repository contents. Then reconnect at <https://claude.ai/connect-github> if needed.
-  - Until then, all commits exist only in the cloud container.
+  - **Resolved 2026-09-26:** the owner installed the Claude GitHub App, and the branch `claude/compassionate-babbage-ul3prl` was pushed. On the way, a pending collaborator invite to a GitHub *user* named "Claude" was found to be the wrong mechanism, and it was flagged for removal.
 - The four open questions in `docs/ROADMAP.md` §18 are awaiting the owner's answers: license, whether to commit to Milestone B, where to store kernel images, and the CI budget.
 
 ## 11. How to reproduce
