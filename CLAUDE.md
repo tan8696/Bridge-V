@@ -80,6 +80,10 @@ Update this table at the end of every phase.
 | D27 | Host protection mirrors guest permissions (Phase 2) | `DirectMem` maps each guest page with host `PROT_READ` if the guest may read, write or execute, plus `PROT_WRITE` if it may write. Loader writes (`write_bytes`) lift protection temporarily. JIT loads and stores are unchecked `[rbx + addr]`. A host SIGSEGV whose RIP is in the code buffer is redirected to `fault_exit`, and the dispatcher maps RIP → TB → `pcmap` → guest pc and recomputes `tval` from `x[rs1] + imm` (or the first faulting byte of a split access). This fulfils D23's deferred step. Execute-only guest pages stay host-readable, so JIT loads from them do not fault (the same as qemu-user). | Zero-cost checks on the hot path, precise guest exceptions, and the same fault reports as the interpreter (proven by `tests/cli.rs::jit_host_fault_is_precise`). |
 | D28 | Phase 2 TB key and helpers | TBs are keyed by guest pc only. Lowering doesn't depend on privilege or FS yet, because CSR, AMO, FP, privileged and illegal instructions all run through `helper_interp_one` (D14), which checks them at run time. `TbFlags` arrive with Phase 7. `cpu.icount` is updated at exits and before helper calls. The `pcmap` records the not-yet-added count per instruction for faults. | Keeps Phase 2 minimal but correct. |
 | D29 | Lockstep determinism | `--engine=lockstep` forces `csr.deterministic_time` (`time` = icount / 10), so the interpreter and the JIT read the same `time` CSR. `--deterministic` enables the same for other engines. | Otherwise every `rdtime` would be a false divergence. |
+| D30 | Instruction counting via the budget (Phase 3) | JIT code never touches `icount`. The TB prologue `sub qword [budget], n; jl budget_stub` charges all `n` instructions up front, and `icount += budget_ref - budget` after every return to the dispatcher. Paths that retire fewer give the rest back: ECALL refunds 1, a host fault refunds `n - idx` (dispatcher), and a helper call at index `k` refunds `n - k` before the call and re-charges it after a normal return. `helper_interp_one` first folds `budget_ref - budget` into `icount` (and resets `budget_ref`), so CSR counters stay exact. New exit reasons: 5 BUDGET, 6 LOOKUP (jump-cache miss). The dispatcher's budget is `max(min(slice, limit - icount), n_first_tb)`, so the first TB always runs whole. `slice` defaults to 100 000. | One RMW per TB instead of an `icount` update on every exit path. Chained code stays exact and preemptible (tested with slice = 1). |
+| D31 | Jump cache ownership | The jump cache is `CpuState.jmp_cache[4096]` at 0x300 (`{pc, host}`; `pc = u64::MAX` means empty; slot `(pc >> 1) & 4095`, so byte offset `(pc << 3) & 0xFFF0`). The dispatcher fills the entry for every TB it enters. `cpu.jc_tag = jit_id << 48 \| version`, where `version` is bumped on every flush or invalidation; on a mismatch the dispatcher clears the whole cache before entering JIT code. | The `Engine::flush` path has no `CpuState` at hand. Lazy, tag-based clearing can never leave a host pointer into flushed code, even with several `Jit`s per process (tests). |
+| D32 | Lockstep with chaining | Lockstep enters each TB with `budget = n` (its length). A linked exit or jump-cache hit reaches the successor's prologue, which exits with BUDGET before executing anything. Snapshots copy only architectural state (`ArchState`), not the 64 KiB jump cache. | Linked exits and jump-cache hits are exercised, yet every comparison still covers exactly one TB. |
+| D33 | `--no-chain` / `--profile-jit` | `--no-chain` disables both linking and jump-cache fills, so every TB returns to the dispatcher (the Phase 2 behaviour with the Phase 3 code layout). `--profile-jit` makes JALRs increment `cpu.prof_jalr` to report the jump-cache hit rate. It changes the generated code, so timings are taken without it. | Clean A/B measurements of chaining, and a hit-rate metric that costs nothing when off. |
 
 ---
 
@@ -203,7 +207,7 @@ Bridge-V/
 │   │   ├── code_mem.rs       ← dual-mapped / mprotect code buffer (unsafe)
 │   │   ├── trampoline.rs     ← enter_jit / exit_jit / helper thunks (generated at startup)
 │   │   ├── cache.rs          ← TranslationBlock, tb_map, page→TB index, flush
-│   │   ├── chain.rs          ← patch / unpatch exits, incoming lists
+│   │   ├── chain.rs          ← link / unlink_incoming (aligned rel32 patches), incoming lists
 │   │   ├── dispatch.rs       ← main loop, JitOptions, host-fault resolution
 │   │   ├── lockstep.rs       ← --engine=lockstep (interp vs JIT per TB)
 │   │   └── perfmap.rs        ← /tmp/perf-<pid>.map
@@ -337,8 +341,10 @@ The offsets are illustrative. **The source of truth is the `offset_of!` compile-
 | 0x248 | `exc_cause`, `exc_tval` @0x250 | exception raised by JIT code or a helper (D25) |
 | 0x258 | `fault_rip`, `fault_addr` @0x260 | written by the SIGSEGV handler (D27) |
 | 0x268 | `helper_mem` | `*mut DirectMem` for JIT helpers (set by the dispatcher) |
+| 0x270 | `budget_ref: i64` | budget at the last icount sync (D30) |
+| 0x278 | `jc_tag`, `prof_jalr` @0x280 | jump-cache owner/version (D31); JALR counter (`--profile-jit`) |
+| 0x300 | `jmp_cache: [{pc, host}; 4096]` | 64 KiB, the inline JALR lookup table (§13.4) |
 | … | `spill: [u64; 32]` | Spill slots for IR temporaries. |
-| … | `jmp_cache: [{pc:u64, host:u64}; 4096]` | 64 KiB, indexed by `(pc >> 1) & 4095`. |
 | … | `tlb: [[TlbEntry; 256]; NB_MMU_IDX]` | 32 B/entry. MMU indices: U=0, S=1, M/bare=2 (plus MPRV variants if needed). |
 | … | CSR block (mstatus, mie, mip, mtvec, mepc, …) | Accessed only by Rust helpers. |
 

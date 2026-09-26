@@ -260,8 +260,42 @@ impl Jit {
             && chain::link(&mut self.cache, &mut self.cm, from, slot, id)
         {
             self.stats.chain_links += 1;
+            if self.opts.dump_x86.is_some() {
+                self.log_link(from, slot, id);
+            }
         }
         id
+    }
+
+    /// `--dump-x86`: record a chain patch in `links.txt` (the patched instruction's bytes).
+    fn log_link(&self, from: u32, slot: u8, to: u32) {
+        use std::io::Write;
+        let (f, t) = (self.cache.get(from), self.cache.get(to));
+        let ex = f.exits[slot as usize].expect("linked slot");
+        let op_len = if slot == 0 { 1 } else { 2 };
+        let bytes: Vec<String> = self
+            .cm
+            .read(ex.patch_at - op_len, op_len as usize + 4)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let dir = self.opts.dump_x86.as_ref().expect("checked by caller");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("links.txt"))
+        {
+            let _ = writeln!(
+                file,
+                "tb_{:x} slot {slot} @{:#x}: {} -> tb_{:x} @{:#x} (stub was {:#x})",
+                f.guest_pc,
+                ex.patch_at - op_len,
+                bytes.join(" "),
+                t.guest_pc,
+                t.host,
+                ex.stub
+            );
+        }
     }
 
     fn jc_tag(&self) -> u64 {

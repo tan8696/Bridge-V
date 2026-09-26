@@ -437,31 +437,31 @@ The emitter coverage table, a hello-JIT walkthrough (bytes and disassembly), a s
 **Entry criteria:** Phase 2 done.
 
 ### P3.1 Exit slot layout (M)
-- [ ] The branch exit layout per §13.3: `jcc rel32` is slot 1 and `jmp rel32` is slot 0, with NOP padding so that each **rel32 field is 4-byte aligned**. Stubs go at the TB tail.
-- [ ] `ExitSlot { patch_off, target_pc, linked }` is filled at translation time.
+- [x] The branch exit layout per §13.3: `jcc rel32` is slot 1 and `jmp rel32` is slot 0, with NOP padding so that each **rel32 field is 4-byte aligned**. Stubs go at the TB tail.
+- [x] `ExitSlot { patch_off, target_pc, linked }` is filled at translation time.
 - **Tests:** alignment asserts for every emitted exit; the stubs' behaviour is unchanged from Phase 2.
 
 ### P3.2 Patching and unlinking (M), `src/jit/chain.rs`
-- [ ] `link(a, slot, b)`: compute the rel32 against **RX** addresses, write it through the RW view with one aligned `u32` store, and push `(a, slot)` onto `b.incoming`.
-- [ ] `unlink_all_incoming(b)`: restore each predecessor's rel32 to point at its own stub.
-- [ ] `may_link` rules (§13.3). `--no-chain` disables linking.
+- [x] `link(a, slot, b)`: compute the rel32 against **RX** addresses, write it through the RW view with one aligned `u32` store, and push `(a, slot)` onto `b.incoming`.
+- [x] `unlink_all_incoming(b)`: restore each predecessor's rel32 to point at its own stub.
+- [x] `may_link` rules (§13.3). `--no-chain` disables linking.
 - **Tests:**
   - A chained loop (`loop.elf`) runs correctly.
   - The unlink test: link A→B, invalidate B, run again, and A must exit via its stub rather than jump into stale code.
   - A patch-arithmetic unit test that reuses the CLAUDE.md §28.5 worked example (`E9 BB 0F 00 00`).
 
 ### P3.3 Budget prologue (S)
-- [ ] Every TB starts with `sub qword [rbp+BUDGET], n ; jl budget_stub` (§13.3, D12). The dispatcher sets the budget to `SLICE` (default 100 000 instructions).
-- [ ] icount stays exact: executed = initial budget − remaining. Correct for partially executed TBs on exceptions, using the instruction index from the fault site.
+- [x] Every TB starts with `sub qword [rbp+BUDGET], n ; jl budget_stub` (§13.3, D12). The dispatcher sets the budget to `SLICE` (default 100 000 instructions).
+- [x] icount stays exact: executed = initial budget − remaining. Correct for partially executed TBs on exceptions, using the instruction index from the fault site.
 - **Tests:** an infinite chained loop still returns to the dispatcher (verify with a test-only "stop after N slices"); icount matches the interpreter exactly on all suites.
 
 ### P3.4 Jump cache (M)
-- [ ] A 4096-entry `{pc, host}` table in `CpuState`, with the inline lookup sequence of §13.4 for JALR. A miss exits with `EXIT_LOOKUP`; the dispatcher translates the target and fills the entry.
-- [ ] Flush rules (§13.4).
+- [x] A 4096-entry `{pc, host}` table in `CpuState`, with the inline lookup sequence of §13.4 for JALR. A miss exits with `EXIT_LOOKUP`; the dispatcher translates the target and fills the entry.
+- [x] Flush rules (§13.4).
 - **Tests:** a recursive `fib` program (JALR-heavy) produces correct output; stats show a jump-cache hit rate above 90% on it; flush on cache flush.
 
 ### P3.5 Statistics (S)
-- [ ] Chain patches, unlinks, jump-cache hits and misses, dispatcher entries per million guest instructions.
+- [x] Chain patches, unlinks, jump-cache hits and misses, dispatcher entries per million guest instructions.
 
 ### Phase 3 acceptance criteria
 - All suites pass under jit and lockstep, with and without `--no-chain`.
