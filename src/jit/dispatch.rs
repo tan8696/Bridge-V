@@ -708,6 +708,7 @@ impl Jit {
                 tval: cpu.exc_tval,
             }),
             exit::FLUSH => BlockExit::Flush,
+            exit::WFI => BlockExit::Wfi,
             exit::HOST_FAULT if self.is_smc_fault(cpu, mem) => self.smc_host_fault(cpu, mem),
             exit::HOST_FAULT => BlockExit::Trap(self.resolve_host_fault(cpu, mem)),
             exit::MMU_FAULT => BlockExit::Trap(self.resolve_mmu_fault(cpu)),
@@ -1002,7 +1003,7 @@ impl Jit {
              {} full + {} code-change flushes, translate time {:.1} ms; \
              {} dispatcher entries ({:.0} per M guest insns); \
              exits: none {}, ecall {}, exception {}, flush {}, host-fault {}, budget {}, \
-             jump-cache miss {}, fp-variant {}, mmu-fault {}, smc {}, straddle {}; \
+             jump-cache miss {}, fp-variant {}, mmu-fault {}, smc {}, wfi {}, straddle {}; \
              SMC: {} code-page writes, {} TBs invalidated; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}; \
              regalloc {:?} (emitted code, all TBs): {} fills, {} spills, {} write-backs, \
              {} moves, {} retranslations",
@@ -1025,6 +1026,7 @@ impl Jit {
             s.exits[exit::FP_VARIANT as usize],
             s.exits[exit::MMU_FAULT as usize],
             s.exits[exit::SMC as usize] + s.exits[exit::SMC_STORE as usize],
+            s.exits[exit::WFI as usize],
             s.interpreted,
             s.smc_writes,
             s.smc_invalidated,

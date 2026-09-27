@@ -292,7 +292,13 @@ fn run_boot(opts: BootOptions, stats: bool) -> Result<ExitCode> {
     eprintln!("\nbridgev: machine stopped: {:?}", r.exit);
     if stats {
         print_stats(r.icount, start);
-        eprintln!("bridgev: {} SBI calls; {}", r.sbi_calls, r.engine_stats);
+        eprintln!(
+            "bridgev: {} SBI calls; {} WFI idles, {:.3} s idle; {}",
+            r.sbi_calls,
+            r.wfis,
+            r.idle.as_secs_f64(),
+            r.engine_stats
+        );
     }
     Ok(match r.exit {
         BootExit::PowerOff | BootExit::Reset => ExitCode::SUCCESS,

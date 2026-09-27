@@ -84,3 +84,34 @@ jobs:
 
       - name: Run riscv-tests under qemu (reference)
         run: ./tools/ref-riscv-tests.sh
+
+  linux-boot:
+    name: Linux boot to a BusyBox shell (Milestone B)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install 1.94 --profile minimal
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: guest/build/linux/deb
+          key: linux-debs-${{ hashFiles('tools/fetch-guest-images.sh') }}
+
+      - name: Fetch guest images (Ubuntu riscv64 kernel + busybox-static, pinned SHA256)
+        run: cargo build --release && ./tools/fetch-guest-images.sh
+
+      - name: Boot, run shell commands over the UART, power off (jit, interp, lockstep)
+        run: cargo test --release --test linux_boot -- --ignored --test-threads 1
+

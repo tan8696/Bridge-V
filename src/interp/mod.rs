@@ -43,6 +43,8 @@ pub enum Stop {
     Tohost(u64),
     /// Lockstep: the JIT and the interpreter disagreed (details already printed).
     Diverged,
+    /// System mode: the hart waits for an interrupt (`BlockExit::Wfi`).
+    Wfi,
 }
 
 /// Execution environment of `Interp::run`.
@@ -90,6 +92,7 @@ pub trait Engine {
 pub fn deliver(exit: BlockExit, env: &Env, cpu: &mut CpuState) -> Result<(), Stop> {
     match exit {
         BlockExit::Continue | BlockExit::Flush => Ok(()),
+        BlockExit::Wfi => Err(Stop::Wfi),
         BlockExit::Ecall => {
             if env.user_mode || (env.sbi && cpu.prv == prv::S) {
                 return Err(Stop::Ecall);
@@ -158,6 +161,8 @@ pub enum Flow {
     Ecall,
     /// FENCE.I: flush the block cache, continue at the next instruction.
     Flush,
+    /// WFI with nothing to wake it (`Csrs::wfi_idle`): retired; the machine may idle.
+    Wfi,
 }
 
 /// How `exec_block` ended.
@@ -171,6 +176,8 @@ pub enum BlockExit {
     Trap(Exception),
     /// FENCE.I retired; `cpu.pc` is the next instruction. Decoded code must be flushed.
     Flush,
+    /// WFI retired with nothing pending; `cpu.pc` is the next instruction.
+    Wfi,
 }
 
 /// Execute the pre-decoded instructions of one block starting at `cpu.pc`, updating `pc` and
@@ -208,6 +215,11 @@ pub fn exec_block(
                 cpu.icount += 1;
                 cpu.pc = pc.wrapping_add(d.len as u64);
                 return BlockExit::Flush;
+            }
+            Flow::Wfi => {
+                cpu.icount += 1;
+                cpu.pc = pc.wrapping_add(d.len as u64);
+                return BlockExit::Wfi;
             }
             Flow::Ecall => {
                 cpu.pc = pc;
@@ -590,10 +602,14 @@ pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Fl
             return Flow::Jump(cpu.sret());
         }
         Inst::Wfi => {
-            // Phase 7 adds waiting for interrupts; until then WFI is a legal no-op.
             let tw = cpu.csr.mstatus & mstatus::TW != 0;
             if cpu.prv == prv::U || (cpu.prv == prv::S && tw) {
                 return illegal;
+            }
+            // A hint otherwise (priv spec §3.3.3): legal to implement as a no-op.
+            let c = &cpu.csr;
+            if c.wfi_idle && !c.deterministic_time && c.mip & c.mie == 0 {
+                return Flow::Wfi;
             }
         }
         Inst::SfenceVma { rs1, .. } => {

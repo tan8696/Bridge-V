@@ -112,6 +112,7 @@ pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> R
             }
             Stop::Diverged => anyhow::bail!("lockstep divergence (see above)"),
             Stop::Tohost(_) => unreachable!("no tohost in user mode"),
+            Stop::Wfi => unreachable!("WFI is illegal in U-mode"),
         }
     }
 }

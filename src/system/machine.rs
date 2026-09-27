@@ -80,6 +80,9 @@ pub struct BootRun {
     pub icount: u64,
     pub engine_stats: String,
     pub sbi_calls: u64,
+    /// Host time spent idle in WFI, and how many WFIs stopped the engine.
+    pub idle: std::time::Duration,
+    pub wfis: u64,
 }
 
 /// A handle the caller can use to feed console input while the machine runs.
@@ -178,6 +181,7 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
     cpu.csr.mideleg = 0x222; // SSI, STI, SEI
     cpu.csr.mcounteren = 0x7;
     cpu.csr.deterministic_time = opts.deterministic;
+    cpu.csr.wfi_idle = true;
 
     let env = Env {
         user_mode: false,
@@ -192,6 +196,7 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
         calls: 0,
     };
     let limit = opts.max_insns.unwrap_or(u64::MAX);
+    let (mut idle, mut wfis) = (std::time::Duration::ZERO, 0);
     let exit = loop {
         if cpu.icount >= limit {
             break BootExit::InstructionLimit;
@@ -240,6 +245,23 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
                     SbiAction::Reset => break BootExit::Reset,
                 }
             }
+            Stop::Wfi => {
+                // Idle the host until the next timer deadline or console input (§15). An
+                // interrupt that became pending during the slice is taken at the loop top.
+                wfis += 1;
+                let deadline = clint_state.lock().unwrap().mtimecmp.min(st.stimecmp);
+                let t0 = std::time::Instant::now();
+                loop {
+                    let now = cpu.time();
+                    if now >= deadline || !uart_state.lock().unwrap().rx.is_empty() {
+                        break;
+                    }
+                    // `time` ticks at 10 MHz; poll input at least every millisecond.
+                    let ns = (deadline - now).saturating_mul(100).min(1_000_000);
+                    std::thread::sleep(std::time::Duration::from_nanos(ns));
+                }
+                idle += t0.elapsed();
+            }
             Stop::Diverged => bail!("lockstep divergence (see above)"),
             other => bail!("unexpected stop in system mode: {other:?}"),
         }
@@ -255,6 +277,8 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
         icount: cpu.icount,
         engine_stats: engine.stats() + &format!("\nsoftmmu: {} TLB fills", cpu.tlb_fills),
         sbi_calls: st.calls,
+        idle,
+        wfis,
     })
 }
 

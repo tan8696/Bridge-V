@@ -36,7 +36,9 @@ pub mod exit {
     /// The same from a softmmu inline store's slow path: the state is the fault site's at
     /// `fault_rip`, and the store there retired.
     pub const SMC_STORE: u32 = 10;
-    pub const COUNT: usize = 11;
+    /// WFI retired with nothing pending (`Csrs::wfi_idle`): `pc` is the next instruction.
+    pub const WFI: u32 = 11;
+    pub const COUNT: usize = 12;
 }
 
 /// Spill slots for IR temporaries (§8.1, §10).

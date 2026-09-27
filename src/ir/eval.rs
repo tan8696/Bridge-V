@@ -89,6 +89,11 @@ pub fn eval(b: &Block, cpu: &mut CpuState, mem: &mut DirectMem) -> BlockExit {
                         cpu.pc = p.wrapping_add(d.len as u64);
                         return BlockExit::Flush;
                     }
+                    Flow::Wfi => {
+                        cpu.icount += 1;
+                        cpu.pc = p.wrapping_add(d.len as u64);
+                        return BlockExit::Wfi;
+                    }
                     Flow::Trap(e) => {
                         cpu.pc = p;
                         return BlockExit::Trap(e);

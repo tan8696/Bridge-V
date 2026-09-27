@@ -276,6 +276,12 @@ pub unsafe extern "sysv64" fn helper_interp_one(cpu: *mut CpuState, raw: u64, pc
                 cpu.exit_reason = exit::FLUSH;
                 1
             }
+            Flow::Wfi => {
+                cpu.icount += 1;
+                cpu.pc = pc.wrapping_add(d.len as u64);
+                cpu.exit_reason = exit::WFI;
+                1
+            }
             Flow::Trap(e) => {
                 cpu.pc = pc;
                 cpu.exc_cause = e.cause;

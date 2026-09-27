@@ -99,6 +99,11 @@ pub struct Csrs {
     /// `--deterministic`: `time` = icount / 10 instead of the host clock, so runs (and
     /// lockstep comparisons) are reproducible.
     pub deterministic_time: bool,
+    /// System mode (P9.1): WFI with no locally enabled interrupt pending stops the engine so
+    /// the machine can idle the host until the next timer deadline or console input. Off (WFI
+    /// is a no-op hint) elsewhere and with deterministic time, which only advances by
+    /// executing.
+    pub wfi_idle: bool,
 }
 
 impl Default for Csrs {
@@ -130,6 +135,7 @@ impl Default for Csrs {
             cycle_offset: 0,
             time_origin: Instant::now(),
             deterministic_time: false,
+            wfi_idle: false,
         }
     }
 }

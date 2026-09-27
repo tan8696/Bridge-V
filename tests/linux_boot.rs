@@ -1,6 +1,6 @@
 //! Milestone B (P9.6): boot Linux to a BusyBox shell and talk to it over the emulated UART.
 //! Needs the guest images from `tools/fetch-guest-images.sh`; ignored by default (run with
-//! `cargo test --release --test linux_boot -- --ignored`, or `BRIDGEV_LINUX_ENGINES=interp,jit`).
+//! `cargo test --release --test linux_boot -- --ignored`; CI's `linux-boot` job does).
 
 mod common;
 
@@ -128,4 +128,12 @@ fn linux_boots_to_busybox_shell_jit() {
 #[ignore = "needs tools/fetch-guest-images.sh; slow"]
 fn linux_boots_to_busybox_shell_interp() {
     boot_to_shell("interp");
+}
+
+/// The whole boot and shell session under `--engine lockstep`: every TB is checked against the
+/// interpreter, device accesses included (D52).
+#[test]
+#[ignore = "needs tools/fetch-guest-images.sh; slow"]
+fn linux_boots_to_busybox_shell_lockstep() {
+    boot_to_shell("lockstep");
 }
