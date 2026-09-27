@@ -8,3 +8,4 @@ pub mod plic;
 pub mod sbi;
 pub mod syscon;
 pub mod uart16550;
+pub mod virtio_blk;

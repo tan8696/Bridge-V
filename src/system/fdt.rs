@@ -161,6 +161,8 @@ pub struct VirtConfig {
     pub initrd: Option<(u64, u64)>,
     /// Advertise Sv48 (`mmu-type = "riscv,sv48"`) instead of Sv39.
     pub sv48: bool,
+    /// A virtio-blk device at `VIRTIO_BASE` (Phase 10).
+    pub virtio_blk: bool,
 }
 
 const PH_INTC: u32 = 1;
@@ -248,6 +250,16 @@ pub fn virt_dtb(c: &VirtConfig) -> Vec<u8> {
     f.prop_u32("interrupt-parent", PH_PLIC);
     f.end();
 
+    if c.virtio_blk {
+        use super::virtio_blk::{VIRTIO_BASE, VIRTIO_IRQ};
+        f.begin(&format!("virtio_mmio@{VIRTIO_BASE:x}"));
+        f.prop_str("compatible", "virtio,mmio");
+        f.prop_reg(VIRTIO_BASE, 0x1000);
+        f.prop_u32("interrupts", VIRTIO_IRQ as u32);
+        f.prop_u32("interrupt-parent", PH_PLIC);
+        f.end();
+    }
+
     f.begin(&format!("test@{SYSCON_BASE:x}"));
     f.prop_strs("compatible", &["sifive,test1", "sifive,test0", "syscon"]);
     f.prop_reg(SYSCON_BASE, 0x1000);
@@ -283,6 +295,7 @@ mod tests {
             bootargs: "console=ttyS0".into(),
             initrd: Some((0x8800_0000, 0x8810_0000)),
             sv48: false,
+            virtio_blk: true,
         });
         let be = |o: usize| u32::from_be_bytes(dtb[o..o + 4].try_into().unwrap());
         assert_eq!(be(0), FDT_MAGIC);
@@ -320,6 +333,7 @@ mod tests {
             bootargs: "console=ttyS0 earlycon=sbi".into(),
             initrd: Some((0x9f00_0000, 0x9f40_0000)),
             sv48: false,
+            virtio_blk: true,
         });
         let path = std::env::temp_dir().join(format!("bridgev-{}.dtb", std::process::id()));
         std::fs::write(&path, &dtb).unwrap();
@@ -350,6 +364,7 @@ mod tests {
             "test@100000",
             "linux,initrd-start = <0x00 0x9f000000>;",
             "stdout-path = \"/soc/serial@10000000\";",
+            "compatible = \"virtio,mmio\";",
         ] {
             assert!(dts.contains(want), "missing {want:?} in\n{dts}");
         }

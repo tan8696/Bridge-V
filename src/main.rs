@@ -225,6 +225,9 @@ enum Command {
         /// M-mode firmware (OpenSBI fw_dynamic/fw_jump .bin) instead of the built-in SBI.
         #[arg(long)]
         firmware: Option<PathBuf>,
+        /// Disk image served as a virtio-blk device (/dev/vda), read-write.
+        #[arg(long)]
+        disk: Option<PathBuf>,
         /// Virtual-memory modes offered to the guest (sv48 also allows Sv39).
         #[arg(long, value_enum, default_value = "sv39")]
         mmu: MmuArg,
@@ -491,6 +494,7 @@ fn main() -> ExitCode {
         Command::Boot {
             kernel,
             firmware,
+            disk,
             mmu,
             initrd,
             dtb,
@@ -523,6 +527,7 @@ fn main() -> ExitCode {
                 kernel,
                 firmware,
                 sv48: mmu == MmuArg::Sv48,
+                disk,
                 initrd,
                 dtb,
                 dump_dtb,

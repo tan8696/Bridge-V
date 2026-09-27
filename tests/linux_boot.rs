@@ -4,8 +4,9 @@
 
 mod common;
 
+use std::ffi::OsStr;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -46,12 +47,12 @@ fn wait_for(out: &Arc<Mutex<Vec<u8>>>, from: usize, pat: &str, timeout: Duration
 const OPENSBI: &str = "/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin";
 
 fn boot_to_shell(engine: &str) {
-    boot_to_shell_with(engine, None, false);
+    boot_to_shell_with(engine, None, false, None);
 }
 
 /// Boot with the built-in SBI, or with `firmware` in M-mode, and with Sv48 offered (Phase 10);
 /// /proc/cpuinfo must show the paging mode Linux chose.
-fn boot_to_shell_with(engine: &str, firmware: Option<&str>, sv48: bool) {
+fn boot_to_shell_with(engine: &str, firmware: Option<&str>, sv48: bool, disk: Option<&Path>) {
     let Some((kernel, initrd)) = images() else {
         return;
     };
@@ -69,6 +70,11 @@ fn boot_to_shell_with(engine: &str, firmware: Option<&str>, sv48: bool) {
         .arg(&initrd)
         .args(firmware.map(|f| ["--firmware", f]).into_iter().flatten())
         .args(if sv48 { &["--mmu", "sv48"][..] } else { &[] })
+        .args(
+            disk.map(|d| [OsStr::new("--disk"), d.as_os_str()])
+                .into_iter()
+                .flatten(),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -113,6 +119,18 @@ fn boot_to_shell_with(engine: &str, firmware: Option<&str>, sv48: bool) {
     );
     cmd("ls /", &["bin", "proc", "sys"], &mut at);
     cmd("echo $((6 * 7))", &["42"], &mut at);
+    if disk.is_some() {
+        cmd(
+            "mkdir /mnt && mount -t ext2 /dev/vda /mnt && cat /mnt/hello.txt",
+            &["hello from the host"],
+            &mut at,
+        );
+        cmd(
+            "echo written by the guest > /mnt/new.txt && umount /mnt && echo unmounted",
+            &["unmounted"],
+            &mut at,
+        );
+    }
     stdin.write_all(b"poweroff -f\n").unwrap();
     stdin.flush().unwrap();
     let status = loop {
@@ -167,13 +185,13 @@ fn linux_boots_to_busybox_shell_lockstep() {
 #[test]
 #[ignore = "needs tools/fetch-guest-images.sh and QEMU's OpenSBI; slow"]
 fn linux_boots_via_opensbi_jit() {
-    boot_to_shell_with("jit", Some(OPENSBI), false);
+    boot_to_shell_with("jit", Some(OPENSBI), false, None);
 }
 
 #[test]
 #[ignore = "needs tools/fetch-guest-images.sh and QEMU's OpenSBI; slow"]
 fn linux_boots_via_opensbi_lockstep() {
-    boot_to_shell_with("lockstep", Some(OPENSBI), false);
+    boot_to_shell_with("lockstep", Some(OPENSBI), false, None);
 }
 
 /// Phase 10: the machine offers Sv48 (satp mode 9, `mmu-type = "riscv,sv48"`) and Linux uses
@@ -181,5 +199,41 @@ fn linux_boots_via_opensbi_lockstep() {
 #[test]
 #[ignore = "needs tools/fetch-guest-images.sh; slow"]
 fn linux_boots_with_sv48_jit() {
-    boot_to_shell_with("jit", None, true);
+    boot_to_shell_with("jit", None, true, None);
+}
+
+/// Phase 10: a virtio-blk disk (`--disk`) holding an ext2 file system made on the host: the
+/// guest mounts it, reads a file, writes one, unmounts; the host then finds the new file.
+#[test]
+#[ignore = "needs tools/fetch-guest-images.sh and e2fsprogs; slow"]
+fn linux_mounts_a_virtio_disk_jit() {
+    if images().is_none() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("bridgev-disk-{}", std::process::id()));
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("hello.txt"), "hello from the host\n").unwrap();
+    let img = dir.join("disk.img");
+    let made = Command::new("mke2fs")
+        .args(["-q", "-t", "ext2", "-d"])
+        .arg(&root)
+        .arg(&img)
+        .arg("8M")
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: mke2fs (e2fsprogs) not available");
+        return;
+    }
+    boot_to_shell_with("jit", None, false, Some(&img));
+    let out = Command::new("debugfs")
+        .args(["-R", "cat /new.txt"])
+        .arg(&img)
+        .output()
+        .expect("debugfs");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "written by the guest\n"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }

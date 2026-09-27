@@ -28,6 +28,7 @@ use super::plic::Plic;
 use super::sbi::{self, SbiAction, SbiState};
 use super::syscon::{Finish, Syscon};
 use super::uart16550::{Sink, Uart, UartState};
+use super::virtio_blk::{VIRTIO_BASE, VIRTIO_IRQ, VirtioBlk};
 
 pub const RAM_BASE: u64 = 0x8000_0000;
 pub const SYSCON_BASE: u64 = 0x10_0000;
@@ -51,6 +52,8 @@ pub struct BootOptions {
     pub firmware: Option<PathBuf>,
     /// Offer Sv48 as well as Sv39 (satp mode 9, devicetree `riscv,sv48`).
     pub sv48: bool,
+    /// Disk image for a virtio-blk device (`/dev/vda`), read-write (Phase 10).
+    pub disk: Option<PathBuf>,
     pub initrd: Option<PathBuf>,
     /// Use this DTB instead of the generated one.
     pub dtb: Option<PathBuf>,
@@ -153,6 +156,7 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
             bootargs: opts.bootargs.clone(),
             initrd,
             sv48: opts.sv48,
+            virtio_blk: opts.disk.is_some(),
         }),
     };
     if let Some(p) = &opts.dump_dtb {
@@ -198,6 +202,14 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
     mem.add_device(PLIC_BASE, 0x60_0000, Box::new(plic));
     mem.add_device(UART_BASE, 0x100, Box::new(uart));
     mem.add_device(SYSCON_BASE, 0x1000, Box::new(syscon));
+    let blk = match &opts.disk {
+        Some(p) => {
+            let b = VirtioBlk::open(p).with_context(|| format!("opening disk {}", p.display()))?;
+            mem.add_device(VIRTIO_BASE, 0x1000, Box::new(b.regs()));
+            Some(b)
+        }
+        None => None,
+    };
 
     let mut cpu = CpuState::new_machine(entry);
     cpu.softmmu = 1;
@@ -245,9 +257,15 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
         let now = cpu.time();
         mtime.store(now, Ordering::Relaxed);
         let uart_irq = uart_state.lock().unwrap().irq();
+        // Serve the disk requests the driver queued during the last slice.
+        let blk_irq = blk.as_ref().is_some_and(|b| {
+            b.process(&mut mem);
+            b.state.lock().unwrap().irq()
+        });
         let (meip, seip) = {
             let mut p = plic_state.lock().unwrap();
             p.set_level(UART_IRQ, uart_irq);
+            p.set_level(VIRTIO_IRQ, blk_irq);
             p.outputs()
         };
         let (msip, mtip) = {
@@ -302,7 +320,10 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
                 // never sleep past a pending finish request.
                 while finish.lock().unwrap().is_none() {
                     let now = cpu.time();
-                    if now >= deadline || !uart_state.lock().unwrap().rx.is_empty() {
+                    let disk = blk
+                        .as_ref()
+                        .is_some_and(|b| b.state.lock().unwrap().pending());
+                    if now >= deadline || disk || !uart_state.lock().unwrap().rx.is_empty() {
                         break;
                     }
                     // `time` ticks at 10 MHz; poll input at least every millisecond.
@@ -324,7 +345,15 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
     Ok(BootRun {
         exit,
         icount: cpu.icount,
-        engine_stats: engine.stats() + &format!("\nsoftmmu: {} TLB fills", cpu.tlb_fills),
+        engine_stats: engine.stats()
+            + &format!("\nsoftmmu: {} TLB fills", cpu.tlb_fills)
+            + &blk.map_or(String::new(), |b| {
+                let s = b.state.lock().unwrap();
+                format!(
+                    "\nvirtio-blk: {} requests, {} sectors read, {} written",
+                    s.requests, s.sectors_read, s.sectors_written
+                )
+            }),
         sbi_calls: st.calls,
         idle,
         wfis,

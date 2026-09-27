@@ -743,7 +743,7 @@ Pick items in this order, as budget allows. Each gets its own mini-report (`phas
 | Multithreaded user mode | `clone`/`futex`, per-thread `CpuState`, shared cache with a mutex + exclusive sections, `lock`-based AMOs, MFENCE for W→R fences | pthread tests and multithreaded CoreMark pass; scaling numbers. **Done, serialized** (`phase-10-mt-user.md`, D55): per-thread engines under a fair GIL; no parallel speedup (MT CoreMark 12,189 it/s vs QEMU 38,314) |
 | Dynamic ELF | Load PT_INTERP (`ld-linux-riscv64-lp64d.so.1`) from a sysroot (`-L` flag like qemu) | Dynamically linked hello runs. **Done** (`phase-10-dynamic-elf.md`, D57): every C test program as a dynamic PIE |
 | Guest signals | rt_sigframe setup and rt_sigreturn; SIGSEGV delivery to guest handlers | Signal test programs pass. **Done** (`phase-10-signals.md`, D56): synchronous and self-directed signals |
-| virtio-blk | virtio-mmio transport and a block device backed by a file | Linux mounts an ext2 image |
+| virtio-blk | virtio-mmio transport and a block device backed by a file | Linux mounts an ext2 image. **Done** (`phase-10-virtio-blk.md`, D58) |
 | Return-address stack | Predict `ret` targets via a shadow stack in `CpuState` | Measurable speedup on call-heavy code |
 | Superblocks/traces | Hot-path trace formation across TB boundaries | Measurable speedup |
 | GDB stub | Remote serial protocol, interpreter-based single step | `gdb-multiarch` can break and step |
