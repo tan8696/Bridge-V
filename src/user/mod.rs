@@ -1,5 +1,6 @@
 //! Linux user-mode emulation: process loader, syscall translation, signals (CLAUDE.md §19).
 
+pub mod gdb;
 pub mod guest_signal;
 pub mod loader;
 pub mod signal;
@@ -31,6 +32,8 @@ pub struct RunOptions {
     pub softmmu: bool,
     /// `--sysroot`: where the program interpreter and absolute paths are looked up first.
     pub sysroot: Option<std::path::PathBuf>,
+    /// `--gdb PORT`: serve the GDB remote protocol on 127.0.0.1:PORT (D59).
+    pub gdb: Option<u16>,
 }
 
 /// Outcome of a user-mode run.
@@ -66,5 +69,9 @@ pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> R
         sbi: false,
     };
     let strace = opts.strace;
+    if let Some(port) = opts.gdb {
+        let engine = crate::jit::make_engine(opts.engine, &opts.jit)?;
+        return gdb::serve(p, port, engine, strace);
+    }
     thread::run_process(p, opts, env, strace)
 }

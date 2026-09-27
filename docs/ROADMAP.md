@@ -746,7 +746,7 @@ Pick items in this order, as budget allows. Each gets its own mini-report (`phas
 | virtio-blk | virtio-mmio transport and a block device backed by a file | Linux mounts an ext2 image. **Done** (`phase-10-virtio-blk.md`, D58) |
 | Return-address stack | Predict `ret` targets via a shadow stack in `CpuState` | Measurable speedup on call-heavy code |
 | Superblocks/traces | Hot-path trace formation across TB boundaries | Measurable speedup |
-| GDB stub | Remote serial protocol, interpreter-based single step | `gdb-multiarch` can break and step |
+| GDB stub | Remote serial protocol, interpreter-based single step | `gdb-multiarch` can break and step. **Done** (`phase-10-gdb-stub.md`, D59) |
 | SMP guest | Multiple harts, IPIs, per-hart TLBs | Linux boots with 2+ harts |
 
 ---

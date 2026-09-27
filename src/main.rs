@@ -145,6 +145,10 @@ enum Command {
         /// (default for dynamically linked programs: /usr/riscv64-linux-gnu).
         #[arg(long, short = 'L')]
         sysroot: Option<PathBuf>,
+        /// Wait for a debugger (GDB remote protocol) on 127.0.0.1:PORT; execution then steps
+        /// through the interpreter.
+        #[arg(long, value_name = "PORT")]
+        gdb: Option<u16>,
         #[arg(long, value_enum, default_value = "interp")]
         engine: Engine,
         /// Stop after this many guest instructions (bare mode default: 100M).
@@ -403,6 +407,7 @@ fn main() -> ExitCode {
         Command::Run {
             mode,
             sysroot,
+            gdb,
             engine,
             max_insns,
             trace,
@@ -486,6 +491,7 @@ fn main() -> ExitCode {
                         reg_stats,
                         softmmu: mem == MemArg::Softmmu,
                         sysroot,
+                        gdb,
                     };
                     run_user(&elf, args, opts, stats)
                 }
