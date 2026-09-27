@@ -289,13 +289,15 @@ Everything else stays on the fast path.
   Two performance ideas (a return-address stack and superblocks) were analysed and not built; `docs/phase-reports/phase-10-not-pursued.md` explains why.
 - **Milestone A (required):** CoreMark and Dhrystone run under both the interpreter and the JIT, with a printed speedup table.
 - **Milestone B (stretch):** Linux boots to a BusyBox shell. **Done**, with Linux 6.8.
-- **Planned usage:**
+- **Usage:**
   ```
-  bridgev run   [--engine=interp|jit|lockstep] [--stats] program.elf [args]
-  bridgev boot  --kernel Image [--initrd rootfs.cpio] [--ram 512M]   # tools/fetch-guest-images.sh gets both
+  bridgev run   [--engine=interp|jit|lockstep] [--mem=direct|softmmu] [--stats] program.elf [args]
+  bridgev boot  --kernel Image [--initrd rootfs.cpio] [--firmware fw_dynamic.bin] [--smp N] [--disk disk.img]
   bridgev disasm program.elf
-  bridgev bench coremark
+  tools/bench.py                 # the benchmark matrix (interpreter, JIT levels, QEMU, native)
+  tools/demo-milestone-a.sh      # CoreMark, interpreter vs JIT, with the speedup
   ```
+- **Interview material:** [`WHITEBOARD.md`](WHITEBOARD.md) walks through real translated blocks byte by byte (a chained loop, a return through the jump cache, the inline TLB probe).
 - **Progress reports:** one detailed report per completed phase in [`docs/phase-reports/`](phase-reports/).
 
 ---

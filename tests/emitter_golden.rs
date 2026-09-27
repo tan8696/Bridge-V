@@ -1106,3 +1106,34 @@ fn fma3_forms() {
         }
     }
 }
+
+/// Phase 11: the worked examples of CLAUDE.md §28.5, re-derived from the real emitter (not
+/// from the hand calculation), so the interview material cannot drift from the code.
+#[test]
+fn interview_examples_28_5() {
+    const B: u64 = 0x7f00_0000_0000;
+    // jne rel32 at B+0x10 to B+0x200: rel = 0x200 - (0x10 + 6) = 0x1EA.
+    let mut a = Asm::new(B + 0x10);
+    a.jcc_abs(Cond::Ne, B + 0x200);
+    assert_eq!(a.finish(), [0x0F, 0x85, 0xEA, 0x01, 0x00, 0x00]);
+    // cmp r14, rsi (guest `bne a0, a1`, a0 pinned in R14): REX.W|B, 39 /r, ModRM 11 110 110.
+    let mut a = Asm::new(B);
+    a.alu_rr(Size::B64, Alu::Cmp, Reg::R14, Reg::Rsi);
+    assert_eq!(a.finish(), [0x49, 0x39, 0xF6]);
+    // An unaligned chain slot: jmp rel32 at B+0x1040 to B+0x2000, rel = 0x2000 - 0x1045.
+    let mut a = Asm::new(B + 0x1040);
+    a.jmp_abs(B + 0x2000);
+    assert_eq!(a.finish(), [0xE9, 0xBB, 0x0F, 0x00, 0x00]);
+    // As emitted for a chainable exit (§13.3): pad so the rel32 field is 4-byte aligned. One
+    // 3-byte NOP (0F 1F 00) puts E9 at 0x1043 and the field at 0x1044; rel = 0x2000 - 0x1048.
+    let mut a = Asm::new(B + 0x1040);
+    a.align(4, 1);
+    let field = a.jmp_abs(B + 0x2000);
+    assert_eq!(field, 4);
+    let code = a.finish();
+    assert_eq!(code, [0x0F, 0x1F, 0x00, 0xE9, 0xB8, 0x0F, 0x00, 0x00]);
+    // The chain patch itself: an aligned 32-bit store of the new rel32 (here to B+0x3000).
+    let mut patched = code.clone();
+    write_rel32(&mut patched, field, B + 0x1044, B + 0x3000);
+    assert_eq!(&patched[4..], &(0x3000u32 - 0x1048).to_le_bytes());
+}

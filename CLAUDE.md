@@ -1121,7 +1121,8 @@ Each phase ends with:
   - The short form `jne rel8` = `75 cb` has range −128…+127 from the next instruction.
 - **`cmp r14, rsi`** (guest `bne a0, a1`, a0 pinned in R14, a1 allocated to RSI) = `REX.W|B = 0x49`, opcode `39` (CMP r/m64, r64), ModRM `11 110 110` = `0xF6` → **`49 39 F6`**.
 - **Chain patch:** a `jmp rel32` at 0x…1040 targeting a TB at 0x…2000 has rel = 0x2000 − 0x1045 = 0x0FBB → **`E9 BB 0F 00 00`**.
-  - The rel32 field starts at 0x1041. That is not 4-byte aligned, so in the real layout we pad 3 NOPs first, giving the E9 at 0x1043 and rel32 at 0x1044, and recompute rel = T − 0x1048.
+  - The rel32 field starts at 0x1041. That is not 4-byte aligned, so the emitter first pads with one 3-byte NOP (`0F 1F 00`). The E9 then lands at 0x1043 and the rel32 at 0x1044, so rel = 0x2000 − 0x1048 = 0x0FB8 → **`0F 1F 00 E9 B8 0F 00 00`**.
+- All four examples are checked against the real emitter in `tests/emitter_golden.rs::interview_examples_28_5` (Phase 11). Real TBs (bytes, IR, stubs, chain patches, the TLB probe) are walked through in `docs/WHITEBOARD.md`.
 - Condition nibble cheat-sheet: E=4, NE=5, L=C, GE=D, B=2, AE=3 (`jcc rel32 = 0F 80+cc`, `jcc rel8 = 70+cc`).
 
 ### 28.6 Likely follow-up questions (have answers ready)
