@@ -115,7 +115,7 @@ All raw data is in `docs/bench/2026-09-27-567255a-final/` and `docs/bench/2026-0
 - **Five builds interleaved:** f488d24 2.92–3.13, 41fbfee 3.14–3.21, 6b5a7c2 3.10–3.40, 25c9ffd 3.25–3.38, HEAD 3.00–3.29.
 - **Conclusion:** a gradual loss of a few percent per phase, likely from the SMC, WFI/interrupt and thread/signal checks added to the interpreter's store and block paths. There is no single culprit commit.
 - **Impact:** the JIT is unaffected (13,409 vs 13,498 at Phase 5). Only "vs interp" ratios change, by about 10%.
-- **Follow-up:** queued as a separate task ("Recover the interpreter slowdown from Phases 8–10"). Evidence: `bench/2026-09-27-567255a-final/interp-ab.md`, `interp-rerun.md`.
+- **Follow-up:** queued as a separate task ("Recover the interpreter slowdown from Phases 8–10"). Evidence: `bench/2026-09-27-567255a-final/interp-ab.md`, `interp-rerun.md`. **Resolved** in `f7f41aa` (the store path's SMC bookkeeping; see `docs/BENCHMARKS.md`, "Interpreter regression fix").
 
 ### 7.3 The boot "slowdown" (host, not code)
 **`tools/boot-bench.py --configs jit,interp,qemu --runs 5`:**

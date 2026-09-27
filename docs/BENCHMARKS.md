@@ -20,7 +20,7 @@ Host: Intel(R) Xeon(R) Processor @ 2.10GHz (4 vCPU, pinned to CPU 2), kernel 6.1
 | Dhrystone | 6,955 | 4.36× | 0.455 | 2.13× | 0.49 | 43.9× |
 | fpbench | 2,600 | 5.83× | 0.224 | 4.17× | 0.72 | 31.5× |
 
-- **The interpreter is about 10% slower than at Phase 7** (CoreMark 520 → 454–471 it/s). This was confirmed with a clean re-run and in same-batch A/B runs of the old and new builds ([`interp-ab.md`](bench/2026-09-27-567255a-final/interp-ab.md)). The loss came a few percent at a time over Phases 8–10. The "vs interp" ratios at this commit are therefore about 10% higher than against the Phase 7 interpreter. Phase 5's 26.5× (CoreMark) and 39.6× (Dhrystone) are the conservative figures.
+- **The interpreter was about 10% slower than at Phase 7** at this commit (CoreMark 520 → 454–471 it/s; [`interp-ab.md`](bench/2026-09-27-567255a-final/interp-ab.md)). Fixed in `f7f41aa`, see [Interpreter regression fix](#interpreter-regression-fix-2026-09-27-commit-f7f41aa). The "vs interp" ratios in this table are therefore about 10% higher than against the fixed interpreter. Phase 5's 26.5× (CoreMark) and 39.6× (Dhrystone) are the conservative figures.
 - The JIT matches its earlier measurements (CoreMark 13,498 at Phase 5, 13,789–14,144 in the Phase 7 sessions). The spread between sessions is host variance.
 
 **Linux boot to a BusyBox shell** (`python3 tools/boot-bench.py --configs jit,interp,qemu --runs 5`, same code as `567255a`; [`bench/2026-09-27-567255a-boot/`](bench/2026-09-27-567255a-boot/)):
@@ -32,6 +32,22 @@ Host: Intel(R) Xeon(R) Processor @ 2.10GHz (4 vCPU, pinned to CPU 2), kernel 6.1
 | qemu-system-riscv64 | 1.54 (1.40–1.93) | — | — |
 
 - The JIT is slower here than in the Phase 9 measurement (1.25 s). A same-batch A/B of the Phase 9 build against this one shows the same speed (median 1.57 s vs 1.54 s; [`ab.md`](bench/2026-09-27-567255a-boot/ab.md)), so the difference is the host, not the code.
+
+## Interpreter regression fix (2026-09-27, commit `f7f41aa`)
+
+`python3 tools/bench.py --suite coremark,dhrystone --configs interp`, run back to back for the fix and for the Phase 7 build (`2da741e`, same harness). Raw data and same-batch A/B runs: [`bench/2026-09-27-f7f41aa-interp/`](bench/2026-09-27-f7f41aa-interp/) ([`ab.md`](bench/2026-09-27-f7f41aa-interp/ab.md)).
+
+Host: Intel(R) Xeon(R) Processor @ 2.10GHz (4 vCPU, pinned to CPU 2), rustc 1.94.1. 5 measured runs after 1 warm-up, median (min–max). Shared cloud VM: expect noise of several percent.
+
+| build | CoreMark (iterations/s) | Dhrystone (Dhrystones/s) |
+|---|---:|---:|
+| `2da741e` (Phase 7) | 499 (483–521) | 507,247 (492,038–530,089) |
+| **`f7f41aa` (fix)** | **487** (452–507) | **501,304** (486,392–520,319) |
+| `567255a` (Phase 11 final, above) | 454 (436–470) | 472,238 |
+
+- Cause: Phase 8's SMC bookkeeping (D49) on the interpreter's store path. `DirectMem::store` looked each page up twice (once to check permissions, once for the code mark), and the larger body kept it out of line with six callee-saved register saves per store.
+- Fix: `check` returns the OR of the pages' permission bytes; code-page and lockstep write-log handling moved to a cold `store_slow`. No behaviour change.
+- The fix and `2da741e` are within noise of each other (ranges overlap; same-batch CPU-time medians differ by −1.6% to +2.2%).
 
 ## Milestone A: CoreMark and Dhrystone, user mode (2026-09-26, commit `668723f`)
 
