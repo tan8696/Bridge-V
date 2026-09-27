@@ -1,1 +1,320 @@
-//! Machine memory map, reset state, boot ROM and kernel/DTB placement. Phase 9 (P9.3).
+//! The `virt`-compatible machine and the Linux boot flow (CLAUDE.md §20, P9.1–P9.3).
+//!
+//! RAM at 0x8000_0000, the kernel `Image` at RAM + `text_offset`, the devicetree at the top of
+//! RAM and the initrd just below it. The hart starts in S-mode at the kernel entry with
+//! `a0 = 0` (hart id) and `a1 = dtb`, `satp = 0`; M-mode is the built-in SBI (D15), so
+//! synchronous exceptions except S-mode ecalls and S-level interrupts are delegated to S.
+//!
+//! The machine loop runs the engine in slices of instructions. Between slices it moves device
+//! state into `mip` (timer deadline → STIP, CLINT → MTIP/MSIP, UART → PLIC → SEIP/MEIP), serves
+//! SBI calls (S-mode ECALL stops the engine), and checks for poweroff/reset requests.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, Result, bail};
+
+use crate::cpu::state::CpuState;
+use crate::cpu::trap::prv;
+use crate::interp::{Env, Stop};
+use crate::jit::{EngineKind, JitOptions, make_engine};
+use crate::mem::direct::DirectMem;
+use crate::mem::{GuestVirt, prot};
+
+use super::clint::Clint;
+use super::fdt::{VirtConfig, virt_dtb};
+use super::plic::Plic;
+use super::sbi::{self, SbiAction, SbiState};
+use super::syscon::{Finish, Syscon};
+use super::uart16550::{Sink, Uart, UartState};
+
+pub const RAM_BASE: u64 = 0x8000_0000;
+pub const SYSCON_BASE: u64 = 0x10_0000;
+pub const CLINT_BASE: u64 = 0x200_0000;
+pub const PLIC_BASE: u64 = 0xc00_0000;
+pub const UART_BASE: u64 = 0x1000_0000;
+/// PLIC source of the UART.
+pub const UART_IRQ: usize = 10;
+
+const MIP_MSIP: u64 = 1 << 3;
+const MIP_STIP: u64 = 1 << 5;
+const MIP_MTIP: u64 = 1 << 7;
+const MIP_SEIP: u64 = 1 << 9;
+const MIP_MEIP: u64 = 1 << 11;
+
+/// `bridgev boot` options.
+pub struct BootOptions {
+    pub kernel: PathBuf,
+    pub initrd: Option<PathBuf>,
+    /// Use this DTB instead of the generated one.
+    pub dtb: Option<PathBuf>,
+    /// Write the generated DTB here.
+    pub dump_dtb: Option<PathBuf>,
+    pub ram: u64,
+    pub bootargs: String,
+    pub engine: EngineKind,
+    pub jit: JitOptions,
+    pub deterministic: bool,
+    /// Stop after this many guest instructions.
+    pub max_insns: Option<u64>,
+    /// Instructions per engine slice (device/interrupt update interval).
+    pub slice: u64,
+    pub console: Sink,
+    /// Console input (the UART's receive queue); the caller may keep feeding it.
+    pub input: Option<Arc<Mutex<UartState>>>,
+}
+
+/// How a boot ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootExit {
+    PowerOff,
+    /// The guest reported failure (SBI SRST reason, or the test finisher's code).
+    Failure(u32),
+    Reset,
+    InstructionLimit,
+}
+
+pub struct BootRun {
+    pub exit: BootExit,
+    pub icount: u64,
+    pub engine_stats: String,
+    pub sbi_calls: u64,
+}
+
+/// A handle the caller can use to feed console input while the machine runs.
+pub struct Console {
+    pub uart: Arc<Mutex<UartState>>,
+}
+
+/// Build the machine and create a console handle (for a caller that wants to type into it).
+pub fn console(sink: Sink) -> (Uart, Console) {
+    let uart = Uart::new(sink);
+    let c = Console {
+        uart: uart.state.clone(),
+    };
+    (uart, c)
+}
+
+/// Linux RISC-V `Image` header (Documentation/arch/riscv/boot-image-header.rst).
+fn image_layout(img: &[u8]) -> Result<(u64, u64)> {
+    if img.len() < 64 || &img[0x30..0x38] != b"RISCV\0\0\0" || &img[0x38..0x3c] != b"RSC\x05" {
+        bail!("not a RISC-V Linux Image (bad header magic)");
+    }
+    let text_offset = u64::from_le_bytes(img[8..16].try_into().unwrap());
+    let image_size = u64::from_le_bytes(img[16..24].try_into().unwrap());
+    Ok((text_offset, image_size.max(img.len() as u64)))
+}
+
+/// Boot a Linux kernel (or any S-mode payload with an Image header) and run until poweroff,
+/// reset or the instruction limit. `uart` is the console device from `console()`.
+pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
+    let img = std::fs::read(&opts.kernel)
+        .with_context(|| format!("reading {}", opts.kernel.display()))?;
+    let (text_offset, image_size) = image_layout(&img)?;
+    let ram_end = RAM_BASE + opts.ram;
+    let entry = RAM_BASE + text_offset;
+    let mut mem = DirectMem::new()?;
+    mem.map(GuestVirt(RAM_BASE), opts.ram, prot::RWX)?;
+    mem.write_bytes(GuestVirt(entry), &img)
+        .map_err(|f| anyhow::anyhow!("kernel does not fit in RAM: {f:?}"))?;
+
+    // DTB at the top of RAM (2 MiB aligned), the initrd right below it.
+    let dtb_addr = (ram_end - (2 << 20)) & !((2 << 20) - 1);
+    let initrd = match &opts.initrd {
+        Some(p) => {
+            let data = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
+            let start = (dtb_addr - data.len() as u64) & !0xfff;
+            if start < entry + image_size {
+                bail!(
+                    "initrd ({} bytes) overlaps the kernel: use more --ram",
+                    data.len()
+                );
+            }
+            mem.write_bytes(GuestVirt(start), &data)
+                .map_err(|f| anyhow::anyhow!("loading initrd: {f:?}"))?;
+            Some((start, start + data.len() as u64))
+        }
+        None => None,
+    };
+    let dtb = match &opts.dtb {
+        Some(p) => std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
+        None => virt_dtb(&VirtConfig {
+            ram_base: RAM_BASE,
+            ram_size: opts.ram,
+            bootargs: opts.bootargs.clone(),
+            initrd,
+        }),
+    };
+    if let Some(p) = &opts.dump_dtb {
+        std::fs::write(p, &dtb).with_context(|| format!("writing {}", p.display()))?;
+    }
+    mem.write_bytes(GuestVirt(dtb_addr), &dtb)
+        .map_err(|f| anyhow::anyhow!("loading dtb: {f:?}"))?;
+    // Loader writes are not code modification.
+    mem.smc_pages.clear();
+
+    // Devices.
+    let mtime = Arc::new(AtomicU64::new(0));
+    let clint = Clint::new(mtime.clone());
+    let clint_state = clint.state.clone();
+    let plic = Plic::new();
+    let plic_state = plic.state.clone();
+    let uart_state = uart.state.clone();
+    let syscon = Syscon::new();
+    let finish = syscon.request.clone();
+    mem.add_device(CLINT_BASE, 0x10000, Box::new(clint));
+    mem.add_device(PLIC_BASE, 0x60_0000, Box::new(plic));
+    mem.add_device(UART_BASE, 0x100, Box::new(uart));
+    mem.add_device(SYSCON_BASE, 0x1000, Box::new(syscon));
+
+    // Hart 0 in S-mode at the kernel entry (§20.2).
+    let mut cpu = CpuState::new_machine(entry);
+    cpu.prv = prv::S;
+    cpu.softmmu = 1;
+    cpu.x[10] = 0;
+    cpu.x[11] = dtb_addr;
+    cpu.csr.medeleg = 0xb3ff & !(1 << 9); // everything delegable except ecall from S
+    cpu.csr.mideleg = 0x222; // SSI, STI, SEI
+    cpu.csr.mcounteren = 0x7;
+    cpu.csr.deterministic_time = opts.deterministic;
+
+    let env = Env {
+        user_mode: false,
+        tohost: None,
+        trace: false,
+        sbi: true,
+    };
+    let mut engine = make_engine(opts.engine, &opts.jit)?;
+    let mut st = SbiState {
+        stimecmp: u64::MAX,
+        console: opts.console.clone(),
+        calls: 0,
+    };
+    let limit = opts.max_insns.unwrap_or(u64::MAX);
+    let exit = loop {
+        if cpu.icount >= limit {
+            break BootExit::InstructionLimit;
+        }
+        // Devices → mip.
+        let now = cpu.time();
+        mtime.store(now, Ordering::Relaxed);
+        let uart_irq = uart_state.lock().unwrap().irq();
+        let (meip, seip) = {
+            let mut p = plic_state.lock().unwrap();
+            p.set_level(UART_IRQ, uart_irq);
+            p.outputs()
+        };
+        let (msip, mtip) = {
+            let c = clint_state.lock().unwrap();
+            (c.msip, now >= c.mtimecmp)
+        };
+        let mut mip = cpu.csr.mip & !(MIP_MSIP | MIP_MTIP | MIP_MEIP | MIP_SEIP | MIP_STIP);
+        for (on, bit) in [
+            (msip, MIP_MSIP),
+            (mtip, MIP_MTIP),
+            (meip, MIP_MEIP),
+            (seip, MIP_SEIP),
+            (now >= st.stimecmp, MIP_STIP),
+        ] {
+            if on {
+                mip |= bit;
+            }
+        }
+        cpu.csr.mip = mip;
+
+        let left = (limit - cpu.icount).min(opts.slice);
+        match engine.run(&mut cpu, &mut mem, &env, left) {
+            Stop::Limit => {}
+            Stop::Ecall => {
+                let action = {
+                    let mut u = uart_state.lock().unwrap();
+                    sbi::call(&mut cpu, &mut mem, engine.as_mut(), &mut st, &mut u.rx)
+                };
+                cpu.pc += 4; // ECALL has no compressed form
+                cpu.icount += 1;
+                match action {
+                    SbiAction::None => {}
+                    SbiAction::Shutdown(false) => break BootExit::PowerOff,
+                    SbiAction::Shutdown(true) => break BootExit::Failure(1),
+                    SbiAction::Reset => break BootExit::Reset,
+                }
+            }
+            Stop::Diverged => bail!("lockstep divergence (see above)"),
+            other => bail!("unexpected stop in system mode: {other:?}"),
+        }
+        match finish.lock().unwrap().take() {
+            Some(Finish::Pass) => break BootExit::PowerOff,
+            Some(Finish::Fail(c)) => break BootExit::Failure(c),
+            Some(Finish::Reset) => break BootExit::Reset,
+            None => {}
+        }
+    };
+    Ok(BootRun {
+        exit,
+        icount: cpu.icount,
+        engine_stats: engine.stats() + &format!("\nsoftmmu: {} TLB fills", cpu.tlb_fills),
+        sbi_calls: st.calls,
+    })
+}
+
+/// Build an initramfs (`newc` cpio) holding BusyBox and an `/init` script, without needing
+/// root: device nodes are written straight into the archive (P9.4).
+pub fn initramfs(busybox: &[u8], init: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut ino = 1u32;
+    let mut entry = |name: &str, mode: u32, data: &[u8], rdev: (u32, u32)| {
+        let hdr = format!(
+            "070701{ino:08x}{mode:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}",
+            0,
+            0,
+            1,
+            0,
+            data.len(),
+            0,
+            0,
+            rdev.0,
+            rdev.1,
+            name.len() + 1,
+            0
+        );
+        ino += 1;
+        out.extend_from_slice(hdr.as_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.push(0);
+        while !out.len().is_multiple_of(4) {
+            out.push(0);
+        }
+        out.extend_from_slice(data);
+        while !out.len().is_multiple_of(4) {
+            out.push(0);
+        }
+    };
+    const DIR: u32 = 0o040755;
+    for d in [
+        "bin", "sbin", "dev", "proc", "sys", "tmp", "etc", "root", "usr", "usr/bin",
+    ] {
+        entry(d, DIR, &[], (0, 0));
+    }
+    entry("dev/console", 0o020600, &[], (5, 1));
+    entry("dev/null", 0o020666, &[], (1, 3));
+    entry("bin/busybox", 0o100755, busybox, (0, 0));
+    entry("bin/sh", 0o120777, b"busybox", (0, 0));
+    entry("init", 0o100755, init.as_bytes(), (0, 0));
+    entry("TRAILER!!!", 0, &[], (0, 0));
+    out
+}
+
+/// The `/init` of the Bridge-V initramfs: mount the pseudo file systems, install the BusyBox
+/// applets, print a banner and start a shell on the console.
+pub const INIT_SCRIPT: &str = "#!/bin/sh
+/bin/busybox --install -s /bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+echo
+echo \"Bridge-V: BusyBox $(busybox | head -1 | cut -d' ' -f2) on Linux $(uname -r)\"
+export HOME=/root
+command -v cttyhack >/dev/null && exec setsid cttyhack sh
+exec sh
+";

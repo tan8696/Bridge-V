@@ -55,6 +55,9 @@ pub struct Env {
     pub tohost: Option<u64>,
     /// Print every executed instruction to stderr.
     pub trace: bool,
+    /// System mode with the built-in SBI (D15): an S-mode ECALL stops the engine
+    /// (`Stop::Ecall`) so the machine can serve it.
+    pub sbi: bool,
 }
 
 /// An execution engine: the interpreter, the JIT, or the lockstep checker (CLAUDE.md §5).
@@ -88,7 +91,7 @@ pub fn deliver(exit: BlockExit, env: &Env, cpu: &mut CpuState) -> Result<(), Sto
     match exit {
         BlockExit::Continue | BlockExit::Flush => Ok(()),
         BlockExit::Ecall => {
-            if env.user_mode {
+            if env.user_mode || (env.sbi && cpu.prv == prv::S) {
                 return Err(Stop::Ecall);
             }
             let c = ecall_cause(cpu);

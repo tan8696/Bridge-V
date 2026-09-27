@@ -12,10 +12,24 @@ fn version_exits_zero() {
 }
 
 #[test]
-fn unimplemented_subcommands_exit_two() {
-    let out = run_bridgev(["boot", "--kernel", "Image"]);
-    assert_eq!(out.code, Some(2), "stderr: {}", out.stderr);
-    assert!(out.stderr.contains("not implemented yet"), "{}", out.stderr);
+fn boot_rejects_a_missing_or_bad_kernel() {
+    let out = run_bridgev(["boot", "--kernel", "/nonexistent/Image"]);
+    assert_eq!(out.code, Some(1), "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.contains("reading /nonexistent/Image"),
+        "{}",
+        out.stderr
+    );
+    // An ELF is not a Linux Image.
+    if let Some(elf) = common::guest_elf("hello-O2") {
+        let out = run_bridgev(["boot", "--kernel", elf.to_str().unwrap()]);
+        assert_eq!(out.code, Some(1));
+        assert!(
+            out.stderr.contains("not a RISC-V Linux Image"),
+            "{}",
+            out.stderr
+        );
+    }
 }
 
 #[test]

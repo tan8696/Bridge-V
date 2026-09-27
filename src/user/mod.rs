@@ -67,6 +67,7 @@ pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> R
         user_mode: true,
         tohost: None,
         trace: opts.trace,
+        sbi: false,
     };
     let limit = opts.max_insns.unwrap_or(u64::MAX);
     let stats = |engine: &dyn crate::interp::Engine, cpu: &crate::cpu::state::CpuState| {

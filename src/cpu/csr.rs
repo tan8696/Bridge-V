@@ -161,6 +161,12 @@ impl CpuState {
         self.fs() != fs::OFF
     }
 
+    /// The `time` CSR's clock (10 MHz; icount / 10 when deterministic), also used by the
+    /// system-mode timer devices.
+    pub fn time(&self) -> u64 {
+        self.time_now()
+    }
+
     fn time_now(&self) -> u64 {
         if self.csr.deterministic_time {
             return self.icount / 10;

@@ -12,6 +12,8 @@ use bridgev::isa::{decode_parts, disasm};
 use bridgev::jit::code_mem::WxMode;
 use bridgev::jit::{EngineKind, JitOptions, RegAlloc};
 use bridgev::system::bare::{self, BareOptions, BareResult};
+use bridgev::system::machine::{self, BootExit, BootOptions};
+use bridgev::system::uart16550::Sink;
 use bridgev::user::{self, RunOptions};
 
 #[derive(Parser)]
@@ -102,6 +104,9 @@ enum Wx {
     /// One mapping, toggled RW/RX with mprotect around every write.
     Mprotect,
 }
+
+/// Exit status for an unsupported option combination.
+const EXIT_NOT_IMPLEMENTED: u8 = 2;
 
 /// Parse a size with an optional K/M/G suffix (powers of 1024).
 fn parse_size(s: &str) -> Result<usize, String> {
@@ -201,11 +206,56 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Boot a RISC-V Linux kernel in system mode.
+    /// Boot a RISC-V Linux kernel in system mode (QEMU `virt`-like machine, built-in SBI).
     Boot {
         /// Kernel `Image` file.
         #[arg(long)]
         kernel: PathBuf,
+        /// Initial ramdisk (cpio archive).
+        #[arg(long)]
+        initrd: Option<PathBuf>,
+        /// Use this devicetree blob instead of the generated one.
+        #[arg(long)]
+        dtb: Option<PathBuf>,
+        /// Write the generated devicetree blob to this file.
+        #[arg(long)]
+        dump_dtb: Option<PathBuf>,
+        /// Guest RAM size (K/M/G suffix).
+        #[arg(long, default_value = "512M", value_parser = parse_size)]
+        ram: usize,
+        /// Kernel command line.
+        #[arg(long, default_value = "console=ttyS0 earlycon=sbi")]
+        append: String,
+        /// Execution engine.
+        #[arg(long, value_enum, default_value = "jit")]
+        engine: Engine,
+        /// Guest register mapping (JIT).
+        #[arg(long, value_enum, default_value = "linear")]
+        regalloc: RegAllocArg,
+        /// Never link exits or use the jump cache.
+        #[arg(long)]
+        no_chain: bool,
+        /// Make the `time` CSR and the timers follow the instruction count (reproducible).
+        #[arg(long)]
+        deterministic: bool,
+        /// Stop after this many guest instructions.
+        #[arg(long)]
+        max_insns: Option<u64>,
+        /// Instructions per slice between device/interrupt updates.
+        #[arg(long, default_value_t = 100_000)]
+        slice: u64,
+        /// Print statistics on exit.
+        #[arg(long)]
+        stats: bool,
+    },
+    /// Write an initramfs (newc cpio) with BusyBox and Bridge-V's /init script.
+    Mkinitramfs {
+        /// Statically linked riscv64 BusyBox binary.
+        #[arg(long)]
+        busybox: PathBuf,
+        /// Output file.
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Disassemble the executable segments of a RISC-V ELF.
     Disasm {
@@ -214,20 +264,41 @@ enum Command {
     },
 }
 
-/// Exit status for subcommands that are not implemented yet.
-const EXIT_NOT_IMPLEMENTED: u8 = 2;
-
-fn not_implemented(what: &str, phase: u32) -> ExitCode {
-    eprintln!("bridgev {what}: not implemented yet (Phase {phase}, see docs/ROADMAP.md)");
-    ExitCode::from(EXIT_NOT_IMPLEMENTED)
-}
-
 fn print_stats(icount: u64, start: Instant) {
     let secs = start.elapsed().as_secs_f64();
     eprintln!(
         "bridgev: {icount} guest instructions in {secs:.3} s ({:.1} MIPS)",
         icount as f64 / secs / 1e6
     );
+}
+
+fn run_boot(opts: BootOptions, stats: bool) -> Result<ExitCode> {
+    let (uart, console) = machine::console(opts.console.clone());
+    // Host stdin feeds the UART receive queue.
+    let rx = console.uart.clone();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 256];
+        let mut stdin = std::io::stdin();
+        while let Ok(n) = stdin.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            rx.lock().unwrap().rx.extend(&buf[..n]);
+        }
+    });
+    let start = Instant::now();
+    let r = machine::boot(&opts, uart)?;
+    eprintln!("\nbridgev: machine stopped: {:?}", r.exit);
+    if stats {
+        print_stats(r.icount, start);
+        eprintln!("bridgev: {} SBI calls; {}", r.sbi_calls, r.engine_stats);
+    }
+    Ok(match r.exit {
+        BootExit::PowerOff | BootExit::Reset => ExitCode::SUCCESS,
+        BootExit::Failure(_) => ExitCode::from(1),
+        BootExit::InstructionLimit => ExitCode::from(3),
+    })
 }
 
 fn run_bare(elf: &Path, opts: BareOptions, stats: bool) -> Result<ExitCode> {
@@ -392,7 +463,57 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Boot { .. } => return not_implemented("boot", 9),
+        Command::Boot {
+            kernel,
+            initrd,
+            dtb,
+            dump_dtb,
+            ram,
+            append,
+            engine,
+            regalloc,
+            no_chain,
+            deterministic,
+            max_insns,
+            slice,
+            stats,
+        } => {
+            let engine = match engine {
+                Engine::Interp => EngineKind::Interp,
+                Engine::Jit => EngineKind::Jit,
+                Engine::Lockstep => EngineKind::Lockstep,
+            };
+            let jit = JitOptions {
+                chain: !no_chain,
+                regalloc: match regalloc {
+                    RegAllocArg::None => RegAlloc::None,
+                    RegAllocArg::Pinned => RegAlloc::Pinned,
+                    RegAllocArg::Linear => RegAlloc::Linear,
+                },
+                ..JitOptions::default()
+            };
+            let opts = BootOptions {
+                kernel,
+                initrd,
+                dtb,
+                dump_dtb,
+                ram: ram as u64,
+                bootargs: append,
+                engine,
+                jit,
+                deterministic,
+                max_insns,
+                slice,
+                console: Sink::Stdout,
+                input: None,
+            };
+            run_boot(opts, stats)
+        }
+        Command::Mkinitramfs { busybox, out } => (|| -> Result<ExitCode> {
+            let bb = std::fs::read(&busybox)?;
+            std::fs::write(&out, machine::initramfs(&bb, machine::INIT_SCRIPT))?;
+            Ok(ExitCode::SUCCESS)
+        })(),
         Command::Disasm { elf } => disasm_file(&elf),
     };
     result.unwrap_or_else(|e| {

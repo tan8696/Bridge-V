@@ -108,6 +108,7 @@ pub fn run(elf_bytes: &[u8], opts: &BareOptions) -> Result<BareRun> {
         user_mode: false,
         tohost: Some(tohost),
         trace: opts.trace,
+        sbi: false,
     };
     let mut engine = make_engine(opts.engine, &opts.jit)?;
     if opts.reg_stats && !engine.enable_reg_stats() {
