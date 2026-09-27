@@ -119,6 +119,18 @@ To see what the JIT actually emits, [`docs/WHITEBOARD.md`](docs/WHITEBOARD.md) w
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Measured results from the benchmark harness, with method and raw data. |
 | [`docs/phase-reports/`](docs/phase-reports/) | A detailed report for every phase (0–11). |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | The phase-by-phase build plan with acceptance criteria. |
-| [`CLAUDE.md`](CLAUDE.md) | The full engineering specification and design decision log (D1–D60). |
+| [`CLAUDE.md`](CLAUDE.md) | The full engineering specification and design decision log (D1–D61). |
 
 **Status:** all phases (0–11) are complete: Milestone A (CoreMark/Dhrystone speedup report), Milestone B (Linux boot) and 8 of the 10 Phase 10 stretch goals. Not built: parallel execution of guest threads and harts (they run one at a time), a return-address stack and superblocks. See [`docs/phase-reports/phase-10-not-pursued.md`](docs/phase-reports/phase-10-not-pursued.md).
+
+## License
+
+Bridge-V is licensed under either of:
+- the Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE)), or
+- the MIT license ([`LICENSE-MIT`](LICENSE-MIT)),
+
+at your option.
+
+The git submodules in `third_party/` keep their own licenses: riscv-tests, CoreMark and Berkeley SoftFloat 3e. So do the guest images that `tools/fetch-guest-images.sh` downloads (the Ubuntu Linux kernel and busybox-static, GPL).
+
+Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in the work, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.

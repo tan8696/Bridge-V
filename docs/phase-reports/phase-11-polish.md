@@ -115,13 +115,17 @@ All raw data is in `docs/bench/2026-09-27-567255a-final/` and `docs/bench/2026-0
 - **Five builds interleaved:** f488d24 2.92–3.13, 41fbfee 3.14–3.21, 6b5a7c2 3.10–3.40, 25c9ffd 3.25–3.38, HEAD 3.00–3.29.
 - **Conclusion:** a gradual loss of a few percent per phase, likely from the SMC, WFI/interrupt and thread/signal checks added to the interpreter's store and block paths. There is no single culprit commit.
 - **Impact:** the JIT is unaffected (13,409 vs 13,498 at Phase 5). Only "vs interp" ratios change, by about 10%.
-- **Follow-up, done** (the commit after this report):
-  - **Cause:** two Phase 8 checks. `exec_block` tested `mem.smc_pages` after every instruction, and `DirectMem::store` repeated its page lookups to find the CODE bit.
-  - **Fix:** stores (and softmmu loads) report `Flow::Smc`, the store path reads CODE from its permission lookup, and `Interp::run` also drains on entry (D61).
-  - **Result:** back-to-back harness runs put the fixed interpreter at Phase 7 speed: Dhrystone 483,244 vs 496,761/s, CoreMark 503 vs 473 it/s, fpbench 120 vs 123, all within noise. The build before the fix measured 429,099 Dhrystones/s against 475,051 in an earlier batch.
-  - **The "−10%" above was partly the host.** The same Phase 7 binary scored 465–473 CoreMark it/s here against 520 in its own session. The code regression was about 10% on Dhrystone and 3–5% on CoreMark.
+- **Follow-up, done** (after this report, D61):
+  - **Cause:** two Phase 8 checks:
+    - `exec_block` tested `mem.smc_pages` after every instruction;
+    - `DirectMem::store` repeated its page lookups to find the CODE bit, and its larger body kept it out of line.
+  - **Fix:** two complementary changes, made in parallel sessions and merged:
+    - `3869c44`: stores (and softmmu loads) report `Flow::Smc`, and `Interp::run` also drains on entry;
+    - `f7f41aa`: `check` returns the permission bits, and a cold `store_slow` handles code pages and the lockstep write log.
+  - **Result:** back-to-back harness runs put the merged interpreter at or slightly above Phase 7 speed: CoreMark 502 vs 485 it/s, Dhrystone 517,701 vs 507,877/s, fpbench 127 vs 124. In interleaved A/B runs, each change alone left part of the loss.
+  - **The "−10%" above was partly the host.** The Phase 7 binary scored 465–499 CoreMark it/s in these sessions, against 520 in its own. The code regression was about 10% on Dhrystone and 3–5% on CoreMark.
   - **Latent bug fixed at the same time:** after code was written outside the engine, the old per-instruction check let the first stale instruction run. New regression test: `interp::tests::code_written_between_runs_is_redecoded`.
-  - **Evidence:** `bench/2026-09-27-interp-fix/README.md`, `bench/2026-09-27-567255a-final/interp-ab.md`, `interp-rerun.md`.
+  - **Evidence:** `bench/2026-09-27-interp-fix/README.md`, `bench/2026-09-27-f7f41aa-interp/`, `bench/2026-09-27-567255a-final/interp-ab.md`, `interp-rerun.md`.
 - **Correction to the "gradual loss" conclusion above:** the per-phase timings were within noise of each other after Phase 8. The two Phase 8 checks explain the regression.
 
 ### 7.3 The boot "slowdown" (host, not code)
@@ -172,7 +176,7 @@ target/release/bridgev run --engine jit --dump-x86 /tmp/d --dump-ir /tmp/d guest
 ## 12. Next steps
 The roadmap is complete. Candidates, in order of value:
 1. Parallel guest execution: threads and harts. This needs a shared, synchronized translation cache and `DirectMem`, plus atomic AMOs (D55's list).
-2. Settle the open owner questions in `docs/ROADMAP.md` §18 (license first).
+2. The one remaining owner question in `docs/ROADMAP.md` §18: whether a scheduled long fuzz job (about 1 h) fits the CI budget.
 
 ## 13. Lessons learned
 - **An oracle for every layer paid for itself.** Every layer had an independent reference:
@@ -188,3 +192,9 @@ The roadmap is complete. Candidates, in order of value:
 - **Lockstep needed more than register comparison.** Device reads-modify-writes ran twice until MMIO was recorded and replayed (D52), and time had to be made deterministic (D29). Without both, a whole-system lockstep boot would have been impossible.
 - **Precise faults do not need hot-path code.** Recording per-site state maps at translation time and resolving them in the dispatcher (D37) kept direct-mode loads and stores at one instruction each, and the same maps later made softmmu page faults precise.
 - **Measure, then explain.** Two surprising numbers in this phase had opposite explanations: a real regression in one case, host drift in the other. Only same-batch A/B runs told them apart. Numbers from different sessions on a shared VM are not comparable to better than about 10–15%.
+
+## 14. Finalisation (after Phase 11)
+- **Interpreter regression fixed:** two complementary fixes were merged (`3869c44` + `f7f41aa`, D61; §7.2). The merged interpreter is at Phase 7 speed or slightly above.
+- **License:** MIT OR Apache-2.0 (D62; `LICENSE-MIT`, `LICENSE-APACHE`, `Cargo.toml`, README "License").
+- **Owner questions** (`docs/ROADMAP.md` §18): the license, Milestone B and image caching are answered. The CI budget for a scheduled long fuzz job is still open.
+- **Branches:** the parallel session's branch `claude/compassionate-babbage-ul3prl-aqvgt9` is merged here and kept, as the owner asked.

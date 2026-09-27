@@ -1,0 +1,210 @@
+{
+ "host": {
+  "date": "2026-09-27T12:05:25+00:00",
+  "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "nproc": 4,
+  "pinned_cpu": 2,
+  "kernel": "6.18.44-fc-v37",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "qemu": "qemu-riscv64 version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+  "commit": "f7f41aa",
+  "dirty": false,
+  "buildinfo": "# Bridge-V benchmark builds (tools/build-bench.sh), 2026-09-27T11:41:32Z\nriscv cc: riscv64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nhost cc:  gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\ncoremark: 1f483d5b8316753a742cbf5590caf5bd0a4e4777 make PORT_DIR=linux, PORT_CFLAGS=-O2, XCFLAGS='<arch> -static -DPERFORMANCE_RUN=1' (rv64: -march=rv64gc -mabi=lp64d)\ndhrystone: riscv-tests bcffa2b3188b040c611f90dc0b6e422f54775a09 benchmarks/dhrystone + guest/bench/dhrystone; flags: -O2 -static -std=gnu89 -w -I/home/user/Bridge-V/guest/bench/dhrystone -I/home/user/Bridge-V/third_party/riscv-tests/benchmarks/dhrystone, main: -Ddebug_printf=bridgev_dhry_printf, dhrystone.c: -DPASS2 (rv64: + -march=rv64gc -mabi=lp64d)\nfpbench: guest/bench/fp/fpbench.c; flags: -O2 -static -lm (rv64: + -march=rv64gc -mabi=lp64d)\ntlbbench: guest/bench/tlb/tlbbench.c + riscv-tests benchmarks/common; flags: -march=rv64gc -mabi=lp64d -DPREALLOCATE=1 -mcmodel=medany -static -std=gnu99 -O2 -fno-common -fno-builtin-printf   -fno-tree-loop-distribute-patterns -no-pie -fno-pic -Wl,--build-id=none -nostdlib -nostartfiles\n99bfd194b22b50dd901afbb7de5ce627a5f31c18b31c93d10911569bd53fe646  coremark-rv64.elf\na620cc327885b03d7192f1c8903230108142ae52fbd5c3bfb4ce785a2c3337b2  coremark-native\n270f2ef3dbed158a22f5af94af575e9bff69e4df1206b49c6251c2a02d3c3340  dhrystone-rv64.elf\n814582f7206a91542ffeb1f3a366954da5493bdcdf0a7a990c4aa9b4ef160374  dhrystone-native\nea586d23e8b487888127260f19559a591843c6d2d7e55c8a035079884b81ef44  fpbench-rv64.elf\nc8bf0c50fb17a7bcb8273e309c976fb2653f37bbda3109be38ba0ccdc6b4be31  fpbench-native\n326543d0cf62b0c153bded42b4c76033770475e77e16990ceaf4bb93e2940c7e  tlbbench.riscv\n54954c19b412007f24ce7e6072dcf9ad460b0cafe570bbbe0812c1d3ce86e6d4  tlbuser-rv64.elf\n"
+ },
+ "params": {
+  "runs": 5,
+  "warmup": 1,
+  "target": 13.0,
+  "quick": false
+ },
+ "results": {
+  "coremark": {
+   "interp": {
+    "median": 486.638537,
+    "min": 451.533387,
+    "max": 507.207427,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 6228,
+    "mips": 174.6,
+    "guest_insns": 2234897691,
+    "secs": 12.802,
+    "insns_per_unit": 358846.771194605
+   }
+  },
+  "dhrystone": {
+   "interp": {
+    "median": 501304.0,
+    "min": 486392.0,
+    "max": 520319.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 3467237,
+    "mips": 168.4,
+    "guest_insns": 1165218671,
+    "secs": 6.92,
+    "insns_per_unit": 336.0654812463065
+   }
+  }
+ },
+ "raw": {
+  "coremark": {
+   "interp": [
+    {
+     "n": 6228,
+     "wall": 13.801140414999963,
+     "score": 451.533387,
+     "secs": 13.793,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2234897913,
+      "secs": 13.797,
+      "mips": 162.0,
+      "blocks_decoded": 1612
+     }
+    },
+    {
+     "n": 6228,
+     "wall": 12.805564800999946,
+     "score": 486.638537,
+     "secs": 12.798,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2234897654,
+      "secs": 12.802,
+      "mips": 174.6,
+      "blocks_decoded": 1603
+     }
+    },
+    {
+     "n": 6228,
+     "wall": 13.33023956199986,
+     "score": 467.497373,
+     "secs": 13.322,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2234897905,
+      "secs": 13.327,
+      "mips": 167.7,
+      "blocks_decoded": 1607
+     }
+    },
+    {
+     "n": 6228,
+     "wall": 12.286912700999892,
+     "score": 507.207427,
+     "secs": 12.279,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2234897691,
+      "secs": 12.283,
+      "mips": 181.9,
+      "blocks_decoded": 1610
+     }
+    },
+    {
+     "n": 6228,
+     "wall": 12.690611747000048,
+     "score": 491.089733,
+     "secs": 12.682,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2234897500,
+      "secs": 12.687,
+      "mips": 176.2,
+      "blocks_decoded": 1603
+     }
+    }
+   ]
+  },
+  "dhrystone": {
+   "interp": [
+    {
+     "n": 3467237,
+     "wall": 7.139076355000043,
+     "score": 486392.0,
+     "secs": 7.128482787545848,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1165218671,
+      "secs": 7.134,
+      "mips": 163.3,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3467237,
+     "wall": 6.670312211999999,
+     "score": 520319.0,
+     "secs": 6.663675552881982,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1165218671,
+      "secs": 6.668,
+      "mips": 174.8,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3467237,
+     "wall": 6.702899032999994,
+     "score": 517885.0,
+     "secs": 6.694994062388368,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1165218671,
+      "secs": 6.7,
+      "mips": 173.9,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3467237,
+     "wall": 6.923317558999997,
+     "score": 501304.0,
+     "secs": 6.916435935081308,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1165218671,
+      "secs": 6.92,
+      "mips": 168.4,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3467237,
+     "wall": 7.113156131000096,
+     "score": 488032.0,
+     "secs": 7.104527981771687,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1165218671,
+      "secs": 7.109,
+      "mips": 163.9,
+      "blocks_decoded": 1090
+     }
+    }
+   ]
+  }
+ }
+}

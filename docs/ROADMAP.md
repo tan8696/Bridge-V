@@ -765,7 +765,7 @@ Pick items in this order, as budget allows. Each gets its own mini-report (`phas
 
 These are decisions only you should make. Until you answer, work proceeds without them.
 
-1. **License:** MIT, Apache-2.0, dual MIT/Apache-2.0 (the Rust-ecosystem convention), or GPL? This affects whether we may borrow ideas or code from GPL projects like QEMU; today the rule is "reference only, never copy".
-2. **Milestone B commitment:** attempt the Linux boot (Phase 9), or stop at Milestone A plus Phase 7 (the SV39 + TLB demo via riscv-tests)?
-3. **Kernel image caching:** is creating GitHub Releases on this repository OK for storing the built kernel and initramfs?
-4. **CI budget:** is a scheduled long fuzz job (≈ 1 h) on GitHub Actions acceptable?
+1. **License:** *answered (2026-09-27): MIT OR Apache-2.0* (`LICENSE-MIT`, `LICENSE-APACHE`, `license` in `Cargo.toml`). The rule for QEMU and other GPL projects stays "reference only, never copy".
+2. **Milestone B commitment:** *answered by doing it:* Phase 9 boots Linux 6.8 to a BusyBox shell.
+3. **Kernel image caching:** *not needed:* the images are pinned Ubuntu packages fetched by `tools/fetch-guest-images.sh`, verified by SHA-256 (D50), so no GitHub Releases were created.
+4. **CI budget:** is a scheduled long fuzz job (≈ 1 h) on GitHub Actions acceptable? *Still open.* CI runs the fuzzers with a fixed seed on every push (the integer block fuzzer: 2,000 blocks per configuration), and the 10⁶-case runs were done by hand (Phase 4, 6, 8 reports).

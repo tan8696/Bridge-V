@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.94"
 description = "Dynamic binary translator: RISC-V RV64GC guest code JIT-compiled to native x86-64"
 repository = "https://github.com/tan8696/Bridge-V"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [lib]
