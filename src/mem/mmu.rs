@@ -67,6 +67,8 @@ fn access_fault(acc: Access, va: u64) -> Exception {
 pub struct Walk {
     pub ppage: u64,
     pub perms: u8,
+    /// Offset mask of the leaf page: 0xfff, or larger for a superpage.
+    pub page_mask: u64,
 }
 
 /// Translate `va` for access `acc` at MMU index `mmu` (priv spec §12.3.2, Sv39).
@@ -82,6 +84,7 @@ pub fn walk(
         return Ok(Walk {
             ppage: va & !(PAGE_SIZE - 1),
             perms: prot::RWX,
+            page_mask: PAGE_SIZE - 1,
         });
     }
     let pf = || page_fault(acc, va);
@@ -158,6 +161,7 @@ pub fn walk(
     Ok(Walk {
         ppage: (ppn | ((va >> 12) & low)) << 12,
         perms,
+        page_mask: low << 12 | (PAGE_SIZE - 1),
     })
 }
 
@@ -183,6 +187,11 @@ pub fn fill(
 ) -> Result<u64, Exception> {
     let w = walk(cpu, mem, va, acc, mmu)?;
     cpu.tlb_fills += 1;
+    if w.page_mask != PAGE_SIZE - 1 {
+        let s = &mut cpu.tlb_super;
+        s[0] = s[0].min(va & !w.page_mask);
+        s[1] = s[1].max(va | w.page_mask);
+    }
     let (phys, mmio) = phys_perms(mem, w.ppage);
     let need = match acc {
         Access::Load => prot::R,
@@ -703,5 +712,52 @@ mod tests {
         let e = store(&mut cpu, &mut mem, 0xaffe, 4, u64::MAX).unwrap_err();
         assert_eq!((e.cause, e.tval), (cause::STORE_PAGE, 0xb000));
         assert_eq!(mem.load(RAM + 0xa_0ffc, 4).unwrap(), 0x4433_2211);
+    }
+
+    /// SFENCE.VMA with an address drops only that page (in every MMU index) and its jump-cache
+    /// entries; once a superpage is cached, an address inside its range flushes everything
+    /// (D51).
+    #[test]
+    fn single_page_flush() {
+        let (mut cpu, mut mem) = setup();
+        map4k(&mut mem, 0x1000, RAM + 0x6_0000, R | W | X | AD);
+        map4k(&mut mem, 0x2000, RAM + 0x7_0000, R | W | X | AD);
+        load(&mut cpu, &mut mem, 0x1008, 8).unwrap();
+        load(&mut cpu, &mut mem, 0x2008, 8).unwrap();
+        cpu.jmp_cache[crate::cpu::state::jc_index(0x1010)] = crate::cpu::state::JcEntry {
+            pc: crate::cpu::state::jc_tagged(0x1010, 0x81),
+            host: 1,
+        };
+        cpu.jmp_cache[crate::cpu::state::jc_index(0x2010)] = crate::cpu::state::JcEntry {
+            pc: 0x2010,
+            host: 2,
+        };
+        let (mmu_gen, jc_gen) = (cpu.mmu_gen, cpu.jc_gen);
+        let slot = |cpu: &CpuState, va: u64| cpu.tlb[idx::S as usize][tlb::index(va)];
+        tlb::flush_page(&mut cpu, 0x1abc);
+        assert_eq!(slot(&cpu, 0x1000), TlbEntry::EMPTY);
+        assert!(
+            tlb::hit(slot(&cpu, 0x2000).addr_read, 0x2000),
+            "other pages stay"
+        );
+        let jc = |cpu: &CpuState, pc: u64| cpu.jmp_cache[crate::cpu::state::jc_index(pc)].host;
+        assert_eq!((jc(&cpu, 0x1010), jc(&cpu, 0x2010)), (0, 2));
+        assert_eq!(
+            (cpu.mmu_gen, cpu.jc_gen),
+            (mmu_gen + 1, jc_gen),
+            "no full jump-cache reset"
+        );
+        // A cached megapage covering 0x4020_0000..0x4040_0000.
+        put(&mut mem, ROOT + vpn(0x4020_0000, 2) * 8, table(L1));
+        put(&mut mem, L1 + vpn(0x4020_0000, 1) * 8, leaf(RAM, R | AD));
+        load(&mut cpu, &mut mem, 0x4020_0123, 1).unwrap();
+        assert_eq!(cpu.tlb_super, [0x4020_0000, 0x403f_ffff]);
+        tlb::flush_page(&mut cpu, 0x2000); // outside the megapage: still per page
+        assert_eq!(slot(&cpu, 0x2000), TlbEntry::EMPTY);
+        assert!(tlb::hit(slot(&cpu, 0x4020_0000).addr_read, 0x4020_0000));
+        tlb::flush_page(&mut cpu, 0x4020_0000); // inside: everything goes
+        assert_eq!(slot(&cpu, 0x4020_0000), TlbEntry::EMPTY);
+        assert_eq!(cpu.jc_gen, jc_gen + 1);
+        assert_eq!(cpu.tlb_super, [u64::MAX, 0]);
     }
 }

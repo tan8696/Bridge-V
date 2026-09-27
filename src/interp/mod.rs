@@ -596,13 +596,17 @@ pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Fl
                 return illegal;
             }
         }
-        Inst::SfenceVma { .. } => {
+        Inst::SfenceVma { rs1, .. } => {
             let tvm = cpu.csr.mstatus & mstatus::TVM != 0;
             if cpu.prv == prv::U || (cpu.prv == prv::S && tvm) {
                 return illegal;
             }
-            // Flush everything (per-address/ASID flushes are a later optimization, §14.4).
-            tlb::flush_all(cpu);
+            // One page when rs1 names an address, else everything; ASIDs are ignored (D51).
+            if rs1 != 0 {
+                tlb::flush_page(cpu, cpu.x[rs1 as usize]);
+            } else {
+                tlb::flush_all(cpu);
+            }
         }
         Inst::Csr {
             op,

@@ -67,6 +67,15 @@ pub fn jc_index(pc: u64) -> usize {
     (pc >> 1) as usize & (JC_SIZE - 1)
 }
 
+/// The value a jump-cache entry holds for guest `pc` in TBs of `flags` (D51): the pc with the
+/// flags in bits 56–63, so entries of other privilege levels / MMU indices never match and a
+/// flags change needs no reset. Direct-mode flags are 0 (the plain pc). Never equal to
+/// `JcEntry::EMPTY.pc`: pcs are even.
+#[inline(always)]
+pub fn jc_tagged(pc: u64, flags: u8) -> u64 {
+    pc ^ (flags as u64) << 56
+}
+
 /// Architectural state of one hart. The first fields have fixed offsets that generated code
 /// relies on; `csr` (Rust-only) must stay last.
 #[repr(C, align(64))]
@@ -121,7 +130,14 @@ pub struct CpuState {
     pub mmu_gen: u64,
     /// Softmmu statistics: TLB fills (misses that walked and filled an entry).
     pub tlb_fills: u64,
-    _pad2: [u64; 13],
+    /// Bumped by full TLB flushes only; a single-page SFENCE.VMA clears that page's
+    /// jump-cache entries instead (D51). The JIT's jump cache is validated against it.
+    pub jc_gen: u64,
+    /// Virtual range [lo, hi] covering every superpage cached since the last full flush: its
+    /// 4 KiB pieces may sit in many TLB slots, so a single-page SFENCE.VMA inside it must flush
+    /// everything (empty: lo > hi).
+    pub tlb_super: [u64; 2],
+    _pad2: [u64; 10],
     /// Inline JALR lookup table (§13.4).
     pub jmp_cache: [JcEntry; JC_SIZE],
     /// Register-allocator spill slots for values that are not guest registers (§10).
@@ -199,7 +215,9 @@ impl CpuState {
             prof_jalr: 0,
             mmu_gen: 0,
             tlb_fills: 0,
-            _pad2: [0; 13],
+            jc_gen: 0,
+            tlb_super: [u64::MAX, 0],
+            _pad2: [0; 10],
             jmp_cache: [JcEntry::EMPTY; JC_SIZE],
             spill: [0; SPILL_SLOTS],
             fault_regs: [0; 16],
@@ -221,6 +239,19 @@ impl CpuState {
     /// Empty the jump cache.
     pub fn clear_jump_cache(&mut self) {
         self.jmp_cache.fill(JcEntry::EMPTY);
+    }
+
+    /// Drop the jump-cache entries of the virtual page of `va`, whatever their flags tag (D51):
+    /// a page's pcs occupy one contiguous half of the table.
+    pub fn clear_jump_cache_page(&mut self, va: u64) {
+        const PAGE_BITS: u64 = (1 << 44) - 1; // bits 12..55: untouched by the tag
+        let page = (va >> 12) & PAGE_BITS;
+        let start = jc_index(va & !0xfff);
+        for e in &mut self.jmp_cache[start..start + 2048] {
+            if (e.pc >> 12) & PAGE_BITS == page {
+                *e = JcEntry::EMPTY;
+            }
+        }
     }
 
     /// Write integer register `r`, discarding writes to x0.

@@ -56,3 +56,24 @@ impl Mmio for Syscon {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finisher_codes() {
+        let mut s = Syscon::new();
+        s.write(0, 4, 0x1234); // not a command
+        assert_eq!(*s.request.lock().unwrap(), None);
+        s.write(4, 4, 0x5555); // other offsets are ignored
+        assert_eq!(*s.request.lock().unwrap(), None);
+        s.write(0, 4, 0x5555);
+        assert_eq!(*s.request.lock().unwrap(), Some(Finish::Pass));
+        s.write(0, 4, 7 << 16 | 0x3333);
+        assert_eq!(*s.request.lock().unwrap(), Some(Finish::Fail(7)));
+        s.write(0, 4, 0x7777);
+        assert_eq!(*s.request.lock().unwrap(), Some(Finish::Reset));
+        assert_eq!(s.read(0, 4), 0);
+    }
+}

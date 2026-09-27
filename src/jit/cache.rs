@@ -83,9 +83,6 @@ pub struct TranslationBlock {
     /// IR back end: every memory access with its state map (§15); empty for the naive one.
     pub fault_sites: Vec<crate::backend::x86::lower_ir::FaultSite>,
     pub key: TbKey,
-    /// May the dispatcher chain its direct exits (false for a softmmu TB ending in a CSR
-    /// instruction, which may change the MMU flags its successor needs, D48)?
-    pub chainable: bool,
 }
 
 impl TranslationBlock {
@@ -204,7 +201,6 @@ mod tests {
             valid: true,
             fault_sites: Vec::new(),
             key: TbKey::direct(pc, false),
-            chainable: true,
         }
     }
 

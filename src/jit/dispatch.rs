@@ -21,7 +21,7 @@ use crate::regalloc::linear_scan::{DLoc, OutOfSlots};
 use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::cpu::state::{CpuState, JcEntry, exit, jc_index};
+use crate::cpu::state::{CpuState, JcEntry, exit, jc_index, jc_tagged};
 use crate::cpu::trap::Exception;
 use crate::interp::{
     Block, BlockExit, Engine, Env, Stop, build_block_max, build_block_soft, deliver,
@@ -168,8 +168,9 @@ pub struct Jit {
     last_exit: Option<(u32, u8, u64)>,
     /// Guest register → pinned host register (empty with `RegAlloc::None`).
     pinned: [Option<Reg>; 32],
-    /// Softmmu: (TB flags, `CpuState::mmu_gen`) the jump-cache contents were filled under.
-    jc_ctx: (u8, u64),
+    /// Softmmu: `CpuState::jc_gen` the jump-cache contents were filled under (entries carry
+    /// their flags, D51).
+    jc_gen: u64,
     /// Code page (physical with softmmu) → TBs translated from it (SMC, D49).
     page_tbs: FxHashMap<u64, Vec<u32>>,
     /// Pages of new TBs still to be marked as code pages in `DirectMem`/the TLB.
@@ -182,7 +183,7 @@ pub const FLAG_SOFT: u8 = 0x80;
 /// changes without a flush, so chaining across pages is safe.
 pub const FLAG_FLAT: u8 = 0x40;
 
-fn soft_flags(cpu: &CpuState) -> u8 {
+pub(crate) fn soft_flags(cpu: &CpuState) -> u8 {
     let flat = if cpu.softmmu == 2 { FLAG_FLAT } else { 0 };
     FLAG_SOFT | flat | tlb::fetch_idx(cpu) | tlb::data_idx(cpu) << 2
 }
@@ -259,7 +260,7 @@ impl Jit {
             jc_version: 0,
             last_exit: None,
             pinned,
-            jc_ctx: (0, 0),
+            jc_gen: 0,
             page_tbs: FxHashMap::default(),
             new_code: Vec::new(),
         })
@@ -394,11 +395,6 @@ impl Jit {
                 }
             })
         });
-        // A CSR write may change the MMU flags the successor must be looked up with (D48).
-        let chainable = soft.is_none()
-            || !insns
-                .last()
-                .is_some_and(|d| matches!(d.inst, Inst::Csr { .. }));
         let id = self.cache.insert(TranslationBlock {
             guest_pc: pc,
             insns,
@@ -412,7 +408,6 @@ impl Jit {
             valid: true,
             fault_sites: out.fault_sites,
             key,
-            chainable,
         });
         // SMC tracking (D49): a TB lies in one page, except (direct mode) a last instruction
         // that straddles into the next one.
@@ -448,6 +443,7 @@ impl Jit {
                 inject_bug: self.opts.inject_bug,
                 profile: self.opts.profile,
                 softmmu: soft.is_some(),
+                jc_tag: jc_tagged(0, key.flags),
             };
             let o = lower::translate(insns, fetch_fault, pc, origin, id, &self.tr, lopts);
             return Ok(Translated {
@@ -480,6 +476,8 @@ impl Jit {
             pinned: self.pinned,
             inject_bug: self.opts.inject_bug,
             softmmu: soft,
+            jc_cross_page: self.opts.chain && key.flags & (FLAG_SOFT | FLAG_FLAT) == FLAG_SOFT,
+            jc_tag: jc_tagged(0, key.flags),
         };
         let o = lower_ir::translate(&ir, origin, id, &self.tr, iopts)?;
         Ok(Translated {
@@ -509,11 +507,11 @@ impl Jit {
             self.mark_new_code(cpu, mem);
             return Next::Tb(id);
         }
-        // The jump cache maps virtual pcs to TBs of one flags value and one translation
-        // regime: start over when either changes (D48).
-        let flags = soft_flags(cpu);
-        if self.jc_ctx != (flags, cpu.mmu_gen) {
-            self.jc_ctx = (flags, cpu.mmu_gen);
+        // The jump cache maps virtual pcs (tagged with the TB flags) to TBs of one translation
+        // regime: start over after a full TB flush (D48, D51). Single-page flushes drop their
+        // own entries.
+        if self.jc_gen != cpu.jc_gen {
+            self.jc_gen = cpu.jc_gen;
             self.jc_version += 1;
         }
         let pc = cpu.pc;
@@ -594,10 +592,7 @@ impl Jit {
         let (f, t) = (self.cache.get(from), self.cache.get(id));
         // System-mode translations can change without invalidating TBs: stay within a page.
         let paged = f.key.flags & (FLAG_SOFT | FLAG_FLAT) == FLAG_SOFT;
-        if !f.chainable
-            || f.key.flags != t.key.flags
-            || (paged && f.guest_pc >> 12 != t.guest_pc >> 12)
-        {
+        if f.key.flags != t.key.flags || (paged && f.guest_pc >> 12 != t.guest_pc >> 12) {
             return;
         }
         if chain::link(&mut self.cache, &mut self.cm, from, slot, id) {
@@ -667,9 +662,9 @@ impl Jit {
         budget: i64,
     ) -> BlockExit {
         self.mark_new_code(cpu, mem);
-        let (host, guest_pc) = {
+        let (host, guest_pc, flags) = {
             let tb = self.cache.get(id);
-            (tb.host, tb.guest_pc)
+            (tb.host, tb.guest_pc, tb.key.flags)
         };
         // The jump cache holds host addresses: drop it if it belongs to another Jit or to code
         // that has since been flushed or invalidated.
@@ -680,8 +675,9 @@ impl Jit {
         }
         if self.opts.chain {
             let e = &mut cpu.jmp_cache[jc_index(guest_pc)];
-            if e.pc != guest_pc || e.host != host {
-                *e = JcEntry { pc: guest_pc, host };
+            let pc = jc_tagged(guest_pc, flags);
+            if e.pc != pc || e.host != host {
+                *e = JcEntry { pc, host };
                 self.stats.jc_fills += 1;
             }
         }

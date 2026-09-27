@@ -72,3 +72,29 @@ impl Mmio for Clint {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registers_and_partial_writes() {
+        let mtime = Arc::new(AtomicU64::new(0x1122_3344_5566_7788));
+        let mut c = Clint::new(mtime);
+        assert_eq!(c.read(0x4000, 8), u64::MAX, "mtimecmp resets disarmed");
+        // RV32-style split write of mtimecmp: low word, then high word.
+        c.write(0x4000, 4, 0xdead_beef);
+        c.write(0x4004, 4, 0x0000_0001);
+        assert_eq!(c.read(0x4000, 8), 0x1_dead_beef);
+        assert_eq!(c.read(0x4004, 4), 1);
+        assert_eq!(c.read(0xbff8, 8), 0x1122_3344_5566_7788);
+        assert_eq!(c.read(0xbffc, 4), 0x1122_3344);
+        c.write(0xbff8, 8, 0); // mtime is not writable through the CLINT
+        assert_eq!(c.read(0xbff8, 8), 0x1122_3344_5566_7788);
+        c.write(0, 4, 1);
+        assert!(c.state.lock().unwrap().msip);
+        assert_eq!(c.read(0, 4), 1);
+        c.write(0, 4, 2); // only bit 0 is implemented
+        assert!(!c.state.lock().unwrap().msip);
+    }
+}

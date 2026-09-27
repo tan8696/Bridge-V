@@ -114,6 +114,31 @@ pub fn flush_all(cpu: &mut CpuState) {
     for t in cpu.tlb.iter_mut() {
         t.fill(TlbEntry::EMPTY);
     }
+    cpu.tlb_super = [u64::MAX, 0];
+    cpu.mmu_gen = cpu.mmu_gen.wrapping_add(1);
+    cpu.jc_gen = cpu.jc_gen.wrapping_add(1);
+}
+
+/// SFENCE.VMA with an address (priv spec §12.2.1; ASIDs are ignored): drop the entries of the
+/// page of `va` in every MMU index and its jump-cache entries (D51). Everything is flushed
+/// instead if `va` lies in a superpage that may be cached. `mmu_gen` still moves, so the
+/// interpreter's decoded blocks are revalidated.
+pub fn flush_page(cpu: &mut CpuState, va: u64) {
+    let [lo, hi] = cpu.tlb_super;
+    if (lo..=hi).contains(&va) {
+        return flush_all(cpu);
+    }
+    let i = index(va);
+    for t in cpu.tlb.iter_mut() {
+        let e = &mut t[i];
+        if [e.addr_read, e.addr_write, e.addr_code]
+            .iter()
+            .any(|&tag| tag != INVALID && hit(tag, va))
+        {
+            *e = TlbEntry::EMPTY;
+        }
+    }
+    cpu.clear_jump_cache_page(va);
     cpu.mmu_gen = cpu.mmu_gen.wrapping_add(1);
 }
 

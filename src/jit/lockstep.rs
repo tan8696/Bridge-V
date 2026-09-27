@@ -5,8 +5,10 @@
 //! a memory write log, record the resulting state and the new value of every written address,
 //! undo the writes and restore the CPU, then run the JIT's translation of the same TB and
 //! compare registers, pc, icount, fcsr, privilege, reservation, CSRs, exit kind and memory at
-//! every logged address. The first divergence prints the guest disassembly, the host code and
-//! the differences, and stops the run. The `time` CSR is made deterministic (icount-based) so
+//! every logged address. Device (MMIO) accesses happen once: the interpreter performs and
+//! records them, the JIT run replays the recorded reads and checks its accesses against the
+//! record (D52). The first divergence prints the guest disassembly, the host code and the
+//! differences, and stops the run. The `time` CSR is made deterministic (icount-based) so
 //! both runs read the same value.
 //!
 //! The JIT runs with a budget of exactly the TB's length: if the TB's exit is chained (or its
@@ -21,6 +23,7 @@ use crate::cpu::state::CpuState;
 use crate::interp::{
     BlockExit, Engine, Env, Stop, deliver, deliver_interrupt, exec_block, tohost_written,
 };
+use crate::mem::direct::MmioLog;
 
 use super::dispatch::{Jit, JitOptions, Next, dump_tb_text};
 
@@ -195,9 +198,13 @@ impl Engine for Lockstep {
             let fills = (cpu.tlb_fills, cpu.mmu_gen);
             self.log.clear();
             mem.write_log = Some(std::mem::take(&mut self.log));
+            mem.mmio_log = Some(MmioLog::default());
             let tb = self.jit.tb(id);
             let iexit = exec_block(cpu, mem, &tb.insns, tb.fetch_fault, false);
             self.log = mem.write_log.take().expect("write log enabled above");
+            if let Some(log) = mem.mmio_log.as_mut() {
+                log.replay = true;
+            }
             self.writes.clear();
             self.writes
                 .extend(self.log.iter().map(|&(a, s, _)| (a, s, mem.peek(a, s))));
@@ -220,6 +227,16 @@ impl Engine for Lockstep {
             let n = self.jit.tb(id).insns.len() as i64;
             let jexit = self.jit.exec(cpu, mem, id, n);
             let mut diffs = icpu.diff(cpu);
+            let mmio = mem.mmio_log.take().expect("mmio log enabled above");
+            if let Some(m) = mmio.mismatch {
+                diffs.push(m);
+            } else if mmio.pos != mmio.ops.len() {
+                diffs.push(format!(
+                    "mmio: interp made {} device accesses, jit {}",
+                    mmio.ops.len(),
+                    mmio.pos
+                ));
+            }
             if iexit != jexit {
                 diffs.push(format!("exit: interp {iexit:?}, jit {jexit:?}"));
             }

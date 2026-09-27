@@ -17,6 +17,7 @@ use crate::backend::x86::regs::{CPU, CPU_BIAS, MEM_BASE, Reg};
 use crate::cpu::state::{CpuState, exit};
 use crate::interp::{Flow, step};
 use crate::isa::decode_parts;
+use crate::isa::inst::Inst;
 use crate::mem::direct::DirectMem;
 use crate::mem::{Access, mmu};
 
@@ -233,6 +234,13 @@ pub unsafe extern "sysv64" fn helper_interp_one(cpu: *mut CpuState, raw: u64, pc
         cpu.budget_ref = cpu.budget;
         fold_and_reset_mxcsr(cpu);
         let d = decode_parts::<()>(raw as u16, || Ok((raw >> 16) as u16)).expect("infallible");
+        // System mode (D51): SFENCE.VMA, or a CSR write that changes the MMU flags or
+        // mappings the TB's successors were looked up with or makes an interrupt deliverable,
+        // leaves the TB so the dispatcher re-derives them; otherwise chained exits stay valid.
+        let mmu_ctx = |cpu: &CpuState| (super::dispatch::soft_flags(cpu), cpu.jc_gen);
+        let before =
+            (cpu.softmmu == 1 && !matches!(d.inst, Inst::SfenceVma { .. })).then(|| mmu_ctx(cpu));
+        let sfence = cpu.softmmu == 1 && before.is_none();
         let flow = step(cpu, mem, &d, pc);
         // Discard any host flags raised by Rust code in the helper (none expected).
         reset_mxcsr();
@@ -242,6 +250,17 @@ pub unsafe extern "sysv64" fn helper_interp_one(cpu: *mut CpuState, raw: u64, pc
                 cpu.icount += 1;
                 cpu.pc = pc.wrapping_add(d.len as u64);
                 cpu.exit_reason = exit::SMC;
+                1
+            }
+            Flow::Next
+                if sfence
+                    || before.is_some_and(|b| {
+                        b != mmu_ctx(cpu) || cpu.pending_interrupt().is_some()
+                    }) =>
+            {
+                cpu.icount += 1;
+                cpu.pc = pc.wrapping_add(d.len as u64);
+                cpu.exit_reason = exit::NONE;
                 1
             }
             Flow::Next => 0,

@@ -306,4 +306,48 @@ mod tests {
             );
         }
     }
+
+    /// The blob decompiles with `dtc` (installed by tools/setup.sh; skipped without it)
+    /// without warnings, and describes the devices Linux binds.
+    #[test]
+    fn dtc_accepts_the_blob() {
+        let dtb = virt_dtb(&VirtConfig {
+            ram_base: 0x8000_0000,
+            ram_size: 512 << 20,
+            bootargs: "console=ttyS0 earlycon=sbi".into(),
+            initrd: Some((0x9f00_0000, 0x9f40_0000)),
+        });
+        let path = std::env::temp_dir().join(format!("bridgev-{}.dtb", std::process::id()));
+        std::fs::write(&path, &dtb).unwrap();
+        let out = std::process::Command::new("dtc")
+            .args(["-I", "dtb", "-O", "dts"])
+            .arg(&path)
+            .output();
+        std::fs::remove_file(&path).unwrap();
+        let Ok(out) = out else {
+            eprintln!("dtc not installed: skipped");
+            return;
+        };
+        let (dts, err) = (
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(out.status.success(), "{err}");
+        assert!(err.trim().is_empty(), "dtc warnings: {err}");
+        for want in [
+            "memory@80000000",
+            "reg = <0x00 0x80000000 0x00 0x20000000>;",
+            "riscv,isa = \"rv64imafdc_zicntr_zicsr_zifencei\";",
+            "mmu-type = \"riscv,sv39\";",
+            "clint@2000000",
+            "plic@c000000",
+            "serial@10000000",
+            "compatible = \"ns16550a\";",
+            "test@100000",
+            "linux,initrd-start = <0x00 0x9f000000>;",
+            "stdout-path = \"/soc/serial@10000000\";",
+        ] {
+            assert!(dts.contains(want), "missing {want:?} in\n{dts}");
+        }
+    }
 }

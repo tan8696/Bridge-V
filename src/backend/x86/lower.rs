@@ -39,6 +39,8 @@ pub struct LowerOptions {
     /// Softmmu (D48): memory accesses go through `helper_interp_one` (this back end has no
     /// inline TLB path; it exists for measurements).
     pub softmmu: bool,
+    /// XORed into guest pcs compared against the jump cache (`jc_tagged`, D51).
+    pub jc_tag: u64,
 }
 
 /// A chainable exit of the lowered code (offsets from the TB start).
@@ -253,8 +255,15 @@ impl Ctx<'_> {
         self.a.shift_ri(Size::B64, Shift::Shl, R10, 3);
         let mask = ((JC_SIZE - 1) << 4) as i32;
         self.a.alu_ri(Size::B32, Alu::And, R10, mask);
+        let key = if self.opts.jc_tag != 0 {
+            self.a.movabs(R11, self.opts.jc_tag);
+            self.a.alu_rr(Size::B64, Alu::Xor, R11, Rax);
+            R11
+        } else {
+            Rax
+        };
         self.a
-            .alu_rm(Size::B64, Alu::Cmp, Rax, Mem::bi(CPU, R10, Scale::S1, jc));
+            .alu_rm(Size::B64, Alu::Cmp, key, Mem::bi(CPU, R10, Scale::S1, jc));
         let miss = self.stub(PcSrc::Rax, 0, exit::LOOKUP, SLOT_SPECIAL);
         self.a.jcc(Cond::Ne, miss);
         self.a.jmp_rm(Mem::bi(CPU, R10, Scale::S1, jc + 8));

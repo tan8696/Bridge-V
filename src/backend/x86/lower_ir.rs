@@ -48,6 +48,11 @@ pub struct IrOptions {
     /// Softmmu (D48): the data MMU index whose TLB loads and stores probe inline; `None` for
     /// direct memory (`[rbx + addr]`).
     pub softmmu: Option<u8>,
+    /// System mode with chaining (D51): direct exits leaving the TB's page, which are never
+    /// linked, look the target up in the jump cache instead of returning to the dispatcher.
+    pub jc_cross_page: bool,
+    /// XORed into guest pcs compared against the jump cache: the TB flags (`jc_tagged`, D51).
+    pub jc_tag: u64,
 }
 
 /// A potentially faulting memory access and the state needed to make its fault precise.
@@ -166,6 +171,8 @@ struct Stub {
     reason: u32,
     exc: Option<Exception>,
     slot: u64,
+    /// A cross-page direct exit: try the jump cache before leaving (D51).
+    jc: bool,
 }
 
 fn budget_mem() -> Mem {
@@ -189,6 +196,8 @@ struct Ctx<'a> {
     pcmap: Vec<PcEntry>,
     sites: Vec<FaultSite>,
     pc: u64,
+    /// Guest page of the TB's first instruction.
+    page: u64,
     idx: u32,
     fixups: Vec<Fixup>,
     soft: Vec<SoftSlow>,
@@ -210,6 +219,7 @@ impl Ctx<'_> {
             reason,
             exc: None,
             slot,
+            jc: false,
         });
         label
     }
@@ -223,19 +233,29 @@ impl Ctx<'_> {
             reason,
             exc,
             slot: SLOT_SPECIAL,
+            jc: false,
         });
         self.a.jmp(label);
     }
 
+    /// Exit stub for a direct jump to `target` through `slot`.
+    fn direct_stub(&mut self, target: u64, slot: u64) -> Label {
+        let l = self.stub(PcSrc::Const(target), 0, exit::NONE, slot);
+        if self.opts.jc_cross_page && target >> 12 != self.page {
+            self.stubs.last_mut().expect("just pushed").jc = true;
+        }
+        l
+    }
+
     fn exit_direct(&mut self, target: u64) {
-        let l = self.stub(PcSrc::Const(target), 0, exit::NONE, 0);
+        let l = self.direct_stub(target, 0);
         self.a.align(4, 1);
         let at = self.a.jmp(l);
         self.exits[0] = Some((at, l, target));
     }
 
     fn exit_cond(&mut self, cond: Cond, target: u64) {
-        let l = self.stub(PcSrc::Const(target), 0, exit::NONE, 1);
+        let l = self.direct_stub(target, 1);
         self.a.align(4, 2);
         let at = self.a.jcc(cond, l);
         self.exits[1] = Some((at, l, target));
@@ -361,8 +381,32 @@ impl Ctx<'_> {
     fn emit_stubs(&mut self) {
         self.emit_fixups();
         self.emit_soft_slow();
+        // A jump-cache stub adds its own miss stub: drain until none is left.
+        while !self.stubs.is_empty() {
+            self.emit_stub_batch();
+        }
+        if let Some(l) = self.helper_exit.take() {
+            // The helper stored pc/exit_reason and may have changed pinned guest registers in
+            // CpuState: reload them so exit_jit stores the right values back.
+            self.a.bind(l);
+            self.reload_pinned();
+            self.a
+                .mov_r32_imm(Rax, ((self.tb_id as u64) << 2 | SLOT_SPECIAL) as u32);
+            self.a.jmp_abs(self.tr.exit);
+        }
+    }
+
+    fn emit_stub_batch(&mut self) {
         for s in std::mem::take(&mut self.stubs) {
             self.a.bind(s.label);
+            if s.jc {
+                let PcSrc::Const(target) = s.pc else {
+                    unreachable!("direct exits have constant targets")
+                };
+                self.a.mov_imm(Rax, target);
+                self.jump_cache(false);
+                continue;
+            }
             if s.refund > 0 {
                 self.a
                     .alu_ri(Size::B64, Alu::Add, BUDGET_REG, s.refund as i32);
@@ -386,20 +430,12 @@ impl Ctx<'_> {
                 .mov_r32_imm(Rax, ((self.tb_id as u64) << 2 | s.slot) as u32);
             self.a.jmp_abs(self.tr.exit);
         }
-        if let Some(l) = self.helper_exit.take() {
-            // The helper stored pc/exit_reason and may have changed pinned guest registers in
-            // CpuState: reload them so exit_jit stores the right values back.
-            self.a.bind(l);
-            self.reload_pinned();
-            self.a
-                .mov_r32_imm(Rax, ((self.tb_id as u64) << 2 | SLOT_SPECIAL) as u32);
-            self.a.jmp_abs(self.tr.exit);
-        }
     }
 
-    fn jump_cache(&mut self) {
+    /// Inline jump-cache lookup of the guest pc in RAX (§13.4); `profile` counts it as a JALR.
+    fn jump_cache(&mut self, profile: bool) {
         let jc = offset_of!(CpuState, jmp_cache) as i32 - CPU_BIAS;
-        if self.opts.profile {
+        if profile && self.opts.profile {
             let prof = field(offset_of!(CpuState, prof_jalr));
             self.a.alu_ri(Size::B64, Alu::Add, prof, 1);
         }
@@ -407,8 +443,15 @@ impl Ctx<'_> {
         self.a.shift_ri(Size::B64, Shift::Shl, R10, 3);
         self.a
             .alu_ri(Size::B32, Alu::And, R10, ((JC_SIZE - 1) << 4) as i32);
+        let key = if self.opts.jc_tag != 0 {
+            self.a.movabs(R11, self.opts.jc_tag);
+            self.a.alu_rr(Size::B64, Alu::Xor, R11, Rax);
+            R11
+        } else {
+            Rax
+        };
         self.a
-            .alu_rm(Size::B64, Alu::Cmp, Rax, Mem::bi(CPU, R10, Scale::S1, jc));
+            .alu_rm(Size::B64, Alu::Cmp, key, Mem::bi(CPU, R10, Scale::S1, jc));
         let miss = self.stub(PcSrc::Rax, 0, exit::LOOKUP, SLOT_SPECIAL);
         self.a.jcc(Cond::Ne, miss);
         self.a.jmp_rm(Mem::bi(CPU, R10, Scale::S1, jc + 8));
@@ -1218,7 +1261,7 @@ impl Ctx<'_> {
                 if rt != Rax {
                     self.a.mov_rr(Size::B64, Rax, rt);
                 }
-                self.jump_cache();
+                self.jump_cache(true);
             }
             Op::Exit { kind, pc } => {
                 self.ra.write_back_all(&mut self.a)?;
@@ -1310,6 +1353,7 @@ pub fn translate(
         pcmap: Vec::new(),
         sites: Vec::new(),
         pc: b.pc,
+        page: b.pc >> 12,
         idx: 0,
         fixups: Vec::new(),
         soft: Vec::new(),

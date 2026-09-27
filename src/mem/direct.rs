@@ -62,6 +62,53 @@ pub struct DirectMem {
     /// Self-modifying code (Phase 8, D49): pages that held translated code and were written
     /// (or remapped) since the engines last drained this list. Their code-page mark is gone.
     pub smc_pages: Vec<u64>,
+    /// Lockstep: device accesses of the reference run, replayed by the checked run (D52).
+    pub mmio_log: Option<MmioLog>,
+}
+
+/// One device access (`val` = the value read or written).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MmioOp {
+    pub write: bool,
+    pub pa: u64,
+    pub size: u64,
+    pub val: u64,
+}
+
+/// Lockstep over devices (D52): the reference run performs its MMIO accesses and records them;
+/// the checked run replays them (reads return the recorded values, writes are compared and not
+/// performed). Every device sees each access once, in the reference order.
+#[derive(Debug, Default)]
+pub struct MmioLog {
+    pub replay: bool,
+    pub ops: Vec<MmioOp>,
+    pub pos: usize,
+    /// The first access of the checked run that differs from the reference run.
+    pub mismatch: Option<String>,
+}
+
+impl MmioLog {
+    fn replay(&mut self, op: MmioOp) -> u64 {
+        let want = self.ops.get(self.pos).copied();
+        self.pos += 1;
+        match want {
+            Some(w)
+                if (w.write, w.pa, w.size) == (op.write, op.pa, op.size)
+                    && (!op.write || w.val == op.val) =>
+            {
+                w.val
+            }
+            _ => {
+                self.mismatch.get_or_insert_with(|| {
+                    format!(
+                        "mmio access {}: interp {want:x?}, jit {op:x?}",
+                        self.pos - 1
+                    )
+                });
+                0
+            }
+        }
+    }
 }
 
 /// Host protection for guest permissions `p`: readable if the guest may read or execute
@@ -120,6 +167,7 @@ impl DirectMem {
             write_log: None,
             devices: Vec::new(),
             smc_pages: Vec::new(),
+            mmio_log: None,
         })
     }
 
@@ -487,8 +535,21 @@ impl DirectMem {
     /// Device read; `None` if no device decodes `pa` (an access fault).
     pub fn mmio_read(&mut self, pa: u64, size: u64) -> Option<u64> {
         let i = self.device_at(pa)?;
+        let mut op = MmioOp {
+            write: false,
+            pa,
+            size,
+            val: 0,
+        };
+        if let Some(log) = self.mmio_log.as_mut().filter(|l| l.replay) {
+            return Some(log.replay(op));
+        }
         let d = &mut self.devices[i];
-        Some(d.dev.read(pa - d.base, size))
+        op.val = d.dev.read(pa - d.base, size);
+        if let Some(log) = self.mmio_log.as_mut() {
+            log.ops.push(op);
+        }
+        Some(op.val)
     }
 
     /// Device write; `None` if no device decodes `pa` (an access fault).
@@ -502,6 +563,19 @@ impl DirectMem {
         } else {
             val
         };
+        let op = MmioOp {
+            write: true,
+            pa,
+            size,
+            val,
+        };
+        if let Some(log) = self.mmio_log.as_mut() {
+            if log.replay {
+                log.replay(op);
+                return Some(());
+            }
+            log.ops.push(op);
+        }
         d.dev.write(pa - d.base, size, val);
         Some(())
     }
