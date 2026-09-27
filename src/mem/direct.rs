@@ -307,23 +307,27 @@ impl DirectMem {
         addr < GUEST_SPACE && self.prot.get(addr / PAGE_SIZE) != 0
     }
 
-    /// Check that every page of `[addr, addr+len)` has all permissions in `need`.
+    /// Check that every page of `[addr, addr+len)` has all permissions in `need`. Returns the
+    /// OR of the pages' permission bytes, so writers see a `CODE` mark without a second lookup.
     #[inline]
-    fn check(&self, addr: u64, len: u64, need: u8, access: Access) -> Result<(), MemFault> {
+    fn check(&self, addr: u64, len: u64, need: u8, access: Access) -> Result<u8, MemFault> {
         let fault = MemFault { access, addr };
         let last = addr.checked_add(len - 1).ok_or(fault)?;
         if last >= GUEST_SPACE {
             return Err(fault);
         }
+        let mut all = 0;
         for page in addr / PAGE_SIZE..=last / PAGE_SIZE {
-            if self.prot.get(page) & need != need {
+            let b = self.prot.get(page);
+            if b & need != need {
                 return Err(MemFault {
                     access,
                     addr: addr.max(page * PAGE_SIZE),
                 });
             }
+            all |= b;
         }
-        Ok(())
+        Ok(all)
     }
 
     /// Load `size` (1, 2, 4 or 8) bytes, zero-extended. Misaligned accesses are allowed.
@@ -346,13 +350,35 @@ impl DirectMem {
     /// Store the low `size` bytes of `val`. Misaligned accesses are allowed.
     #[inline]
     pub fn store(&mut self, addr: u64, size: u64, val: u64) -> Result<(), MemFault> {
-        self.check(addr, size, prot::W, Access::Store)?;
-        self.uncode_range(addr, size);
-        let old = self.write_log.is_some().then(|| self.peek(addr, size));
-        if let (Some(log), Some(old)) = (self.write_log.as_mut(), old) {
-            log.push((addr, size, old));
+        let b = self.check(addr, size, prot::W, Access::Store)?;
+        if b & CODE != 0 || self.write_log.is_some() {
+            self.store_slow(addr, size, val);
+        } else {
+            self.poke(addr, size, val);
         }
-        // SAFETY: as in `load`; guest-writable pages are host-writable (`host_prot`).
+        Ok(())
+    }
+
+    /// `store` to a code page (D49) or with lockstep's write log on: kept out of line so the
+    /// common store stays small enough to inline into the interpreter.
+    #[cold]
+    #[inline(never)]
+    fn store_slow(&mut self, addr: u64, size: u64, val: u64) {
+        self.uncode_range(addr, size); // skips pages without a code mark
+        if self.write_log.is_some() {
+            let old = self.peek(addr, size);
+            if let Some(log) = self.write_log.as_mut() {
+                log.push((addr, size, old));
+            }
+        }
+        self.poke(addr, size, val);
+    }
+
+    /// Write the low `size` bytes of `val` to a range `check` accepted for writing.
+    #[inline(always)]
+    fn poke(&mut self, addr: u64, size: u64, val: u64) {
+        // SAFETY: the caller checked [addr, addr+size) as guest-writable, and guest-writable
+        // pages are host-writable (`host_prot`) once their code mark is dropped.
         unsafe {
             let p = self.base.add(addr as usize);
             match size {
@@ -362,7 +388,6 @@ impl DirectMem {
                 _ => ptr::write_unaligned(p as *mut u64, val),
             }
         }
-        Ok(())
     }
 
     /// Load for a read-modify-write (AMO): requires both R and W, faults as a store.
@@ -404,8 +429,9 @@ impl DirectMem {
         if len == 0 {
             return Ok(&mut []);
         }
-        self.check(addr.0, len, need, Access::Store)?;
-        self.uncode_range(addr.0, len);
+        if self.check(addr.0, len, need, Access::Store)? & CODE != 0 {
+            self.uncode_range(addr.0, len);
+        }
         // SAFETY: range checked as mapped; host pages are writable; exclusive via &mut self.
         Ok(unsafe { std::slice::from_raw_parts_mut(self.base.add(addr.0 as usize), len as usize) })
     }
@@ -416,8 +442,9 @@ impl DirectMem {
         if data.is_empty() {
             return Ok(());
         }
-        self.check(addr.0, data.len() as u64, MAPPED, Access::Store)?;
-        self.uncode_range(addr.0, data.len() as u64);
+        if self.check(addr.0, data.len() as u64, MAPPED, Access::Store)? & CODE != 0 {
+            self.uncode_range(addr.0, data.len() as u64);
+        }
         let (start, end) = (page_floor(addr.0), page_ceil(addr.0 + data.len() as u64));
         let rw = libc::PROT_READ | libc::PROT_WRITE;
         self.set_host_prot(start, end, rw)
@@ -499,13 +526,12 @@ impl DirectMem {
         self.smc_log.push(page * PAGE_SIZE);
     }
 
-    /// A write to `[addr, addr+len)` is about to happen (range already checked).
-    #[inline]
+    /// A write to `[addr, addr+len)`, some page of which holds code, is about to happen
+    /// (range already checked; `check` reported the `CODE` mark, so this is off the hot path).
+    #[cold]
+    #[inline(never)]
     fn uncode_range(&mut self, addr: u64, len: u64) {
         let (first, last) = (addr / PAGE_SIZE, (addr + len - 1) / PAGE_SIZE);
-        if (self.prot.get(first) | self.prot.get(last)) & CODE == 0 && last - first <= 1 {
-            return;
-        }
         for page in first..=last {
             self.uncode(page);
         }
