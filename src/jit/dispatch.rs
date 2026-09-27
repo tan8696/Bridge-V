@@ -609,7 +609,10 @@ impl Jit {
             self.mark_new_code(cpu, mem);
             self.cold_blocks[i as usize].block = Some(block);
         }
-        let block = self.cold_blocks[i as usize].block.as_ref().expect("decoded");
+        let block = self.cold_blocks[i as usize]
+            .block
+            .as_ref()
+            .expect("decoded");
         let before = cpu.icount;
         let exit = exec_block(cpu, mem, &block.insns, block.fetch_fault, false);
         self.stats.cold_blocks += 1;
