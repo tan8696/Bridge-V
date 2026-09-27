@@ -5,7 +5,9 @@
 //! hits run without returning; control comes back on an unlinked exit, a jump-cache miss, an
 //! exhausted budget, or a special exit (ECALL, exception, FENCE.I, host fault). After every
 //! return `icount += budget_ref - budget` (D30). A direct exit (slot 0/1) that came back
-//! unlinked is linked to its successor on the next dispatch.
+//! unlinked is linked to its successor on the next dispatch. With `--tier N` (D63) a block
+//! runs N times in the interpreter before it is translated, so code that runs only a few
+//! times never pays for translation.
 
 use std::io;
 use std::path::PathBuf;
@@ -90,6 +92,9 @@ pub struct JitOptions {
     /// `--smc=flush-on-fence`: FENCE.I flushes all translations (debug cross-check of the
     /// eager invalidation, D49); by default it only resets the jump cache.
     pub smc_flush_on_fence: bool,
+    /// `--tier N` (D63): a block runs N times in the interpreter before it is translated; 0
+    /// translates it on its first run.
+    pub tier: u32,
 }
 
 impl Default for JitOptions {
@@ -111,6 +116,7 @@ impl Default for JitOptions {
             profile_tbs: false,
             inline_fp: true,
             smc_flush_on_fence: false,
+            tier: 0,
         }
     }
 }
@@ -148,6 +154,9 @@ pub struct JitStats {
     /// TBs retranslated shorter because they needed too many spill slots.
     pub retranslations: u64,
     pub translate_time: Duration,
+    /// Tiering (D63): blocks and guest instructions run in the interpreter before translation.
+    pub cold_blocks: u64,
+    pub cold_insns: u64,
 }
 
 /// Distinguishes Jit instances in `CpuState::jc_tag`.
@@ -175,6 +184,19 @@ pub struct Jit {
     page_tbs: FxHashMap<u64, Vec<u32>>,
     /// Pages of new TBs still to be marked as code pages in `DirectMem`/the TLB.
     new_code: Vec<u64>,
+    /// Tiering (D63): every block seen but not translated yet, as an index into `cold_blocks`.
+    cold: FxHashMap<TbKey, u32>,
+    cold_blocks: Vec<Cold>,
+    /// Code page → cold blocks decoded from it (SMC, like `page_tbs`).
+    cold_pages: FxHashMap<u64, Vec<u32>>,
+}
+
+/// A block of the interpreter tier (D63): how often it ran, and its decoded instructions
+/// (dropped once it is translated, or when its page is written).
+struct Cold {
+    key: TbKey,
+    runs: u32,
+    block: Option<Block>,
 }
 
 /// `TbKey::flags` bit marking a softmmu translation (D48).
@@ -192,6 +214,9 @@ pub(crate) fn soft_flags(cpu: &CpuState) -> u8 {
 pub enum Next {
     /// Run this TB.
     Tb(u32),
+    /// Tiering (D63): the block has run fewer than `--tier` times; interpret it
+    /// (`exec_cold`).
+    Cold(u32),
     /// A 32-bit instruction straddles a page boundary (softmmu): interpret it.
     Straddle,
     /// Fetching at `cpu.pc` faults.
@@ -263,6 +288,9 @@ impl Jit {
             jc_gen: 0,
             page_tbs: FxHashMap::default(),
             new_code: Vec::new(),
+            cold: FxHashMap::default(),
+            cold_blocks: Vec::new(),
+            cold_pages: FxHashMap::default(),
         })
     }
 
@@ -310,14 +338,18 @@ impl Jit {
     /// whose code was fetched from physical page `ppage`.
     pub fn tb_for_soft(&mut self, cpu: &mut CpuState, mem: &mut DirectMem, ppage: u64) -> u32 {
         let didx = tlb::data_idx(cpu);
-        let key = TbKey {
+        let key = self.soft_key(cpu, ppage);
+        let pc = cpu.pc;
+        self.tb_for_key(key, Some(didx), |max| build_block_soft(pc, cpu, mem, max))
+    }
+
+    fn soft_key(&self, cpu: &CpuState, ppage: u64) -> TbKey {
+        TbKey {
             pc: cpu.pc,
             slow: self.variant(fp_slow(cpu)),
             flags: soft_flags(cpu),
             ppage,
-        };
-        let pc = cpu.pc;
-        self.tb_for_key(key, Some(didx), |max| build_block_soft(pc, cpu, mem, max))
+        }
     }
 
     fn tb_for_key(
@@ -409,19 +441,9 @@ impl Jit {
             fault_sites: out.fault_sites,
             key,
         });
-        // SMC tracking (D49): a TB lies in one page, except (direct mode) a last instruction
-        // that straddles into the next one.
-        let pages = if soft.is_some() {
-            [key.ppage, key.ppage]
-        } else {
-            let end = pc.wrapping_add(guest_bytes.max(1) as u64 - 1);
-            [pc & !0xfff, end & !0xfff]
-        };
-        for (k, &p) in pages.iter().enumerate() {
-            if k == 0 || p != pages[0] {
-                self.page_tbs.entry(p).or_default().push(id);
-                self.new_code.push(p);
-            }
+        for p in code_pages(key, soft.is_some(), guest_bytes) {
+            self.page_tbs.entry(p).or_default().push(id);
+            self.new_code.push(p);
         }
         self.stats.translate_time += t0.elapsed();
         id
@@ -497,13 +519,18 @@ impl Jit {
         id
     }
 
-    /// What to run at `cpu.pc`, in either memory mode, linking the previous exit to it.
+    /// What to run at `cpu.pc`, in either memory mode, linking the previous exit to it. With
+    /// `--tier`, a block that has not run often enough yet is interpreted instead (D63).
     pub fn select(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) -> Next {
         if !mem.smc_pages.is_empty() {
             self.drain_smc(cpu, mem);
         }
         if cpu.softmmu == 0 {
-            let id = self.next_tb(cpu.pc, mem, fp_slow(cpu));
+            let slow = fp_slow(cpu);
+            if let Some(i) = self.cold_run(TbKey::direct(cpu.pc, self.variant(slow))) {
+                return Next::Cold(i);
+            }
+            let id = self.next_tb(cpu.pc, mem, slow);
             self.mark_new_code(cpu, mem);
             return Next::Tb(id);
         }
@@ -526,10 +553,68 @@ impl Jit {
             self.last_exit = None;
             return Next::Straddle;
         }
+        if let Some(i) = self.cold_run(self.soft_key(cpu, ppage)) {
+            return Next::Cold(i);
+        }
         let id = self.tb_for_soft(cpu, mem, ppage);
         self.link_last(id);
         self.mark_new_code(cpu, mem);
         Next::Tb(id)
+    }
+
+    /// Tiering (D63): count a run of the block at `key` if it is not translated. While it has
+    /// run at most `--tier` times it stays in the interpreter (`Some(cold index)`); the run
+    /// after that translates it.
+    fn cold_run(&mut self, key: TbKey) -> Option<u32> {
+        if self.opts.tier == 0 || self.cache.lookup_key(&key).is_some() {
+            return None;
+        }
+        let next = self.cold_blocks.len() as u32;
+        let i = *self.cold.entry(key).or_insert(next);
+        if i == next {
+            self.cold_blocks.push(Cold {
+                key,
+                runs: 0,
+                block: None,
+            });
+        }
+        let c = &mut self.cold_blocks[i as usize];
+        c.runs = c.runs.saturating_add(1);
+        if c.runs > self.opts.tier {
+            c.block = None;
+            return None;
+        }
+        // Nothing to link the previous exit to.
+        self.last_exit = None;
+        Some(i)
+    }
+
+    /// Tiering (D63): run cold block `i` (at `cpu.pc`) in the interpreter, decoding it on its
+    /// first run. Its pages become code pages first, so a write to them, even by this block,
+    /// drops the decoded copy (`drain_smc`).
+    fn exec_cold(&mut self, cpu: &mut CpuState, mem: &mut DirectMem, i: u32) -> BlockExit {
+        let key = self.cold_blocks[i as usize].key;
+        if self.cold_blocks[i as usize].block.is_none() {
+            let soft = cpu.softmmu != 0;
+            let block = if soft {
+                build_block_soft(key.pc, cpu, mem, self.opts.max_block)
+            } else {
+                build_block_max(key.pc, mem, self.opts.max_block)
+            };
+            let bytes = block.insns.iter().map(|d| d.len as u32).sum();
+            for p in code_pages(key, soft, bytes) {
+                self.cold_pages.entry(p).or_default().push(i);
+                self.new_code.push(p);
+            }
+            self.mark_new_code(cpu, mem);
+            self.cold_blocks[i as usize].block = Some(block);
+        }
+        let block = self.cold_blocks[i as usize].block.as_ref().expect("decoded");
+        let before = cpu.icount;
+        let exit = exec_block(cpu, mem, &block.insns, block.fetch_fault, false);
+        self.stats.cold_blocks += 1;
+        self.stats.cold_insns += cpu.icount - before;
+        exit
     }
 
     /// Mark the pages of newly translated TBs as code pages (D49).
@@ -546,6 +631,9 @@ impl Jit {
     pub fn drain_smc(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) {
         let mut any = false;
         for &p in &mem.smc_pages {
+            for i in self.cold_pages.remove(&p).unwrap_or_default() {
+                self.cold_blocks[i as usize].block = None;
+            }
             for id in self.page_tbs.remove(&p).unwrap_or_default() {
                 if !self.cache.get(id).valid {
                     continue;
@@ -876,6 +964,9 @@ impl Jit {
     fn flush_all(&mut self) {
         self.page_tbs.clear();
         self.new_code.clear();
+        self.cold.clear();
+        self.cold_blocks.clear();
+        self.cold_pages.clear();
         self.cache.flush();
         self.cm.reset();
         self.jc_version += 1;
@@ -905,6 +996,7 @@ impl Engine for Jit {
                     let budget = (limit - cpu.icount).min(self.opts.slice).max(n);
                     self.exec(cpu, mem, id, budget as i64)
                 }
+                Next::Cold(i) => self.exec_cold(cpu, mem, i),
                 Next::Straddle => self.interpret_one(cpu, mem),
                 Next::Fault(e) => BlockExit::Trap(e),
             };
@@ -932,7 +1024,7 @@ impl Engine for Jit {
         } else {
             String::new()
         };
-        self.stats_counters() + &profile
+        self.stats_counters() + &self.tier_counters() + &profile
     }
 }
 
@@ -940,6 +1032,15 @@ impl Engine for Jit {
 pub fn fp_slow(cpu: &CpuState) -> bool {
     let fs = crate::cpu::csr::mstatus::FS;
     cpu.csr.mstatus & fs != fs || cpu.frm != 0
+}
+
+/// The pages a block of `bytes` guest bytes lies in, for SMC tracking (D49): its first page,
+/// plus in direct mode the next one if its last instruction straddles into it. With softmmu
+/// the physical page, which a block never leaves (D48).
+fn code_pages(key: TbKey, soft: bool, bytes: u32) -> impl Iterator<Item = u64> {
+    let first = if soft { key.ppage } else { key.pc & !0xfff };
+    let last = key.pc.wrapping_add(bytes.max(1) as u64 - 1) & !0xfff;
+    std::iter::once(first).chain((!soft && last != first).then_some(last))
 }
 
 impl Jit {
@@ -982,6 +1083,45 @@ impl Jit {
             pct(tramp),
             pct(rips.len() as u64 - in_tb - tramp),
             list.join(", ")
+        )
+    }
+
+    /// Tiering (D63) counters; empty with `--tier 0`. The blocks still cold (since the last
+    /// full flush) are listed by how often they ran: 1, 2-3, 4-7, ...
+    fn tier_counters(&self) -> String {
+        let tier = self.opts.tier;
+        if tier == 0 {
+            return String::new();
+        }
+        let mut by_runs = [0u64; 32];
+        let mut hot = 0u64;
+        for c in &self.cold_blocks {
+            if c.runs > tier {
+                hot += 1;
+            } else {
+                by_runs[c.runs.ilog2() as usize] += 1;
+            }
+        }
+        let hist: Vec<String> = by_runs
+            .iter()
+            .enumerate()
+            .filter(|&(_, &n)| n > 0)
+            .map(|(b, &n)| {
+                let (lo, hi) = (1u64 << b, ((2u64 << b) - 1).min(tier as u64));
+                if lo == hi {
+                    format!("{lo}: {n}")
+                } else {
+                    format!("{lo}-{hi}: {n}")
+                }
+            })
+            .collect();
+        format!(
+            "; tier {tier}: {} blocks ({} guest insns) interpreted, {hot} blocks then \
+             translated, {} still cold (by runs: {})",
+            self.stats.cold_blocks,
+            self.stats.cold_insns,
+            self.cold_blocks.len() as u64 - hot,
+            hist.join(", ")
         )
     }
 

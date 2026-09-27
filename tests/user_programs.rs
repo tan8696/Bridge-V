@@ -126,6 +126,14 @@ fn guest_programs_match_qemu_reference_regalloc_levels() {
     run_all(&["--engine", "lockstep", "--pin", ""]);
 }
 
+/// D63: the interpreter tier (blocks translated after two interpreted runs), with direct and
+/// software-TLB memory.
+#[test]
+fn guest_programs_match_qemu_reference_tiered() {
+    run_all(&["--engine", "jit", "--tier", "2"]);
+    run_all(&["--engine", "jit", "--mem", "softmmu", "--tier", "2"]);
+}
+
 /// `--mem=softmmu` (D48): every access through the software TLB, under every engine.
 #[test]
 fn guest_programs_match_qemu_reference_softmmu() {

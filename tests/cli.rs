@@ -189,6 +189,7 @@ fn icount_is_exact_under_every_engine() {
             &["--engine", "jit"][..],
             &["--engine", "jit", "--no-chain"],
             &["--engine", "jit", "--code-cache", "64K"],
+            &["--engine", "jit", "--tier", "3"],
             &["--engine", "lockstep"],
         ] {
             let mut args = vec!["run", "--stats"];
@@ -225,6 +226,34 @@ fn fib_jump_cache_hit_rate_and_dispatcher_entries() {
         entries(&chained) * 100 < entries(&unchained),
         "{chained}\n{unchained}"
     );
+}
+
+/// D63: `--tier N` runs a block N times in the interpreter before translating it. Only blocks
+/// that ran more often are translated; with a huge N nothing is, and the JIT engine only
+/// interprets. The instruction count never changes.
+#[test]
+fn tier_translates_only_hot_blocks() {
+    let Some(elf) = common::guest_elf("fib-O2") else {
+        return;
+    };
+    let e = elf.to_str().unwrap();
+    let run = |tier: &str| {
+        let args = ["run", "--engine", "jit", "--stats", "--tier", tier, e];
+        icount_and_stats(&args)
+    };
+    let translated = |s: &str| -> u64 {
+        let i = s.find(" TBs translated").unwrap();
+        s[..i].rsplit(' ').next().unwrap().parse().unwrap()
+    };
+    let (want, all) = run("0");
+    let (n, tiered) = run("2");
+    let (m, never) = run("1000000000");
+    assert_eq!((n, m), (want, want));
+    assert!(translated(&tiered) < translated(&all), "{tiered}\n{all}");
+    assert_eq!(translated(&never), 0, "{never}");
+    assert!(!all.contains("; tier "), "{all}");
+    assert!(tiered.contains("; tier 2: "), "{tiered}");
+    assert!(never.contains("0 blocks then translated"), "{never}");
 }
 
 /// P4.9: `--stats=regs` prints the register-use histogram under the interpreter, and is

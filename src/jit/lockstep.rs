@@ -39,7 +39,8 @@ pub struct Lockstep {
 impl Lockstep {
     pub fn new(opts: JitOptions) -> io::Result<Lockstep> {
         Ok(Lockstep {
-            jit: Jit::new(opts)?,
+            // Every block is translated and compared: no interpreter tier (D63).
+            jit: Jit::new(JitOptions { tier: 0, ..opts })?,
             checked: 0,
             log: Vec::new(),
             writes: Vec::new(),
@@ -174,6 +175,7 @@ impl Engine for Lockstep {
             }
             let id = match self.jit.select(cpu, mem) {
                 Next::Tb(id) => id,
+                Next::Cold(_) => unreachable!("lockstep runs with --tier 0"),
                 // Not compared: the interpreter runs it in both engines.
                 Next::Straddle => {
                     let exit = self.jit.interpret_one(cpu, mem);

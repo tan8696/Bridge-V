@@ -92,6 +92,19 @@ fn phase1_suites_pass_without_chaining() {
     run_suites(EngineKind::Lockstep, jit);
 }
 
+/// D63: the interpreter tier. Blocks run once or three times in the interpreter before they are
+/// translated, so every test mixes interpreted and translated blocks.
+#[test]
+fn phase1_suites_pass_tiered() {
+    for tier in [1, 3] {
+        let jit = JitOptions {
+            tier,
+            ..JitOptions::default()
+        };
+        run_suites(EngineKind::Jit, jit);
+    }
+}
+
 /// A tiny slice makes budget exits (and chained re-entry) happen everywhere.
 #[test]
 fn phase1_suites_pass_with_tiny_slices() {

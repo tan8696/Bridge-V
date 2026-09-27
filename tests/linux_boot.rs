@@ -65,6 +65,8 @@ struct Boot<'a> {
     disk: Option<&'a Path>,
     /// Number of harts (0 = 1); /proc/cpuinfo must list them all.
     harts: usize,
+    /// `--tier` (D63): interpreted runs of a block before it is translated.
+    tier: u32,
 }
 
 /// Boot with the built-in SBI, or with `firmware` in M-mode, and with Sv48 offered (Phase 10);
@@ -95,6 +97,7 @@ fn boot_to_shell_with(b: &Boot) {
                 .flatten(),
         )
         .args(["--smp", &harts.to_string()])
+        .args(["--tier", &b.tier.to_string()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -282,6 +285,21 @@ fn linux_boots_with_4_harts_jit() {
         harts: 4,
         ..Boot::default()
     });
+}
+
+/// D63: the interpreter tier. Most boot code runs only a few times and is never translated;
+/// with 4 harts, code writes seen by one hart must also drop the others' decoded blocks.
+#[test]
+#[ignore = "needs tools/fetch-guest-images.sh; slow"]
+fn linux_boots_tiered_jit() {
+    for harts in [1, 4] {
+        boot_to_shell_with(&Boot {
+            engine: "jit",
+            harts,
+            tier: 16,
+            ..Boot::default()
+        });
+    }
 }
 
 /// SMP through OpenSBI: all harts enter the firmware, which starts the secondaries for Linux.

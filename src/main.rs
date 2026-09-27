@@ -212,6 +212,10 @@ enum Command {
         /// Self-modifying code handling.
         #[arg(long, value_enum, default_value = "eager")]
         smc: SmcArg,
+        /// JIT: run each block N times in the interpreter before translating it (0: translate
+        /// every block on its first run).
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        tier: u32,
         /// Testing only: deliberately miscompile ADDI (lockstep must catch it).
         #[arg(long, hide = true)]
         inject_bug: bool,
@@ -262,6 +266,10 @@ enum Command {
         /// Never link exits or use the jump cache.
         #[arg(long)]
         no_chain: bool,
+        /// JIT: run each block N times in the interpreter before translating it (0: translate
+        /// every block on its first run).
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        tier: u32,
         /// Make the `time` CSR and the timers follow the instruction count (reproducible).
         #[arg(long)]
         deterministic: bool,
@@ -430,6 +438,7 @@ fn main() -> ExitCode {
             no_inline_fp,
             mem,
             smc,
+            tier,
             regalloc,
             pin,
             dump_ir,
@@ -470,6 +479,7 @@ fn main() -> ExitCode {
                 dump_ir,
                 inline_fp: !no_inline_fp,
                 smc_flush_on_fence: smc == SmcArg::FlushOnFence,
+                tier,
                 ..JitOptions::default()
             };
             match mode {
@@ -514,6 +524,7 @@ fn main() -> ExitCode {
             engine,
             regalloc,
             no_chain,
+            tier,
             deterministic,
             max_insns,
             slice,
@@ -531,6 +542,7 @@ fn main() -> ExitCode {
                     RegAllocArg::Pinned => RegAlloc::Pinned,
                     RegAllocArg::Linear => RegAlloc::Linear,
                 },
+                tier,
                 ..JitOptions::default()
             };
             let opts = BootOptions {
