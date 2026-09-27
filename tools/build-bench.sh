@@ -8,6 +8,11 @@
 #                                         + guest/bench/dhrystone shim; argv[1] = runs.
 #   fpbench-rv64.elf / fpbench-native     guest/bench/fp/fpbench.c (P6.6: nbody, sgemm, int<->FP
 #                                         conversions, self-validating); argv[1] = units.
+#   tlbbench.riscv                        guest/bench/tlb/tlbbench.c (P7.9): bare-metal Sv39 TLB
+#                                         hit/miss microbenchmark on the riscv-tests benchmark
+#                                         runtime (HTIF printf); `bridgev run --mode bare`.
+#   tlbuser-rv64.elf                      guest/bench/tlb/tlbuser.c: its Linux user-mode twin
+#                                         (--mem=direct vs --mem=softmmu).
 # Writes guest/build/bench/BUILDINFO.txt with compiler versions, flags, source commits and hashes.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -62,6 +67,15 @@ FP_FLAGS="-O2 -static"
 # shellcheck disable=SC2086
 "$HOST_CC" $FP_FLAGS "$ROOT/guest/bench/fp/fpbench.c" -o "$OUT/fpbench-native" -lm
 
+RVB="$ROOT/third_party/riscv-tests/benchmarks"
+BARE_FLAGS="-DPREALLOCATE=1 -mcmodel=medany -static -std=gnu99 -O2 -fno-common -fno-builtin-printf \
+  -fno-tree-loop-distribute-patterns -no-pie -fno-pic -Wl,--build-id=none -nostdlib -nostartfiles"
+# shellcheck disable=SC2086
+"$RV_CC" $RV_ARCH $BARE_FLAGS -I"$RVB/common" -I"$ROOT/third_party/riscv-tests/env" -T "$RVB/common/test.ld" \
+  -o "$OUT/tlbbench.riscv" "$ROOT/guest/bench/tlb/tlbbench.c" "$RVB/common/syscalls.c" "$RVB/common/crt.S" -lgcc
+# shellcheck disable=SC2086
+"$RV_CC" $RV_ARCH -O2 -static "$ROOT/guest/bench/tlb/tlbuser.c" -o "$OUT/tlbuser-rv64.elf"
+
 {
   echo "# Bridge-V benchmark builds (tools/build-bench.sh), $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "riscv cc: $("$RV_CC" --version | head -1)"
@@ -69,7 +83,8 @@ FP_FLAGS="-O2 -static"
   echo "coremark: $(git -C "$ROOT/third_party/coremark" rev-parse HEAD) make PORT_DIR=linux, PORT_CFLAGS=-O2, XCFLAGS='<arch> -static -DPERFORMANCE_RUN=1' (rv64: $RV_ARCH)"
   echo "dhrystone: riscv-tests $(git -C "$ROOT/third_party/riscv-tests" rev-parse HEAD) benchmarks/dhrystone + guest/bench/dhrystone; flags: $DHRY_FLAGS, main: -Ddebug_printf=bridgev_dhry_printf, dhrystone.c: -DPASS2 (rv64: + $RV_ARCH)"
   echo "fpbench: guest/bench/fp/fpbench.c; flags: $FP_FLAGS -lm (rv64: + $RV_ARCH)"
+  echo "tlbbench: guest/bench/tlb/tlbbench.c + riscv-tests benchmarks/common; flags: $RV_ARCH $BARE_FLAGS"
   (cd "$OUT" && sha256sum coremark-rv64.elf coremark-native dhrystone-rv64.elf dhrystone-native \
-    fpbench-rv64.elf fpbench-native)
+    fpbench-rv64.elf fpbench-native tlbbench.riscv tlbuser-rv64.elf)
 } > "$OUT/BUILDINFO.txt"
-echo "build-bench: built 6 benchmarks into ${OUT#"$ROOT"/}"
+echo "build-bench: built 8 benchmarks into ${OUT#"$ROOT"/}"

@@ -187,10 +187,12 @@ impl Engine for Lockstep {
                 }
             };
 
-            // Reference run. The TLB is not architectural, but it decides whether a walk (and
-            // its A/D update) happens: both runs start from the same TLB.
+            // Reference run. The TLB is not architectural, but whether an access walks decides
+            // whether A/D bits get written. If the interpreter filled entries (walked), the JIT
+            // runs from an empty TLB: it then walks at least where the interpreter did, and a
+            // walk of a PTE whose A/D bits are already set writes nothing, so memory matches.
             let snapshot = ArchState::capture(cpu);
-            let tlb = cpu.softmmu.ne(&0).then(|| (Box::new(cpu.tlb), cpu.mmu_gen));
+            let fills = (cpu.tlb_fills, cpu.mmu_gen);
             self.log.clear();
             mem.write_log = Some(std::mem::take(&mut self.log));
             let tb = self.jit.tb(id);
@@ -202,9 +204,8 @@ impl Engine for Lockstep {
             let icpu = ArchState::capture(cpu);
             snapshot.restore(cpu);
             mem.undo_writes(&self.log);
-            if let Some((t, g)) = tlb {
-                cpu.tlb = *t;
-                cpu.mmu_gen = g;
+            if cpu.softmmu != 0 && (cpu.tlb_fills, cpu.mmu_gen) != fills {
+                crate::mem::tlb::flush_all(cpu);
             }
 
             // JIT run from the same state, with a budget of exactly this TB.

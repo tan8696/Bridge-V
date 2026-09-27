@@ -184,3 +184,88 @@ impl CpuState {
         s.sepc
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Interrupt enable/priority/delegation matrix (P7.2, priv spec §3.1.9).
+    use super::*;
+
+    const SSI: u64 = 1 << 1;
+    const MSI: u64 = 1 << 3;
+    const STI: u64 = 1 << 5;
+    const MTI: u64 = 1 << 7;
+    const SEI: u64 = 1 << 9;
+    const MEI: u64 = 1 << 11;
+
+    fn hart(p: u8, mstatus: u64, mip: u64, mie: u64, mideleg: u64) -> Box<CpuState> {
+        let mut c = CpuState::new_machine(0x8000_0000);
+        c.prv = p;
+        c.csr.mstatus = mstatus;
+        c.csr.mip = mip;
+        c.csr.mie = mie;
+        c.csr.mideleg = mideleg;
+        c
+    }
+
+    #[test]
+    fn priority_order() {
+        let all = MEI | MSI | MTI | SEI | SSI | STI;
+        let mut pending = all;
+        for want in [11, 3, 7, 9, 1, 5] {
+            let c = hart(prv::U, 0, pending, all, 0);
+            assert_eq!(c.pending_interrupt(), Some(want));
+            pending &= !(1 << want);
+        }
+        assert_eq!(hart(prv::U, 0, 0, all, 0).pending_interrupt(), None);
+        assert_eq!(
+            hart(prv::U, 0, all, 0, 0).pending_interrupt(),
+            None,
+            "masked by mie"
+        );
+    }
+
+    #[test]
+    fn enable_rules_for_every_privilege() {
+        // (priv, mstatus, delegated?) → taken?
+        for p in [prv::U, prv::S, prv::M] {
+            for mstatus in [0, ms::MIE, ms::SIE, ms::MIE | ms::SIE] {
+                // Not delegated: an M-level interrupt, taken below M or with MIE.
+                let m = hart(p, mstatus, MTI, MTI, 0).pending_interrupt();
+                let m_want = p < prv::M || mstatus & ms::MIE != 0;
+                assert_eq!(m.is_some(), m_want, "MTI prv {p} mstatus {mstatus:#x}");
+                // Delegated: an S-level interrupt, taken below S or in S with SIE, never in M.
+                let s = hart(p, mstatus, STI, STI, STI).pending_interrupt();
+                let s_want = p < prv::S || (p == prv::S && mstatus & ms::SIE != 0);
+                assert_eq!(s.is_some(), s_want, "STI prv {p} mstatus {mstatus:#x}");
+            }
+        }
+        // An enabled M-level interrupt wins over a higher-priority delegated one.
+        let c = hart(prv::S, ms::SIE, MEI | MTI, MEI | MTI, MEI);
+        assert_eq!(c.pending_interrupt(), Some(7));
+    }
+
+    #[test]
+    fn delegated_trap_entry_and_vectoring() {
+        let mut c = hart(prv::U, ms::SIE, STI, STI, STI);
+        c.csr.stvec = 0x1000 | 1; // vectored
+        c.csr.mtvec = 0x2000 | 1;
+        c.pc = 0x4444;
+        let cause = c.pending_interrupt().unwrap();
+        c.take_trap(Exception { cause, tval: 0 }, true);
+        assert_eq!((c.prv, c.pc), (prv::S, 0x1000 + 4 * 5));
+        assert_eq!((c.csr.sepc, c.csr.scause), (0x4444, 1 << 63 | 5));
+        assert_eq!(c.csr.mstatus & (ms::SIE | ms::SPIE | ms::SPP), ms::SPIE);
+        // Exceptions never use the vector table.
+        let mut c = hart(prv::S, 0, 0, 0, 0);
+        c.csr.mtvec = 0x2000 | 1;
+        c.take_trap(Exception::illegal(0), false);
+        assert_eq!((c.prv, c.pc), (prv::M, 0x2000));
+        assert_eq!((c.csr.mstatus & ms::MPP) >> ms::MPP_SHIFT, prv::S as u64);
+        // medeleg does not apply to traps taken in M-mode.
+        let mut c = hart(prv::M, 0, 0, 0, 0);
+        c.csr.medeleg = u64::MAX;
+        c.csr.mtvec = 0x3000;
+        c.take_trap(Exception::illegal(0), false);
+        assert_eq!((c.prv, c.pc), (prv::M, 0x3000));
+    }
+}

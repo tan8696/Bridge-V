@@ -31,4 +31,18 @@ for src in "$ROOT"/guest/c/*.c; do
   done
 done
 
+# Bare-metal riscv-tests benchmarks (HTIF printf through tohost/fromhost, P7.7): qsort. In a
+# subdirectory: tests/user_programs.rs runs every guest/build/*.elf as a Linux program.
+RVB="$ROOT/third_party/riscv-tests/benchmarks"
+[[ -f "$RVB/common/crt.S" ]] || git -C "$ROOT" submodule update --init third_party/riscv-tests
+mkdir -p "$OUT/bare"
+for b in qsort; do
+  "$CC" -DPREALLOCATE=1 -mcmodel=medany -static -std=gnu99 -O2 -ffast-math -fno-common \
+    -fno-builtin-printf -fno-tree-loop-distribute-patterns -march=rv64gc -mabi=lp64d -no-pie \
+    -fno-pic -Wl,--build-id=none -nostdlib -nostartfiles -I"$RVB/common" -I"$RVB/$b" \
+    -I"$ROOT/third_party/riscv-tests/env" -T "$RVB/common/test.ld" -o "$OUT/bare/$b.elf" \
+    "$RVB/$b"/*.c "$RVB/common/syscalls.c" "$RVB/common/crt.S" -lgcc
+  built=$((built + 1))
+done
+
 echo "build-guests: built $built programs into ${OUT#"$ROOT"/}"

@@ -126,6 +126,15 @@ fn guest_programs_match_qemu_reference_regalloc_levels() {
     run_all(&["--engine", "lockstep", "--pin", ""]);
 }
 
+/// `--mem=softmmu` (D48): every access through the software TLB, under every engine.
+#[test]
+fn guest_programs_match_qemu_reference_softmmu() {
+    run_all(&["--mem", "softmmu"]);
+    run_all(&["--engine", "jit", "--mem", "softmmu"]);
+    run_all(&["--engine", "lockstep", "--mem", "softmmu"]);
+    run_all(&["--engine", "jit", "--mem", "softmmu", "--regalloc", "none"]);
+}
+
 #[test]
 fn initial_stack_layout() {
     use bridgev::mem::{GuestVirt, prot};

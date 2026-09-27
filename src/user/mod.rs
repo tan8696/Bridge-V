@@ -68,6 +68,13 @@ pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> R
         trace: opts.trace,
     };
     let limit = opts.max_insns.unwrap_or(u64::MAX);
+    let stats = |engine: &dyn crate::interp::Engine, cpu: &crate::cpu::state::CpuState| {
+        let mut s = engine.stats();
+        if cpu.softmmu != 0 {
+            s += &format!("\nsoftmmu: {} TLB fills", cpu.tlb_fills);
+        }
+        s
+    };
     loop {
         let left = limit.saturating_sub(p.cpu.icount);
         match engine.run(&mut p.cpu, &mut p.mem, &env, left) {
@@ -86,7 +93,7 @@ pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> R
                     return Ok(RunResult {
                         exit_code: code,
                         icount: p.cpu.icount + 1,
-                        engine_stats: engine.stats(),
+                        engine_stats: stats(engine.as_ref(), &p.cpu),
                     });
                 }
             },
@@ -95,7 +102,7 @@ pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> R
                 return Ok(RunResult {
                     exit_code: 128 + signal_for(&e),
                     icount: p.cpu.icount,
-                    engine_stats: engine.stats(),
+                    engine_stats: stats(engine.as_ref(), &p.cpu),
                 });
             }
             Stop::Limit => {

@@ -112,7 +112,9 @@ pub struct CpuState {
     /// Bumped whenever virtual-to-physical translation may have changed (TLB flush): engines
     /// revalidate their virtually keyed caches (decoded blocks, jump cache) against it.
     pub mmu_gen: u64,
-    _pad2: [u64; 14],
+    /// Softmmu statistics: TLB fills (misses that walked and filled an entry).
+    pub tlb_fills: u64,
+    _pad2: [u64; 13],
     /// Inline JALR lookup table (§13.4).
     pub jmp_cache: [JcEntry; JC_SIZE],
     /// Register-allocator spill slots for values that are not guest registers (§10).
@@ -189,7 +191,8 @@ impl CpuState {
             jc_tag: 0,
             prof_jalr: 0,
             mmu_gen: 0,
-            _pad2: [0; 14],
+            tlb_fills: 0,
+            _pad2: [0; 13],
             jmp_cache: [JcEntry::EMPTY; JC_SIZE],
             spill: [0; SPILL_SLOTS],
             fault_regs: [0; 16],

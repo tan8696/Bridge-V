@@ -182,6 +182,7 @@ pub fn fill(
     mmu: u8,
 ) -> Result<u64, Exception> {
     let w = walk(cpu, mem, va, acc, mmu)?;
+    cpu.tlb_fills += 1;
     let (phys, mmio) = phys_perms(mem, w.ppage);
     let need = match acc {
         Access::Load => prot::R,
@@ -395,4 +396,305 @@ pub fn fetch_page(cpu: &mut CpuState, mem: &mut DirectMem, va: u64) -> Result<u6
     fetch16(cpu, mem, va)?;
     let mmu = tlb::fetch_idx(cpu);
     Ok(translate(cpu, mem, va, Access::Fetch, mmu)? & !(PAGE_SIZE - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Walker matrix (P7.4, §21 item 8): hand-built Sv39 tables in RAM at 0x8000_0000.
+    use super::*;
+    use crate::mem::GuestVirt;
+    use crate::mem::phys::Mmio;
+
+    const RAM: u64 = 0x8000_0000;
+    const ROOT: u64 = RAM + 0x1000;
+    const L1: u64 = RAM + 0x2000;
+    const L0: u64 = RAM + 0x3000;
+    const R: u64 = pte::R;
+    const W: u64 = pte::W;
+    const X: u64 = pte::X;
+    const U: u64 = pte::U;
+    const AD: u64 = pte::A | pte::D;
+
+    fn leaf(pa: u64, flags: u64) -> u64 {
+        (pa >> 12) << 10 | flags | pte::V
+    }
+    fn table(pa: u64) -> u64 {
+        (pa >> 12) << 10 | pte::V
+    }
+    fn vpn(va: u64, level: u32) -> u64 {
+        (va >> (12 + 9 * level)) & 0x1ff
+    }
+
+    struct Dev;
+    impl Mmio for Dev {
+        fn name(&self) -> &str {
+            "test"
+        }
+        fn read(&mut self, off: u64, size: u64) -> u64 {
+            0x1000 + off * 16 + size
+        }
+        fn write(&mut self, _: u64, _: u64, _: u64) {}
+    }
+
+    /// RAM (1 MiB) + an MMIO device at 0x1000_0000, S-mode, Sv39 with root at ROOT.
+    fn setup() -> (Box<CpuState>, DirectMem) {
+        let mut mem = DirectMem::new().unwrap();
+        mem.map(GuestVirt(RAM), 1 << 20, prot::RWX).unwrap();
+        mem.add_device(0x1000_0000, 0x1000, Box::new(Dev));
+        let mut cpu = CpuState::new_machine(0);
+        cpu.softmmu = 1;
+        cpu.prv = prv::S;
+        cpu.csr.satp = SATP_SV39 << 60 | ROOT >> 12;
+        (cpu, mem)
+    }
+
+    fn put(mem: &mut DirectMem, a: u64, v: u64) {
+        mem.store(a, 8, v).unwrap();
+    }
+
+    /// Map a 4 KiB page va → pa through ROOT → L1 → L0.
+    fn map4k(mem: &mut DirectMem, va: u64, pa: u64, flags: u64) {
+        put(mem, ROOT + vpn(va, 2) * 8, table(L1));
+        put(mem, L1 + vpn(va, 1) * 8, table(L0));
+        put(mem, L0 + vpn(va, 0) * 8, leaf(pa, flags));
+    }
+
+    fn cause_of(r: Result<Walk, Exception>) -> u64 {
+        r.expect_err("expected a fault").cause
+    }
+
+    #[test]
+    fn page_sizes_4k_2m_1g() {
+        let (cpu, mut mem) = setup();
+        map4k(&mut mem, 0x4000_1000, RAM + 0x5_0000, R | W | AD);
+        // 2 MiB megapage at VA 0x4020_0000 (level 1) → PA RAM + 0x20_0000 (2 MiB aligned).
+        put(&mut mem, L1 + vpn(0x4020_0000, 1) * 8, leaf(RAM, R | AD));
+        // 1 GiB gigapage at VA 0x8000_0000 (level 2) → PA 0x8000_0000.
+        put(&mut mem, ROOT + 2 * 8, leaf(RAM, R | X | AD));
+        let w = walk(&cpu, &mut mem, 0x4000_1abc, Access::Load, idx::S).unwrap();
+        assert_eq!(w.ppage, RAM + 0x5_0000);
+        assert_eq!(w.perms, prot::R | prot::W);
+        let w = walk(&cpu, &mut mem, 0x4031_2345, Access::Load, idx::S).unwrap();
+        assert_eq!(
+            w.ppage,
+            RAM + 0x11_2000,
+            "megapage: low VPN bits come from the VA"
+        );
+        let w = walk(&cpu, &mut mem, 0xbfff_f123, Access::Fetch, idx::S).unwrap();
+        assert_eq!(w.ppage, RAM + 0x3fff_f000);
+        assert_eq!(w.perms, prot::R | prot::X);
+    }
+
+    #[test]
+    fn misaligned_superpages_fault() {
+        let (cpu, mut mem) = setup();
+        put(&mut mem, ROOT + vpn(0x4000_0000, 2) * 8, table(L1));
+        put(&mut mem, L1, leaf(RAM + 0x1000, R | AD)); // 2 MiB leaf, ppn[0] != 0
+        put(&mut mem, ROOT + 3 * 8, leaf(RAM + 0x20_0000, R | AD)); // 1 GiB leaf, ppn[1] != 0
+        assert_eq!(
+            cause_of(walk(&cpu, &mut mem, 0x4000_0000, Access::Load, idx::S)),
+            cause::LOAD_PAGE
+        );
+        assert_eq!(
+            cause_of(walk(&cpu, &mut mem, 0xc000_0000, Access::Store, idx::S)),
+            cause::STORE_PAGE
+        );
+    }
+
+    #[test]
+    fn user_sum_mxr_and_privilege() {
+        let (mut cpu, mut mem) = setup();
+        let (upage, spage, xpage) = (0x1000, 0x2000, 0x3000);
+        map4k(&mut mem, upage, RAM + 0x6_0000, R | W | X | U | AD);
+        map4k(&mut mem, spage, RAM + 0x7_0000, R | W | X | AD);
+        map4k(&mut mem, xpage, RAM + 0x8_0000, X | AD);
+        let ok = |cpu: &CpuState, mem: &mut DirectMem, va, acc, mmu| {
+            walk(cpu, mem, va, acc, mmu).is_ok()
+        };
+        for acc in [Access::Load, Access::Store, Access::Fetch] {
+            assert!(ok(&cpu, &mut mem, upage, acc, idx::U), "U on a U page");
+            assert!(!ok(&cpu, &mut mem, spage, acc, idx::U), "U on an S page");
+            assert!(
+                !ok(&cpu, &mut mem, upage, acc, idx::S),
+                "S on a U page without SUM"
+            );
+            assert!(ok(&cpu, &mut mem, spage, acc, idx::S), "S on an S page");
+            assert!(
+                ok(&cpu, &mut mem, spage, acc, idx::S_SUM),
+                "S+SUM on an S page"
+            );
+        }
+        // SUM permits data accesses to U pages, never execution.
+        assert!(ok(&cpu, &mut mem, upage, Access::Load, idx::S_SUM));
+        assert!(ok(&cpu, &mut mem, upage, Access::Store, idx::S_SUM));
+        assert!(!ok(&cpu, &mut mem, upage, Access::Fetch, idx::S_SUM));
+        // Execute-only: loads need MXR.
+        assert!(!ok(&cpu, &mut mem, xpage, Access::Load, idx::S));
+        assert!(ok(&cpu, &mut mem, xpage, Access::Fetch, idx::S));
+        cpu.csr.mstatus |= mstatus::MXR;
+        assert!(ok(&cpu, &mut mem, xpage, Access::Load, idx::S));
+        assert!(!ok(&cpu, &mut mem, xpage, Access::Store, idx::S));
+        // M-mode and Bare translate nothing.
+        assert_eq!(
+            walk(&cpu, &mut mem, 0x1234_5678, Access::Store, idx::M)
+                .unwrap()
+                .ppage,
+            0x1234_5000
+        );
+        cpu.csr.satp = 0;
+        assert_eq!(
+            walk(&cpu, &mut mem, 0x1234_5678, Access::Fetch, idx::U)
+                .unwrap()
+                .ppage,
+            0x1234_5000
+        );
+    }
+
+    #[test]
+    fn mprv_uses_mpp_for_data_only() {
+        let (mut cpu, mut mem) = setup();
+        map4k(&mut mem, 0x1000, RAM + 0x6_0000, R | W | U | AD);
+        cpu.prv = prv::M;
+        cpu.csr.mstatus |= mstatus::MPRV; // MPP = U (0)
+        assert_eq!(tlb::data_idx(&cpu), idx::U);
+        assert_eq!(tlb::fetch_idx(&cpu), idx::M);
+        assert_eq!(load(&mut cpu, &mut mem, 0x1008, 8).unwrap(), 0);
+        mem.store(RAM + 0x6_0008, 8, 0xabcd).unwrap();
+        assert_eq!(load(&mut cpu, &mut mem, 0x1008, 8).unwrap(), 0xabcd);
+        cpu.csr.mstatus |= 1 << mstatus::MPP_SHIFT; // MPP = S: the U page needs SUM
+        assert_eq!(
+            load(&mut cpu, &mut mem, 0x1008, 8).unwrap_err().cause,
+            cause::LOAD_PAGE
+        );
+    }
+
+    #[test]
+    fn accessed_and_dirty_bits() {
+        let (mut cpu, mut mem) = setup();
+        map4k(&mut mem, 0x5000, RAM + 0x9_0000, R | W);
+        let slot = L0 + vpn(0x5000, 0) * 8;
+        assert_eq!(load(&mut cpu, &mut mem, 0x5000, 4).unwrap(), 0);
+        assert_eq!(
+            mem.load(slot, 8).unwrap() & AD,
+            pte::A,
+            "a load sets A only"
+        );
+        // The fill after a load of a clean page grants no write: the store walks and sets D.
+        assert_eq!(
+            cpu.tlb[idx::S as usize][tlb::index(0x5000)].addr_write,
+            tlb::INVALID
+        );
+        store(&mut cpu, &mut mem, 0x5004, 4, 7).unwrap();
+        assert_eq!(mem.load(slot, 8).unwrap() & AD, AD);
+        assert_eq!(
+            cpu.tlb[idx::S as usize][tlb::index(0x5000)].addr_write,
+            0x5000
+        );
+        assert_eq!(mem.load(RAM + 0x9_0004, 4).unwrap(), 7);
+    }
+
+    #[test]
+    fn invalid_ptes_and_non_canonical_addresses() {
+        let (cpu, mut mem) = setup();
+        let va = 0x7000;
+        let cases: &[(u64, &str)] = &[
+            (leaf(RAM, R | AD) & !pte::V, "V = 0"),
+            (leaf(RAM, W | AD), "W without R"),
+            (leaf(RAM, R | AD) | 1 << 54, "reserved bit 54"),
+            (leaf(RAM, R | AD) | 1 << 61, "PBMT"),
+            (leaf(RAM, R | AD) | 1 << 63, "N"),
+            (table(L0), "pointer at level 0"),
+        ];
+        for &(p, why) in cases {
+            map4k(&mut mem, va, RAM, R);
+            put(&mut mem, L0 + vpn(va, 0) * 8, p);
+            put(&mut mem, L0, table(L0)); // for "pointer at level 0": points back at L0
+            assert_eq!(
+                cause_of(walk(&cpu, &mut mem, va, Access::Load, idx::S)),
+                cause::LOAD_PAGE,
+                "{why}"
+            );
+        }
+        // Non-leaf entries with A, D or U set are reserved.
+        for bit in [pte::A, pte::D, pte::U] {
+            map4k(&mut mem, va, RAM, R | AD);
+            put(&mut mem, L1 + vpn(va, 1) * 8, table(L0) | bit);
+            assert_eq!(
+                cause_of(walk(&cpu, &mut mem, va, Access::Fetch, idx::S)),
+                cause::INSN_PAGE
+            );
+        }
+        // Bits 63:39 must copy bit 38.
+        for bad in [
+            1u64 << 39,
+            0x0000_8000_0000_0000,
+            0xffff_ff00_0000_0000 ^ (1 << 38),
+        ] {
+            assert_eq!(
+                cause_of(walk(&cpu, &mut mem, bad, Access::Store, idx::S)),
+                cause::STORE_PAGE
+            );
+        }
+    }
+
+    #[test]
+    fn pte_outside_ram_is_an_access_fault() {
+        let (mut cpu, mut mem) = setup();
+        cpu.csr.satp = SATP_SV39 << 60 | 0x4000_0000 >> 12; // root table not in RAM
+        assert_eq!(
+            cause_of(walk(&cpu, &mut mem, 0x1000, Access::Load, idx::S)),
+            cause::LOAD_ACCESS
+        );
+        assert_eq!(
+            cause_of(walk(&cpu, &mut mem, 0x1000, Access::Fetch, idx::S)),
+            cause::INSN_ACCESS
+        );
+    }
+
+    #[test]
+    fn mmio_and_unbacked_physical_addresses() {
+        let (mut cpu, mut mem) = setup();
+        map4k(&mut mem, 0x8000, 0x1000_0000, R | W | X | AD); // device page
+        map4k(&mut mem, 0x9000, 0x2000_0000, R | W | X | AD); // nothing there
+        assert_eq!(
+            load(&mut cpu, &mut mem, 0x8010, 4).unwrap(),
+            0x1000 + 0x10 * 16 + 4
+        );
+        let e = &cpu.tlb[idx::S as usize][tlb::index(0x8000)];
+        assert_eq!(
+            e.addr_read,
+            0x8000 | TLB_MMIO,
+            "device pages always take the slow path"
+        );
+        store(&mut cpu, &mut mem, 0x8000, 8, 1).unwrap();
+        assert_eq!(
+            fetch16(&mut cpu, &mut mem, 0x8000).unwrap_err().cause,
+            cause::INSN_ACCESS
+        );
+        assert_eq!(
+            load(&mut cpu, &mut mem, 0x9000, 1).unwrap_err().cause,
+            cause::LOAD_ACCESS
+        );
+        assert_eq!(
+            store(&mut cpu, &mut mem, 0x9000, 1, 0).unwrap_err().cause,
+            cause::STORE_ACCESS
+        );
+    }
+
+    #[test]
+    fn page_crossing_accesses_split_and_fault_atomically() {
+        let (mut cpu, mut mem) = setup();
+        map4k(&mut mem, 0xa000, RAM + 0xa_0000, R | W | AD);
+        map4k(&mut mem, 0xb000, RAM + 0x5_0000, R | AD); // read-only, not contiguous
+        mem.store(RAM + 0xa_0ffc, 4, 0x4433_2211).unwrap();
+        mem.store(RAM + 0x5_0000, 4, 0x8877_6655).unwrap();
+        assert_eq!(
+            load(&mut cpu, &mut mem, 0xaffc, 8).unwrap(),
+            0x8877_6655_4433_2211
+        );
+        // A store into the read-only second page faults there and writes nothing.
+        let e = store(&mut cpu, &mut mem, 0xaffe, 4, u64::MAX).unwrap_err();
+        assert_eq!((e.cause, e.tval), (cause::STORE_PAGE, 0xb000));
+        assert_eq!(mem.load(RAM + 0xa_0ffc, 4).unwrap(), 0x4433_2211);
+    }
 }

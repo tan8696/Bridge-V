@@ -860,7 +860,7 @@ impl Jit {
              {} full + {} code-change flushes, translate time {:.1} ms; \
              {} dispatcher entries ({:.0} per M guest insns); \
              exits: none {}, ecall {}, exception {}, flush {}, host-fault {}, budget {}, \
-             jump-cache miss {}, fp-variant {}; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}; \
+             jump-cache miss {}, fp-variant {}, mmu-fault {}, straddle {}; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}; \
              regalloc {:?} (emitted code, all TBs): {} fills, {} spills, {} write-backs, \
              {} moves, {} retranslations",
             s.translated,
@@ -880,6 +880,8 @@ impl Jit {
             s.exits[exit::BUDGET as usize],
             s.exits[exit::LOOKUP as usize],
             s.exits[exit::FP_VARIANT as usize],
+            s.exits[exit::MMU_FAULT as usize],
+            s.interpreted,
             if self.opts.chain { "on" } else { "off" },
             s.chain_links,
             s.chain_unlinks,

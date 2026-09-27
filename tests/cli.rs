@@ -270,3 +270,34 @@ fn profile_tbs_attributes_samples() {
         "{p}"
     );
 }
+
+/// P7.7: bare-metal programs print through HTIF syscalls (riscv-tests' benchmark runtime), under
+/// every engine; the benchmark checks its own result and reports cycle/instret counts.
+#[test]
+fn bare_metal_htif_printf() {
+    let Some(elf) = common::guest_elf("bare/qsort") else {
+        return;
+    };
+    for engine in ["interp", "jit", "lockstep"] {
+        let o = common::run_bridgev([
+            "run",
+            "--mode",
+            "bare",
+            "--engine",
+            engine,
+            elf.to_str().unwrap(),
+        ]);
+        assert!(
+            o.stdout.contains("mcycle = ") && o.stdout.contains("minstret = "),
+            "{engine}: {} {}",
+            o.stdout,
+            o.stderr
+        );
+        assert!(
+            o.stdout.trim_end().ends_with("PASS"),
+            "{engine}: {} {}",
+            o.stdout,
+            o.stderr
+        );
+    }
+}

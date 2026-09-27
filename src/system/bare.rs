@@ -2,7 +2,10 @@
 //!
 //! The ELF is loaded at its physical link address into a RAM region at 0x8000_0000, the hart
 //! starts in M-mode at the entry point, and the run ends when the guest writes the HTIF
-//! `tohost` word: 1 means pass, `(n << 1) | 1` means test case `n` failed.
+//! `tohost` word: 1 means pass, `(n << 1) | 1` means test case `n` failed. An even, non-zero
+//! `tohost` is an HTIF syscall (riscv-tests `benchmarks/common/syscalls.c`): a pointer to
+//! `magic_mem[4] = {which, arg0, arg1, arg2}`; `write` (64) to fd 1/2 is served, the result
+//! goes to `magic_mem[0]`, then `fromhost = 1` and `tohost = 0`.
 
 use anyhow::{Context, Result, bail};
 
@@ -58,10 +61,37 @@ pub struct BareRun {
     pub engine_stats: String,
 }
 
+/// Serve the HTIF syscall whose `magic_mem` block is at physical `at`.
+fn htif_syscall(mem: &mut DirectMem, at: u64) -> Result<()> {
+    use std::io::Write;
+    let word = |mem: &DirectMem, i: u64| {
+        mem.load(at + 8 * i, 8)
+            .map_err(|f| anyhow::anyhow!("HTIF magic_mem: {f:?}"))
+    };
+    let (which, fd, buf, len) = (word(mem, 0)?, word(mem, 1)?, word(mem, 2)?, word(mem, 3)?);
+    const SYS_WRITE: u64 = 64;
+    if which != SYS_WRITE || !(fd == 1 || fd == 2) {
+        bail!("unsupported HTIF syscall {which} (fd {fd})");
+    }
+    let data = mem
+        .slice(GuestVirt(buf), len, prot::R)
+        .map_err(|f| anyhow::anyhow!("HTIF write buffer: {f:?}"))?
+        .to_vec();
+    if fd == 1 {
+        std::io::stdout().write_all(&data)?;
+    } else {
+        std::io::stderr().write_all(&data)?;
+    }
+    mem.store(at, 8, len)
+        .map_err(|f| anyhow::anyhow!("HTIF magic_mem: {f:?}"))?;
+    Ok(())
+}
+
 /// Load `elf_bytes` and run it to completion (or `max_insns`).
 pub fn run(elf_bytes: &[u8], opts: &BareOptions) -> Result<BareRun> {
     let elf = Elf::parse(elf_bytes)?;
     let tohost = elf.symbol("tohost").context("ELF has no `tohost` symbol")?;
+    let fromhost = elf.symbol("fromhost");
     let mut mem = DirectMem::new()?;
     mem.map(GuestVirt(RAM_BASE), RAM_SIZE, prot::RWX)?;
     for seg in elf.loads() {
@@ -83,15 +113,29 @@ pub fn run(elf_bytes: &[u8], opts: &BareOptions) -> Result<BareRun> {
     if opts.reg_stats && !engine.enable_reg_stats() {
         bail!("--stats=regs needs --engine interp");
     }
-    let result = match engine.run(&mut cpu, &mut mem, &env, opts.max_insns) {
-        Stop::Tohost(1) => BareResult::Pass,
-        Stop::Tohost(v) => BareResult::Fail(v >> 1),
-        Stop::Limit => BareResult::Timeout,
-        other => bail!("unexpected stop in bare mode: {other:?}"),
+    let limit = opts.max_insns;
+    let result = loop {
+        let left = limit.saturating_sub(cpu.icount);
+        match engine.run(&mut cpu, &mut mem, &env, left) {
+            Stop::Tohost(1) => break BareResult::Pass,
+            Stop::Tohost(v) if v & 1 == 1 => break BareResult::Fail(v >> 1),
+            Stop::Tohost(v) => {
+                let fromhost = fromhost.context("HTIF syscall without a `fromhost` symbol")?;
+                htif_syscall(&mut mem, v)?;
+                let set = |mem: &mut DirectMem, a: u64, x: u64| {
+                    mem.store(a, 8, x)
+                        .map_err(|f| anyhow::anyhow!("HTIF: {f:?}"))
+                };
+                set(&mut mem, fromhost, 1)?;
+                set(&mut mem, tohost, 0)?;
+            }
+            Stop::Limit => break BareResult::Timeout,
+            other => bail!("unexpected stop in bare mode: {other:?}"),
+        }
     };
     Ok(BareRun {
         result,
         icount: cpu.icount,
-        engine_stats: engine.stats(),
+        engine_stats: engine.stats() + &format!("\nsoftmmu: {} TLB fills", cpu.tlb_fills),
     })
 }

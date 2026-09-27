@@ -1,13 +1,15 @@
-//! Official riscv-tests under every engine (P1.13, P2.7, P2.8): every test of the Phase 1
-//! suites must write `tohost = 1`. The ELFs are built by `tools/build-riscv-tests.sh` and
-//! validated against QEMU in Phase 0 (D20).
+//! Official riscv-tests under every engine (P1.13, P2.7, P2.8, P7.7): every test must write
+//! `tohost = 1`. The ELFs are built by `tools/build-riscv-tests.sh` and validated against QEMU
+//! in Phase 0 (D20). Since Phase 7 that is all 244: the user suites in both the `p`
+//! (physical memory) and `v` (Sv39 virtual memory, demand paging) environments, and the
+//! machine/supervisor suites `rv64mi-p`/`rv64si-p`.
 
 mod common;
 
 use bridgev::jit::{EngineKind, JitOptions, RegAlloc};
 use bridgev::system::bare::{self, BareOptions, BareResult};
 
-/// Suites that must pass under the interpreter (`p` = physical-memory environment).
+/// Every suite that is built (`p` = physical memory, `v` = virtual memory environment).
 const SUITES: &[&str] = &[
     "rv64ui-p-",
     "rv64um-p-",
@@ -15,6 +17,14 @@ const SUITES: &[&str] = &[
     "rv64uc-p-",
     "rv64uf-p-",
     "rv64ud-p-",
+    "rv64ui-v-",
+    "rv64um-v-",
+    "rv64ua-v-",
+    "rv64uc-v-",
+    "rv64uf-v-",
+    "rv64ud-v-",
+    "rv64mi-p-",
+    "rv64si-p-",
 ];
 
 fn run_suites(engine: EngineKind, jit: JitOptions) {
@@ -29,9 +39,10 @@ fn run_suites(engine: EngineKind, jit: JitOptions) {
         .filter(|n| SUITES.iter().any(|s| n.starts_with(s)))
         .collect();
     names.sort();
-    assert!(
-        !names.is_empty(),
-        "no riscv-tests found in {}",
+    assert_eq!(
+        names.len(),
+        244,
+        "expected all 244 riscv-tests in {}",
         dir.display()
     );
     let opts = BareOptions {

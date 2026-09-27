@@ -42,11 +42,13 @@ CONFIGS = {
     "jit+linear": ("bridgev", ["--engine", "jit"]),
     # Phase 6 A/B: the full JIT with every FP instruction through the interpreter helper.
     "jit-helper-fp": ("bridgev", ["--engine", "jit", "--no-inline-fp"]),
+    # Phase 7: the full JIT with every access through the inline software TLB (D48).
+    "softmmu": ("bridgev", ["--engine", "jit", "--mem", "softmmu"]),
     "qemu": ("qemu", []),
     "native": ("native", []),
 }
 # Not yet implemented; shown as n/a in the tables.
-PENDING = {"softmmu": "Phase 7 (--mem=softmmu)"}
+PENDING = {}
 
 
 class Workload:

@@ -907,6 +907,11 @@ impl Ctx<'_> {
             }
             a.jmp(s.back);
             a.bind(fault);
+            // The state map may place dirty guest values in pinned registers too (a copy of a
+            // pinned register): record them for the dispatcher (found by tests/softmmu.rs).
+            for r in [Reg::R12, Reg::R13, Reg::R14, Reg::R15] {
+                a.store(Size::B64, fault_reg(r), r);
+            }
             a.lea_label(R10, s.access);
             a.store(Size::B64, field(offset_of!(CpuState, fault_rip)), R10);
             a.mov_r32_imm(Rax, ((self.tb_id as u64) << 2 | SLOT_SPECIAL) as u32);
