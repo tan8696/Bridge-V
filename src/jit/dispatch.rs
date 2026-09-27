@@ -53,6 +53,10 @@ pub enum RegAlloc {
     Linear,
 }
 
+/// Default `--tier` (D63). A block has to run about 50 times before translating it pays off;
+/// the Linux boot measured fastest between 16 and 64.
+pub const DEFAULT_TIER: u32 = 32;
+
 /// JIT configuration (CLI flags of §23).
 #[derive(Clone, Debug)]
 pub struct JitOptions {
@@ -116,7 +120,7 @@ impl Default for JitOptions {
             profile_tbs: false,
             inline_fp: true,
             smc_flush_on_fence: false,
-            tier: 0,
+            tier: DEFAULT_TIER,
         }
     }
 }

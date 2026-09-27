@@ -65,8 +65,8 @@ struct Boot<'a> {
     disk: Option<&'a Path>,
     /// Number of harts (0 = 1); /proc/cpuinfo must list them all.
     harts: usize,
-    /// `--tier` (D63): interpreted runs of a block before it is translated.
-    tier: u32,
+    /// `--tier` (D63): interpreted runs of a block before it is translated (default if None).
+    tier: Option<u32>,
 }
 
 /// Boot with the built-in SBI, or with `firmware` in M-mode, and with Sv48 offered (Phase 10);
@@ -74,6 +74,10 @@ struct Boot<'a> {
 fn boot_to_shell_with(b: &Boot) {
     let (engine, firmware, sv48, disk) = (b.engine, b.firmware, b.sv48, b.disk);
     let harts = b.harts.max(1);
+    let tier = match b.tier {
+        Some(t) => vec!["--tier".to_string(), t.to_string()],
+        None => Vec::new(),
+    };
     let Some((kernel, initrd)) = images() else {
         return;
     };
@@ -97,7 +101,7 @@ fn boot_to_shell_with(b: &Boot) {
                 .flatten(),
         )
         .args(["--smp", &harts.to_string()])
-        .args(["--tier", &b.tier.to_string()])
+        .args(&tier)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -287,19 +291,17 @@ fn linux_boots_with_4_harts_jit() {
     });
 }
 
-/// D63: the interpreter tier. Most boot code runs only a few times and is never translated;
-/// with 4 harts, code writes seen by one hart must also drop the others' decoded blocks.
+/// D63: the other boots use the default interpreter tier, where most boot code, which runs
+/// only a few times, is never translated. This one translates every block (`--tier 0`), as
+/// before the tier existed; lockstep checks every translation but runs one block at a time.
 #[test]
 #[ignore = "needs tools/fetch-guest-images.sh; slow"]
-fn linux_boots_tiered_jit() {
-    for harts in [1, 4] {
-        boot_to_shell_with(&Boot {
-            engine: "jit",
-            harts,
-            tier: 16,
-            ..Boot::default()
-        });
-    }
+fn linux_boots_translating_every_block_jit() {
+    boot_to_shell_with(&Boot {
+        engine: "jit",
+        tier: Some(0),
+        ..Boot::default()
+    });
 }
 
 /// SMP through OpenSBI: all harts enter the firmware, which starts the secondaries for Linux.

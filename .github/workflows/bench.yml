@@ -1,6 +1,7 @@
 # Benchmarks on a GitHub-hosted runner, for when no Linux machine is at hand: push a commit to
-# a branch named bench/<anything>; the tables appear in the job summary. Runners are shared
-# VMs, so compare only numbers from the same run (boot-bench interleaves its configurations).
+# a branch named bench/<anything>; the tables appear in the job summaries. Runners are shared
+# VMs, so compare only numbers from the same job (both harnesses measure their configurations
+# on the same runner; boot-bench interleaves them run by run).
 name: bench
 
 on:
@@ -20,7 +21,8 @@ jobs:
         shell: bash # -eo pipefail: a failed benchmark fails the step despite `| tee`
     env:
       # boot-bench.py configurations (<engine>[-opensbi][-sv48][-tierN], qemu).
-      CONFIGS: jit-tier0,jit-tier1,jit-tier4,jit-tier16,jit-tier64,jit-tier256,qemu
+      CONFIGS: jit-tier0,jit-tier16,jit-tier32,jit-tier64,qemu
+      RUNS: 7
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,9 +51,44 @@ jobs:
         run: cargo build --release && ./tools/fetch-guest-images.sh
 
       - name: Boot benchmark
-        run: python3 tools/boot-bench.py --configs "$CONFIGS" --runs 5 --detail | tee -a "$GITHUB_STEP_SUMMARY"
+        run: python3 tools/boot-bench.py --configs "$CONFIGS" --runs "$RUNS" --detail | tee -a "$GITHUB_STEP_SUMMARY"
 
       # D63: with a tier no block reaches, the whole boot runs in the interpreter tier and the
       # --stats histogram counts how often every block ran.
       - name: How often blocks run during a boot
         run: python3 tools/boot-bench.py --configs jit-tier1000000000 --runs 1 --detail | tee -a "$GITHUB_STEP_SUMMARY"
+
+  user:
+    name: CoreMark, Dhrystone, fpbench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      # tools/bench.py configurations (its CONFIGS table).
+      CONFIGS: jit+linear,jit-tier0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install host packages (tools/setup.sh)
+        run: ./tools/setup.sh
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install 1.94 --profile minimal
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Build bridgev and the benchmarks
+        run: cargo build --release && ./tools/build-bench.sh
+
+      - name: Benchmarks
+        run: python3 tools/bench.py --configs "$CONFIGS" --runs 3 --out bench-out && cat bench-out/results.md >> "$GITHUB_STEP_SUMMARY"

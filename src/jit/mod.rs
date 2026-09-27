@@ -9,7 +9,7 @@ pub mod lockstep;
 pub mod perfmap;
 pub mod trampoline;
 
-pub use dispatch::{Jit, JitOptions, RegAlloc};
+pub use dispatch::{DEFAULT_TIER, Jit, JitOptions, RegAlloc};
 
 use crate::interp::{Engine, Interp};
 

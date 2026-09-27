@@ -80,9 +80,18 @@ fn guest_programs_match_qemu_reference() {
     run_all(&[]);
 }
 
+/// The JIT with every block translated on its first run (`--tier 0`, D63): what the tests of
+/// translated code need, since by default code that runs only a few times is interpreted.
+fn run_all_translated(extra: &[&str]) {
+    let mut args = vec!["--engine", "jit", "--tier", "0"];
+    args.extend_from_slice(extra);
+    run_all(&args);
+}
+
 #[test]
 fn guest_programs_match_qemu_reference_jit() {
     run_all(&["--engine", "jit"]);
+    run_all_translated(&[]);
 }
 
 #[test]
@@ -92,27 +101,19 @@ fn guest_programs_match_qemu_reference_lockstep() {
 
 #[test]
 fn guest_programs_match_qemu_reference_no_chain() {
-    run_all(&["--engine", "jit", "--no-chain"]);
+    run_all_translated(&["--no-chain"]);
     run_all(&["--engine", "lockstep", "--no-chain"]);
 }
 
 /// A 64 KiB code cache fills up repeatedly: full flushes must reset links and the jump cache.
 #[test]
 fn guest_programs_match_qemu_reference_small_code_cache() {
-    run_all(&["--engine", "jit", "--code-cache", "64K"]);
+    run_all_translated(&["--code-cache", "64K"]);
 }
 
 #[test]
 fn guest_programs_match_qemu_reference_jit_mprotect_baseline() {
-    run_all(&[
-        "--engine",
-        "jit",
-        "--wx",
-        "mprotect",
-        "--no-host-features",
-        "--max-block",
-        "7",
-    ]);
+    run_all_translated(&["--wx=mprotect", "--no-host-features", "--max-block=7"]);
 }
 
 /// P1.14: parse the initial stack back and check argc/argv/envp/auxv.
@@ -120,14 +121,14 @@ fn guest_programs_match_qemu_reference_jit_mprotect_baseline() {
 #[test]
 fn guest_programs_match_qemu_reference_regalloc_levels() {
     for level in ["none", "pinned"] {
-        run_all(&["--engine", "jit", "--regalloc", level]);
+        run_all_translated(&["--regalloc", level]);
         run_all(&["--engine", "lockstep", "--regalloc", level]);
     }
     run_all(&["--engine", "lockstep", "--pin", ""]);
 }
 
-/// D63: the interpreter tier (blocks translated after two interpreted runs), with direct and
-/// software-TLB memory.
+/// D63: the interpreter tier with a small threshold (blocks translated after two interpreted
+/// runs), so most programs switch between interpreted and translated blocks many times.
 #[test]
 fn guest_programs_match_qemu_reference_tiered() {
     run_all(&["--engine", "jit", "--tier", "2"]);
@@ -139,8 +140,9 @@ fn guest_programs_match_qemu_reference_tiered() {
 fn guest_programs_match_qemu_reference_softmmu() {
     run_all(&["--mem", "softmmu"]);
     run_all(&["--engine", "jit", "--mem", "softmmu"]);
+    run_all_translated(&["--mem", "softmmu"]);
     run_all(&["--engine", "lockstep", "--mem", "softmmu"]);
-    run_all(&["--engine", "jit", "--mem", "softmmu", "--regalloc", "none"]);
+    run_all_translated(&["--mem", "softmmu", "--regalloc", "none"]);
 }
 
 #[test]

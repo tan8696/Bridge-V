@@ -104,7 +104,8 @@ fn lockstep_catches_injected_miscompilation() {
     }
 }
 
-/// P2.9: --stats reports JIT counters; --dump-x86 writes one .bin/.txt pair per TB.
+/// P2.9: --stats reports JIT counters; --dump-x86 writes one .bin/.txt pair per TB (`--tier
+/// 0`: hello's code runs once, so with the default tier nothing would be translated, D63).
 #[test]
 fn jit_stats_and_dump() {
     let Some(elf) = common::guest_elf("hello") else {
@@ -115,6 +116,8 @@ fn jit_stats_and_dump() {
         "run",
         "--engine",
         "jit",
+        "--tier",
+        "0",
         "--stats",
         "--dump-x86",
         dir.to_str().unwrap(),
@@ -129,14 +132,16 @@ fn jit_stats_and_dump() {
 
 /// P2.7: a guest store to its read-only text faults on the host inside JIT code; the SIGSEGV
 /// handler and pcmap must report exactly what the interpreter reports (cause, tval, pc, and the
-/// retired-instruction count), and the JIT must have taken the host-fault path.
+/// retired-instruction count), and the JIT must have taken the host-fault path (`--tier 0`, so
+/// the store, which runs once, is translated).
 #[test]
 fn jit_host_fault_is_precise() {
     let Some(elf) = common::guest_elf("fault") else {
         return;
     };
+    let e = elf.to_str().unwrap();
     let run = |engine: &str| {
-        let out = run_bridgev(["run", "--engine", engine, "--stats", elf.to_str().unwrap()]);
+        let out = run_bridgev(["run", "--engine", engine, "--tier", "0", "--stats", e]);
         assert_eq!(out.code, Some(139), "{engine}: {}", out.stderr);
         let lines: Vec<String> = out.stderr.lines().map(String::from).collect();
         (
@@ -169,7 +174,8 @@ fn icount_and_stats(args: &[&str]) -> (u64, String) {
 }
 
 /// P3.3: the budget-derived instruction count is exactly the interpreter's, with and without
-/// chaining and with tiny code caches (every exit, flush and helper refund is accounted for).
+/// chaining and with tiny code caches (every exit, flush and helper refund is accounted for),
+/// with every block translated and with the interpreter tier (D63).
 #[test]
 fn icount_is_exact_under_every_engine() {
     for prog in [
@@ -187,8 +193,9 @@ fn icount_is_exact_under_every_engine() {
         let (want, _) = icount_and_stats(&["run", "--stats", e]);
         for cfg in [
             &["--engine", "jit"][..],
-            &["--engine", "jit", "--no-chain"],
-            &["--engine", "jit", "--code-cache", "64K"],
+            &["--engine", "jit", "--tier", "0"],
+            &["--engine", "jit", "--tier", "0", "--no-chain"],
+            &["--engine", "jit", "--tier", "0", "--code-cache", "64K"],
             &["--engine", "jit", "--tier", "3"],
             &["--engine", "lockstep"],
         ] {

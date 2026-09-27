@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use bridgev::elf::{Elf, PF_X};
 use bridgev::isa::{decode_parts, disasm};
 use bridgev::jit::code_mem::WxMode;
-use bridgev::jit::{EngineKind, JitOptions, RegAlloc};
+use bridgev::jit::{DEFAULT_TIER, EngineKind, JitOptions, RegAlloc};
 use bridgev::system::bare::{self, BareOptions, BareResult};
 use bridgev::system::machine::{self, BootExit, BootOptions};
 use bridgev::system::uart16550::Sink;
@@ -214,7 +214,7 @@ enum Command {
         smc: SmcArg,
         /// JIT: run each block N times in the interpreter before translating it (0: translate
         /// every block on its first run).
-        #[arg(long, default_value_t = 0, value_name = "N")]
+        #[arg(long, default_value_t = DEFAULT_TIER, value_name = "N")]
         tier: u32,
         /// Testing only: deliberately miscompile ADDI (lockstep must catch it).
         #[arg(long, hide = true)]
@@ -268,7 +268,7 @@ enum Command {
         no_chain: bool,
         /// JIT: run each block N times in the interpreter before translating it (0: translate
         /// every block on its first run).
-        #[arg(long, default_value_t = 0, value_name = "N")]
+        #[arg(long, default_value_t = DEFAULT_TIER, value_name = "N")]
         tier: u32,
         /// Make the `time` CSR and the timers follow the instruction count (reproducible).
         #[arg(long)]

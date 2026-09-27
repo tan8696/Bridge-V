@@ -41,6 +41,8 @@ CONFIGS = {
     "jit+chain": ("bridgev", ["--engine", "jit", "--regalloc", "none"]),
     "jit+pinned": ("bridgev", ["--engine", "jit", "--regalloc", "pinned"]),
     "jit+linear": ("bridgev", ["--engine", "jit"]),
+    # D63 A/B: the full JIT translating every block on its first run (no interpreter tier).
+    "jit-tier0": ("bridgev", ["--engine", "jit", "--tier", "0"]),
     # Phase 6 A/B: the full JIT with every FP instruction through the interpreter helper.
     "jit-helper-fp": ("bridgev", ["--engine", "jit", "--no-inline-fp"]),
     # Phase 7: the full JIT with every access through the inline software TLB (D48).

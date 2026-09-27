@@ -72,9 +72,18 @@ fn phase1_suites_pass_under_interpreter() {
     run_suites(EngineKind::Interp, JitOptions::default());
 }
 
+/// The JIT translating every block on its first run (`--tier 0`, D63). Most riscv-tests code
+/// runs once, so with the default tier it would be interpreted, not translated.
+fn untiered() -> JitOptions {
+    JitOptions {
+        tier: 0,
+        ..JitOptions::default()
+    }
+}
+
 #[test]
 fn phase1_suites_pass_under_jit() {
-    run_suites(EngineKind::Jit, JitOptions::default());
+    run_suites(EngineKind::Jit, untiered());
 }
 
 #[test]
@@ -86,17 +95,18 @@ fn phase1_suites_pass_under_lockstep() {
 fn phase1_suites_pass_without_chaining() {
     let jit = JitOptions {
         chain: false,
-        ..JitOptions::default()
+        ..untiered()
     };
     run_suites(EngineKind::Jit, jit.clone());
     run_suites(EngineKind::Lockstep, jit);
 }
 
-/// D63: the interpreter tier. Blocks run once or three times in the interpreter before they are
-/// translated, so every test mixes interpreted and translated blocks.
+/// D63: the interpreter tier. With small tiers blocks run once or three times in the
+/// interpreter before they are translated, so every test mixes interpreted and translated
+/// blocks; the default tier interprets almost all of this run-once code.
 #[test]
 fn phase1_suites_pass_tiered() {
-    for tier in [1, 3] {
+    for tier in [1, 3, JitOptions::default().tier] {
         let jit = JitOptions {
             tier,
             ..JitOptions::default()
@@ -110,7 +120,7 @@ fn phase1_suites_pass_tiered() {
 fn phase1_suites_pass_with_tiny_slices() {
     let jit = JitOptions {
         slice: 3,
-        ..JitOptions::default()
+        ..untiered()
     };
     run_suites(EngineKind::Jit, jit);
 }
@@ -134,7 +144,7 @@ fn phase1_suites_pass_at_every_regalloc_level() {
     for regalloc in [RegAlloc::None, RegAlloc::Pinned] {
         let jit = JitOptions {
             regalloc,
-            ..JitOptions::default()
+            ..untiered()
         };
         run_suites(EngineKind::Jit, jit.clone());
         run_suites(EngineKind::Lockstep, jit);
@@ -149,7 +159,7 @@ fn phase1_suites_pass_linear_unpinned_small_blocks() {
         pin: Vec::new(),
         max_block: 3,
         slice: 1,
-        ..JitOptions::default()
+        ..untiered()
     };
     run_suites(EngineKind::Jit, jit.clone());
     run_suites(EngineKind::Lockstep, jit);

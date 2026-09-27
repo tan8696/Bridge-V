@@ -50,11 +50,13 @@ struct Rig {
 }
 
 impl Rig {
+    /// These tests check translated code: every block is translated on its first run (no
+    /// interpreter tier, D63), or the short test programs would only be interpreted.
     fn new(opts: JitOptions) -> Rig {
         let mut mem = DirectMem::new().unwrap();
         mem.map(GuestVirt(CODE), 0x2000, prot::R | prot::X).unwrap();
         Rig {
-            jit: Jit::new(opts).unwrap(),
+            jit: Jit::new(JitOptions { tier: 0, ..opts }).unwrap(),
             mem,
             env: Env {
                 user_mode: true,
