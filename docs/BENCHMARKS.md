@@ -90,7 +90,7 @@ Every unit is validated against integer or published references, and every run p
 | `jit+pinned` | `--regalloc pinned`: + IR, four guest registers pinned to R12–R15 (Phase 4), budget in R9 (D46, Phase 5) |
 | `jit+linear` | default: + optimizer passes and the linear-scan allocator with lazy write-back (Phase 4) |
 | `jit-helper-fp` | `--no-inline-fp`: the full JIT with every FP instruction through the interpreter helper (fpbench only) |
-| `softmmu` | not implemented yet (Phase 7) |
+| `softmmu` | `--mem=softmmu`: the full JIT with every access through the software TLB (Phase 7) |
 | `qemu` | `qemu-riscv64` 8.2.2 (Ubuntu), same guest binary |
 | `native` | the same C sources compiled with the host gcc 13.3 for x86-64 (`-O2 -static`) |
 
@@ -110,6 +110,22 @@ Every unit is validated against integer or published references, and every run p
 **Host:** Intel Xeon @ 2.10 GHz (4 vCPU cloud VM, shared), Linux 6.18, rustc 1.94.1. **This is a noisy shared VM:** run-to-run spread is several percent, and one earlier batch saw QEMU vary by ±15%. Compare configurations within one batch, not across batches.
 
 **Reproduce:** `tools/setup.sh && cargo build --release && tools/build-bench.sh && python3 tools/bench.py`. `tools/demo-milestone-a.sh` does the interpreter-vs-JIT CoreMark subset (about 1 minute).
+
+## SoftMMU: direct vs `--mem=softmmu` (Phase 7, 2026-09-27, commit `6c95332`)
+
+Raw data: [`bench/2026-09-27-6c95332-softmmu/results.json`](bench/2026-09-27-6c95332-softmmu/results.json). Same host, method and noise caveat as above. The JSON records a dirty tree only because docs were being edited; the binary was built from `6c95332`. `softmmu` = the full JIT with every load and store through the inline software TLB (D48).
+
+| workload | direct (`jit+linear`) | softmmu | softmmu / direct | softmmu guest MIPS |
+|---|---:|---:|---:|---:|
+| CoreMark (iterations/s) | 13,789 (13,512–14,074) | 7,498 (7,440–7,574) | 0.54 | 2,688 |
+| Dhrystone (Dhrystones/s) | 21,803,943 (21,598,316–22,869,068) | 10,856,731 (10,704,928–11,454,179) | 0.50 | 3,642 |
+
+**Against QEMU:** for reference, `qemu-riscv64` (direct host mapping) measured 9,242 CoreMark it/s and 5,142,221 Dhrystones/s in the same session at `2da741e` ([`bench/2026-09-27-2da741e-softmmu/`](bench/2026-09-27-2da741e-softmmu/)). That puts softmmu at 0.81× QEMU on CoreMark and 2.1× on Dhrystone.
+
+**TLB microbenchmark** (`tools/tlb-bench.py`, bare-metal Sv39 in S-mode + user-mode twin, 5 runs, median):
+- A TLB hit costs 4.15 ns of load-to-use latency (a raw host load: 1.01 ns) and 0.34 ns per access in throughput.
+- A miss with an Sv39 walk costs 28.1 ns per access.
+- Details: [`bench/2026-09-27-2da741e-softmmu/tlb.md`](bench/2026-09-27-2da741e-softmmu/tlb.md) and the Phase 7 report §7.2.
 
 ## Earlier harness runs
 - [`bench/2026-09-26-3099969-baseline.md`](bench/2026-09-26-3099969-baseline.md): the same matrix before the Phase 5 tuning (budget in memory). `jit+linear` CoreMark 13,041, Dhrystone 18.4 M. The before/after of the tuning itself was measured in a same-batch A/B run: Phase 5 report §7.3.

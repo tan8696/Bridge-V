@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 6 (FP in the JIT) complete.** Inline SSE/FMA3 FP: fpbench 60× the helper path, 5.6× qemu-riscv64; CoreMark 13,498 it/s = 1.52× qemu (`docs/BENCHMARKS.md`). Next up: Phase 7, task P7.1 (`docs/ROADMAP.md`). |
+| Phase | **Phase 7 (privileged + softmmu) complete.** Sv39 walker + inline software TLB; all 244 riscv-tests (p, v, mi, si) under every engine; TLB hit 4.1 ns vs Sv39 miss 28 ns; CoreMark under `--mem=softmmu` 54% of direct (2.7 G guest insns/s) (`docs/BENCHMARKS.md`). Next up: Phase 8, task P8.1 (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-06-fp-jit.md` |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-07-privileged-softmmu.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-26 |
@@ -683,33 +683,36 @@ stub_k:  (dirty regs already written back on the path)
 - The permission and privilege checks are folded in at fill time. A read-only page gets `addr_write = MAX`. The dirty bit is also handled at fill time: `addr_write` stays invalid until the walker has set D.
 - One TLB per MMU index (U, S, M/bare, plus MPRV variants). The index is part of `TbFlags`, so the TLB offset is a constant baked into the code.
 
-**Fast path for `ld a0, 16(s1)`** (s1 in RSI, a0's allocated register is RDI; TLB_SIZE=256):
+**Fast path for `ld a0, 16(s1)`** as emitted (`lower_ir.rs::tlb_probe`, D48; s1 in RSI, a0's register RDI, TLB_SIZE = 256, MMU index S):
 ```
     lea   r11, [rsi + 16]                      ; guest vaddr
     mov   r10, r11
     shr   r10, 7                               ; 12 (page) − 5 (log2 entry size)
     and   r10d, 0xFF << 5                      ; entry byte offset
-    mov   rdi, r11
-    and   rdi, -4096 | 7                       ; page | misalign bits (imm32 0xFFFFF007, sign-extended)
-    cmp   rdi, [rbp + r10 + TLB_OFF(idx)+0 -128]   ; addr_read
+    and   r11, -4096 | 7                       ; page | misalign bits (imm32 0xFFFFF007, sign-extended)
+    cmp   r11, [rbp + r10 + TLB_OFF(idx)+0 -128]   ; addr_read (+8: addr_write)
     jne   .Lslow_N                             ; cold stub
+    lea   r11, [rsi + 16]                      ; vaddr again (the base register is intact)
     add   r11, [rbp + r10 + TLB_OFF(idx)+24 -128]  ; + addend → host address
-    mov   rdi, [r11]
+    mov   rdi, [r11]                           ; the fault site (state map) is recorded here
 .Lret_N:
 ```
+- Recomputing the address instead of borrowing the destination register works the same for stores, where there is no destination.
 - The tag check itself (`shr`, `and`, `and`, `cmp`, `jne`) is 4–5 instructions. The whole hit path is about 9 instructions including the access, with no memory round-trips beyond the TLB entry.
+- **Measured (P7.9, `tools/tlb-bench.py`):** a hit adds about 3 ns of load-to-use latency over a raw host load and 0.4 ns per access in throughput. An Sv39 miss (walk + fill) costs about 29 ns per access. See `docs/phase-reports/phase-07-privileged-softmmu.md`.
 - Misaligned accesses always miss (the low bits are non-zero). The slow path does them byte-wise or split, and they can **never** cross a page on the fast path.
-- **Slow path (cold stub):**
-  1. Save the live caller-saved pool registers.
-  2. Store the constant guest PC to `cpu.pc`, and store dirty guest registers per the state map.
-  3. `call helper_load_slow(cpu, vaddr, size|signed|mmu_idx)`. This walks the page table, fills the TLB, handles MMIO, misalignment and page-crossing, and returns the value or sets `exit_reason = EXCEPTION`.
-  4. Test `exit_reason`. If set, jump to the TB exception exit (write back the pinned registers and exit with slot 2). Otherwise restore the registers, move the value into the destination, and jump to `.Lret_N`.
+- **Slow path (cold stub per access, D48):**
+  1. Save RAX, RCX, RDX, RSI, RDI, R8 and R9 (budget) to `cpu.fault_regs`.
+  2. Build the arguments from the saved copies: va, info = size | signed<<4 | store<<5 | mmu_idx<<8, and the store value. Refund the budget of the unretired instructions into `cpu.budget` (D30).
+  3. `call helper_mmu_access(cpu, va, info, val)`. This translates through the TLB (walking and filling on a miss), handles MMIO, misalignment and page-crossing, and returns the value or sets `exit_reason = MMU_FAULT` with `exc_cause`/`exc_tval`.
+  4. Restore the registers and test `exit_reason`. On a fault, also store R12–R15 and `fault_rip` = the site, and exit (slot 2). The dispatcher applies the site's state map (D37), so the fault is precise without per-site store code. Otherwise move the value into the destination and jump to `.Lret_N`.
 - **Flush:**
   - `satp` write: flush all.
   - `SFENCE.VMA`: flush all (per-page/ASID flushing is a later optimization).
-  - Changes to MXR, SUM or MPRV/MPP: flush the affected MMU indices.
+  - MXR change: flush all. SUM and MPRV/MPP select separate indices (U, S, S+SUM, M/Bare), so they need no flush (D48).
   - Privilege change: nothing to flush (separate TLB per index).
-- **Stats:** hits are inferred (`accesses − misses`), and misses are counted in the slow path. A microbenchmark measures cycles per access on hit and miss (§22) to back the "45 → 4 cycles" claim.
+  - Every flush bumps `cpu.mmu_gen`, which drops the interpreter's decoded blocks and resets the jump cache.
+- **Stats:** `--stats` prints the number of TLB fills (walks), `mmu-fault` exits and page-straddling instructions. Hits are not counted (no counter on the hot path). A microbenchmark measures the cost per access on hit and miss (§22, P7.9).
 
 ---
 
@@ -1044,9 +1047,9 @@ Each phase ends with:
 ## 28. Resume bullets and interview presentation
 
 ### 28.1 Resume bullets (targets: replace the numbers with measured values from `docs/BENCHMARKS.md` before use)
-- Engineered a 64-bit RISC-V to x86_64 dynamic binary translator supporting RV64IMAFD instruction extensions, executing compiled Linux binaries at over **120M instructions/sec**. *(Measured, Phase 5: CoreMark at 4.8 billion guest instructions/s in user mode, 26.5× the interpreter and 1.52× `qemu-riscv64`; the softmmu/system-mode figure comes in Phase 7.)*
+- Engineered a 64-bit RISC-V to x86_64 dynamic binary translator supporting RV64IMAFD instruction extensions, executing compiled Linux binaries at over **120M instructions/sec**. *(Measured, Phase 5: CoreMark at 4.8 billion guest instructions/s in user mode, 26.5× the interpreter and 1.52× `qemu-riscv64`; Phase 7: CoreMark under `--mem=softmmu`, every access through the software TLB, runs at 2.7 billion guest instructions/s.)*
 - Eliminated dispatcher context switching by developing a runtime basic-block chaining mechanism that hot-patches native branch targets directly in executable cache memory.
-- Implemented an inline software TLB and SV39 virtual memory engine, reducing memory translation overhead from **45 cycles to 4 cycles** on cached hits.
+- Implemented an inline software TLB and SV39 virtual memory engine, reducing memory translation overhead from **45 cycles to 4 cycles** on cached hits. *(Measured, Phase 7: a TLB hit adds < 1 cycle per access in throughput and about 5–7 cycles of load-to-use latency; a miss with a full Sv39 walk costs about 59 nominal cycles (28 ns). Rewrite the bullet with these numbers.)*
 - Authored a custom JIT code emitter and register allocator mapping 32 guest registers to host x86_64 registers with zero-cost spill resolution for hot execution paths.
 
 ### 28.2 Architecture walkthrough (2 minutes)

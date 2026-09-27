@@ -605,45 +605,45 @@ The list of ops inline vs helper, how each semantic difference was handled, fuzz
 **Entry criteria:** Phase 5 done. (Phase 6 is not required.)
 
 ### P7.1 Complete CSR file (L)
-- [ ] All M and S CSRs in §15 and §20: sstatus/sie/sip as views, misa, mcounteren/scounteren, menvcfg/senvcfg, stvec/sepc/scause/stval/sscratch, satp with Sv39 (and Bare), and the pmp CSRs (accept, allow all).
-- [ ] WARL behaviour for the fields we don't implement.
-- [ ] TVM/TW/TSR trapping behaviour.
+- [x] All M and S CSRs in §15 and §20: sstatus/sie/sip as views, misa, mcounteren/scounteren, menvcfg/senvcfg, stvec/sepc/scause/stval/sscratch, satp with Sv39 (and Bare), and the pmp CSRs (accept, allow all).
+- [x] WARL behaviour for the fields we don't implement.
+- [x] TVM/TW/TSR trapping behaviour.
 
 ### P7.2 Traps and interrupts (M), `src/cpu/trap.rs`
-- [ ] Delegation via medeleg/mideleg, trap entry to M or S, MRET/SRET, vectored mode, and the interrupt priority and enable logic (§15).
-- [ ] The dispatcher delivers interrupts between TBs. The instructions listed in §15 end the TB. WFI.
+- [x] Delegation via medeleg/mideleg, trap entry to M or S, MRET/SRET, vectored mode, and the interrupt priority and enable logic (§15).
+- [x] The dispatcher delivers interrupts between TBs. The instructions listed in §15 end the TB. WFI (still a legal no-op: there is no timer to wait for until Phase 9's CLINT).
 - **Tests:** unit tests for every delegation and enable combination; riscv-tests `rv64mi-p-*` and `rv64si-p-*`.
 
 ### P7.3 Physical memory bus (S), `src/mem/phys.rs`
-- [ ] RAM plus a sorted MMIO device list (§14.2), and access faults outside them.
+- [x] RAM plus a sorted MMIO device list (§14.2), and access faults outside them.
 
 ### P7.4 Sv39 walker (M), `src/mem/mmu.rs`
-- [ ] The walk, permission checks, A/D update, superpage alignment and canonical-address check, exactly per §14.3. Sv48 is left behind a `todo` to be enabled in Phase 10.
+- [x] The walk, permission checks, A/D update, superpage alignment and canonical-address check, exactly per §14.3. Sv48 is left behind a `todo` to be enabled in Phase 10.
 - **Tests (§21 item 8):** hand-built page tables covering 4K/2M/1G pages, misaligned superpages, every U/SUM/MXR/priv combination, A/D updates, non-canonical addresses, invalid PTE encodings, and faults while reading a PTE itself.
 
 ### P7.5 TLB (M), `src/mem/tlb.rs`
-- [ ] A direct-mapped TLB per MMU index in `CpuState` (§14.4), with fill, flag bits (MMIO, CODE, WATCH) and the flush rules. The MMU index goes into `TbFlags`.
+- [x] A direct-mapped TLB per MMU index in `CpuState` (§14.4), with fill, flag bits (MMIO, CODE, WATCH) and the flush rules. The MMU index goes into `TbFlags`.
 
 ### P7.6 Inline fast path in JIT code (L)
-- [ ] The load and store sequence per §14.4 (tag compare, addend, access). Misaligned accesses always take the slow path.
-- [ ] Instruction fetch at translate time goes through the exec TLB and walker. Cross-page jumps go through the jump cache, validated against `addr_code`.
-- [ ] Cold slow-path stubs call `helper_load_slow`/`helper_store_slow` with state maps. An exception exit path.
+- [x] The load and store sequence per §14.4 (tag compare, addend, access). Misaligned accesses always take the slow path.
+- [x] Instruction fetch at translate time goes through the exec TLB and walker. Cross-page jumps go through the jump cache. Instead of an `addr_code` check per hit, the jump cache is reset whenever the TB flags or `mmu_gen` (any TLB flush) change, and the dispatcher's lookup translates the pc (D48).
+- [x] Cold slow-path stubs call `helper_load_slow`/`helper_store_slow` with state maps. An exception exit path.
 - **Tests:** a fast path vs slow path equivalence fuzz (random vaddrs over a mapped/unmapped layout); MMIO access through the slow path.
 
 ### P7.7 System-mode test runner (M)
-- [ ] `bridgev run --mode=bare` extended with S/U support and the Sv39 environment for riscv-tests `-v-` variants.
+- [x] `bridgev run --mode=bare` extended with S/U support and the Sv39 environment for riscv-tests `-v-` variants.
 - **Done when:** `rv64mi-p-*`, `rv64si-p-*` and **all `rv64u*-v-*`** pass under interp, jit and lockstep.
 
 ### P7.8 SoftMMU in user mode (S)
-- [ ] `--mem=softmmu` for Linux user programs. The "page table" is the guest's mmap state, so the TLB fast path gets exercised by CoreMark. Add this configuration to the benchmark matrix.
+- [x] `--mem=softmmu` for Linux user programs. The "page table" is the guest's mmap state, so the TLB fast path gets exercised by CoreMark. Add this configuration to the benchmark matrix.
 
 ### P7.9 TLB microbenchmark (S)
-- [ ] A guest loop of N loads over a working set that fits in the TLB, versus one that is larger than it. Measure host cycles per access with `rdtsc` around the runs, subtract the loop overhead, and report the hit vs miss cost. **These are the numbers behind the "45 → 4 cycles" resume bullet. Use whatever is actually measured.**
+- [x] A guest loop of N loads over a working set that fits in the TLB, versus one that is larger than it. Measure host cycles per access with `rdtsc` around the runs, subtract the loop overhead, and report the hit vs miss cost. **These are the numbers behind the "45 → 4 cycles" resume bullet. Use whatever is actually measured.**
 
 ### Phase 7 acceptance criteria
-- `rv64mi/si-p-*` and `rv64u*-v-*` pass (interp, jit, lockstep).
-- Walker unit tests pass.
-- Recorded: the TLB microbenchmark and softmmu vs direct CoreMark numbers.
+- ✅ `rv64mi/si-p-*` and `rv64u*-v-*` pass (interp, jit, lockstep): all 244 riscv-tests under 8 engine configurations (`tests/riscv_tests.rs`).
+- ✅ Walker unit tests pass (`mem::mmu::tests`, 9 tests).
+- ✅ Recorded: the TLB microbenchmark and softmmu vs direct CoreMark numbers (`docs/phase-reports/phase-07-privileged-softmmu.md`).
 
 ### Phase 7 report must include
 The CSR coverage table, walker test matrix, a TLB fast-path disassembly from a real TB, microbenchmark methodology and results, and the direct vs softmmu comparison.
