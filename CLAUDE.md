@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 9 (Milestone B) complete.** Linux 6.8 (Ubuntu's stock riscv64 kernel, D50) boots to a BusyBox shell on the built-in SBI in 1.25 s under the JIT (QEMU TCG 1.50 s, interpreter 9.99 s); the whole boot and a shell session also run clean under lockstep (84 M TBs, D52). Automated UART test in CI (`linux-boot`). Phase 8: eager SMC invalidation. Phase 7: Sv39 + inline TLB, all 244 riscv-tests. Phase 10 in progress: OpenSBI boot (D53), Sv48 (D54), multithreaded user mode (D55, serialized), guest signals (D56), dynamic ELF/PIE (D57), virtio-blk (D58), a GDB stub (D59) and SMP guests (D60, serialized) done; return-address stack and superblocks not pursued (`phase-10-not-pursued.md`); see `docs/phase-reports/phase-10-*.md`. |
+| Phase | **Phase 10 (stretch goals) complete: 8 of 10 items done, 2 analysed and not pursued.** Done: OpenSBI boot (D53), Sv48 (D54), multithreaded user mode (D55, serialized), guest signals (D56), dynamic ELF/PIE (D57), virtio-blk (D58), GDB stub (D59), SMP guests (D60, serialized). Not pursued: return-address stack, superblocks (`phase-10-not-pursued.md`). Phase 9: Linux 6.8 boots to a BusyBox shell in 1.25 s under the JIT (QEMU TCG 1.50 s), lockstep-clean. Next up: Phase 11 (polish, presentation, resume numbers; `docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-09-milestone-b.md`, then `phase-10-*.md` per stretch goal |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-09-milestone-b.md` and one `phase-10-*.md` per stretch goal |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-27 |
