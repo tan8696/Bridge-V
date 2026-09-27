@@ -23,6 +23,8 @@ use crate::cpu::trap::{Exception, cause, prv};
 /// satp.MODE values.
 pub const SATP_BARE: u64 = 0;
 pub const SATP_SV39: u64 = 8;
+/// Sv48 (Phase 10): only accepted when `Csrs::sv48` is set (`bridgev boot --mmu sv48`).
+pub const SATP_SV48: u64 = 9;
 const PPN_MASK: u64 = (1 << 44) - 1;
 
 /// PTE bits.
@@ -71,7 +73,8 @@ pub struct Walk {
     pub page_mask: u64,
 }
 
-/// Translate `va` for access `acc` at MMU index `mmu` (priv spec §12.3.2, Sv39).
+/// Translate `va` for access `acc` at MMU index `mmu` (priv spec §12.3.2, Sv39; §12.5, Sv48:
+/// the same walk with one more level and 48-bit virtual addresses).
 pub fn walk(
     cpu: &CpuState,
     mem: &mut DirectMem,
@@ -88,12 +91,18 @@ pub fn walk(
         });
     }
     let pf = || page_fault(acc, va);
-    // Bits 63:39 must equal bit 38.
-    if (((va << 25) as i64) >> 25) as u64 != va {
+    let (top_level, va_bits) = if satp >> 60 == SATP_SV48 {
+        (3u32, 48)
+    } else {
+        (2, 39)
+    };
+    // Bits 63:va_bits must equal bit va_bits - 1.
+    let sh = 64 - va_bits;
+    if (((va << sh) as i64) >> sh) as u64 != va {
         return Err(pf());
     }
     let mut a = (satp & PPN_MASK) << 12;
-    let mut level = 2u32;
+    let mut level = top_level;
     let (pte, pte_addr) = loop {
         let pte_addr = a + ((va >> (12 + 9 * level)) & 0x1ff) * 8;
         // A PTE read is a physical access: outside RAM it is an access fault (§12.3.2 step 2).
@@ -759,5 +768,42 @@ mod tests {
         assert_eq!(slot(&cpu, 0x4020_0000), TlbEntry::EMPTY);
         assert_eq!(cpu.jc_gen, jc_gen + 1);
         assert_eq!(cpu.tlb_super, [u64::MAX, 0]);
+    }
+
+    /// Sv48 (Phase 10): four levels and 48-bit virtual addresses; satp takes mode 9 only when
+    /// the machine offers it (`Csrs::sv48`), otherwise the write is ignored (WARL).
+    #[test]
+    fn sv48_walk() {
+        let (mut cpu, mut mem) = setup();
+        const TOP: u64 = RAM + 0x8000;
+        let root = SATP_SV48 << 60 | TOP >> 12;
+        let old = cpu.csr.satp;
+        cpu.csr_write(0x180, root);
+        assert_eq!(cpu.csr.satp, old, "Sv48 not offered: satp unchanged");
+        cpu.csr.sv48 = true;
+        cpu.csr_write(0x180, root);
+        assert_eq!(cpu.csr.satp, root);
+        // A 4 KiB page above the Sv39 range: TOP[vpn3] -> ROOT -> L1 -> L0.
+        let va = 0x0000_7f80_0020_1000;
+        put(&mut mem, TOP + vpn(va, 3) * 8, table(ROOT));
+        map4k(&mut mem, va, RAM + 0x5_0000, R | W | AD);
+        let w = walk(&cpu, &mut mem, va | 0x123, Access::Load, idx::S).unwrap();
+        assert_eq!((w.ppage, w.page_mask), (RAM + 0x5_0000, 0xfff));
+        // A 512 GiB terapage leaf at level 3 (PPN aligned to 2^27 pages).
+        let tera = 0x0000_0080_0000_0000; // vpn3 = 1
+        put(&mut mem, TOP + vpn(tera, 3) * 8, leaf(0, R | X | AD));
+        let w = walk(&cpu, &mut mem, tera + 0x8000_1234, Access::Fetch, idx::S).unwrap();
+        assert_eq!((w.ppage, w.page_mask), (0x8000_1000, (1 << 39) - 1));
+        // Misaligned terapage: fault.
+        put(&mut mem, TOP + 2 * 8, leaf(0x1000, R | AD));
+        let e = walk(&cpu, &mut mem, 0x0000_0100_0000_0000, Access::Load, idx::S);
+        assert_eq!(cause_of(e), cause::LOAD_PAGE);
+        // Bits 63:48 must copy bit 47.
+        let e = walk(&cpu, &mut mem, 0x0000_8000_0000_0000, Access::Load, idx::S);
+        assert_eq!(cause_of(e), cause::LOAD_PAGE);
+        // Under Sv39 the first address is non-canonical.
+        cpu.csr.satp = SATP_SV39 << 60 | ROOT >> 12;
+        let e = walk(&cpu, &mut mem, va, Access::Load, idx::S);
+        assert_eq!(cause_of(e), cause::LOAD_PAGE);
     }
 }

@@ -5,7 +5,9 @@ engines and qemu-system-riscv64 (TCG) on the same kernel and initramfs
 prompt; bridgev's `--stats` line gives the instruction count and MIPS of the whole run.
 
 Configurations:
-  jit, interp, lockstep   bridgev boot --engine <e>
+  jit, interp, lockstep   bridgev boot --engine <e> (built-in SBI)
+  <e>-opensbi             with QEMU's OpenSBI fw_dynamic in M-mode (--firmware)
+  <e>-sv48, <e>-opensbi-sv48   also offering Sv48 (--mmu sv48)
   qemu                    qemu-system-riscv64 -M virt (OpenSBI, QEMU's own devicetree)
   qemu-bvdtb              the same with bridgev's devicetree (same device set as bridgev)
 --runs N (default 5) after 1 warm-up, pinned to --cpu; median (min-max).
@@ -15,6 +17,7 @@ import argparse, os, re, select, shutil, statistics, subprocess, sys, time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMG = os.path.join(ROOT, "guest/build/linux")
 BRIDGEV = os.path.join(ROOT, "target/release/bridgev")
+OPENSBI = "/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin"  # qemu-system-data
 
 
 def cmd_for(cfg):
@@ -29,7 +32,10 @@ def cmd_for(cfg):
                            capture_output=True)
             c += ["-dtb", dtb]
         return c
-    return [BRIDGEV, "boot", "--engine", cfg, "--stats", "--kernel", kernel, "--initrd", initrd]
+    engine, *opts = cfg.split("-")
+    extra = (["--firmware", OPENSBI] if "opensbi" in opts else []) + \
+        (["--mmu", "sv48"] if "sv48" in opts else [])
+    return [BRIDGEV, "boot", "--engine", engine, "--stats", "--kernel", kernel, "--initrd", initrd] + extra
 
 
 def run_once(cfg, cpu, timeout):

@@ -159,6 +159,8 @@ pub struct VirtConfig {
     pub ram_size: u64,
     pub bootargs: String,
     pub initrd: Option<(u64, u64)>,
+    /// Advertise Sv48 (`mmu-type = "riscv,sv48"`) instead of Sv39.
+    pub sv48: bool,
 }
 
 const PH_INTC: u32 = 1;
@@ -205,7 +207,7 @@ pub fn virt_dtb(c: &VirtConfig) -> Vec<u8> {
         "riscv,isa-extensions",
         &["i", "m", "a", "f", "d", "c", "zicntr", "zicsr", "zifencei"],
     );
-    f.prop_str("mmu-type", "riscv,sv39");
+    f.prop_str("mmu-type", if c.sv48 { "riscv,sv48" } else { "riscv,sv39" });
     f.begin("interrupt-controller");
     f.prop_u32("#interrupt-cells", 1);
     f.prop_empty("interrupt-controller");
@@ -280,6 +282,7 @@ mod tests {
             ram_size: 512 << 20,
             bootargs: "console=ttyS0".into(),
             initrd: Some((0x8800_0000, 0x8810_0000)),
+            sv48: false,
         });
         let be = |o: usize| u32::from_be_bytes(dtb[o..o + 4].try_into().unwrap());
         assert_eq!(be(0), FDT_MAGIC);
@@ -316,6 +319,7 @@ mod tests {
             ram_size: 512 << 20,
             bootargs: "console=ttyS0 earlycon=sbi".into(),
             initrd: Some((0x9f00_0000, 0x9f40_0000)),
+            sv48: false,
         });
         let path = std::env::temp_dir().join(format!("bridgev-{}.dtb", std::process::id()));
         std::fs::write(&path, &dtb).unwrap();

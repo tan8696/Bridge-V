@@ -42,16 +42,33 @@ fn wait_for(out: &Arc<Mutex<Vec<u8>>>, from: usize, pat: &str, timeout: Duration
     }
 }
 
+/// OpenSBI as shipped with QEMU (`qemu-system-data`, installed by tools/setup.sh).
+const OPENSBI: &str = "/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin";
+
 fn boot_to_shell(engine: &str) {
+    boot_to_shell_with(engine, None, false);
+}
+
+/// Boot with the built-in SBI, or with `firmware` in M-mode, and with Sv48 offered (Phase 10);
+/// /proc/cpuinfo must show the paging mode Linux chose.
+fn boot_to_shell_with(engine: &str, firmware: Option<&str>, sv48: bool) {
     let Some((kernel, initrd)) = images() else {
         return;
     };
+    if let Some(fw) = firmware
+        && !std::path::Path::new(fw).is_file()
+    {
+        eprintln!("skipping: {fw} not installed (tools/setup.sh)");
+        return;
+    }
     let t0 = Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_bridgev"))
         .args(["boot", "--engine", engine, "--stats", "--kernel"])
         .arg(&kernel)
         .arg("--initrd")
         .arg(&initrd)
+        .args(firmware.map(|f| ["--firmware", f]).into_iter().flatten())
+        .args(if sv48 { &["--mmu", "sv48"][..] } else { &[] })
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -71,6 +88,9 @@ fn boot_to_shell(engine: &str) {
     });
     let mut stdin = child.stdin.take().unwrap();
     let limit = Duration::from_secs(if engine == "jit" { 300 } else { 900 });
+    if firmware.is_some() {
+        wait_for(&out, 0, "OpenSBI v", limit);
+    }
     let mut at = wait_for(&out, 0, "/ # ", limit);
     let to_shell = t0.elapsed();
     let mut cmd = |c: &str, expect: &[&str], at: &mut usize| {
@@ -84,7 +104,11 @@ fn boot_to_shell(engine: &str) {
     cmd("uname -a", &["Linux", "riscv64"], &mut at);
     cmd(
         "cat /proc/cpuinfo",
-        &["processor", "rv64imafdc", "sv39"],
+        &[
+            "processor",
+            "rv64imafdc",
+            if sv48 { "sv48" } else { "sv39" },
+        ],
         &mut at,
     );
     cmd("ls /", &["bin", "proc", "sys"], &mut at);
@@ -136,4 +160,26 @@ fn linux_boots_to_busybox_shell_interp() {
 #[ignore = "needs tools/fetch-guest-images.sh; slow"]
 fn linux_boots_to_busybox_shell_lockstep() {
     boot_to_shell("lockstep");
+}
+
+/// Phase 10: OpenSBI (M-mode firmware) instead of the built-in SBI; the kernel's SBI calls
+/// trap to M-mode and are served by guest code.
+#[test]
+#[ignore = "needs tools/fetch-guest-images.sh and QEMU's OpenSBI; slow"]
+fn linux_boots_via_opensbi_jit() {
+    boot_to_shell_with("jit", Some(OPENSBI), false);
+}
+
+#[test]
+#[ignore = "needs tools/fetch-guest-images.sh and QEMU's OpenSBI; slow"]
+fn linux_boots_via_opensbi_lockstep() {
+    boot_to_shell_with("lockstep", Some(OPENSBI), false);
+}
+
+/// Phase 10: the machine offers Sv48 (satp mode 9, `mmu-type = "riscv,sv48"`) and Linux uses
+/// four-level page tables.
+#[test]
+#[ignore = "needs tools/fetch-guest-images.sh; slow"]
+fn linux_boots_with_sv48_jit() {
+    boot_to_shell_with("jit", None, true);
 }

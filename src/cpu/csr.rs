@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use super::state::CpuState;
 use super::trap::prv;
-use crate::mem::mmu::{SATP_BARE, SATP_SV39};
+use crate::mem::mmu::{SATP_BARE, SATP_SV39, SATP_SV48};
 use crate::mem::tlb;
 
 /// `mstatus` fields.
@@ -104,6 +104,8 @@ pub struct Csrs {
     /// is a no-op hint) elsewhere and with deterministic time, which only advances by
     /// executing.
     pub wfi_idle: bool,
+    /// Machine option (Phase 10): satp also accepts Sv48 (the devicetree then says so).
+    pub sv48: bool,
 }
 
 impl Default for Csrs {
@@ -136,6 +138,7 @@ impl Default for Csrs {
             time_origin: Instant::now(),
             deterministic_time: false,
             wfi_idle: false,
+            sv48: false,
         }
     }
 }
@@ -312,7 +315,7 @@ impl CpuState {
             0x180 => {
                 // An unsupported MODE makes the whole write have no effect (priv spec §12.1.11).
                 let mode = val >> 60;
-                if mode == SATP_BARE || mode == SATP_SV39 {
+                if mode == SATP_BARE || mode == SATP_SV39 || (mode == SATP_SV48 && s.sv48) {
                     // MODE (4) + ASID (16, all implemented) + PPN (44) cover all 64 bits.
                     s.satp = val;
                     flush = true;

@@ -109,9 +109,12 @@ jobs:
           path: guest/build/linux/deb
           key: linux-debs-${{ hashFiles('tools/fetch-guest-images.sh') }}
 
+      - name: Install QEMU's OpenSBI (qemu-system-data) for the --firmware boot
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends qemu-system-data
+
       - name: Fetch guest images (Ubuntu riscv64 kernel + busybox-static, pinned SHA256)
         run: cargo build --release && ./tools/fetch-guest-images.sh
 
-      - name: Boot, run shell commands over the UART, power off (jit, interp, lockstep)
+      - name: Boot, run shell commands over the UART, power off (jit, interp, lockstep; built-in SBI and OpenSBI)
         run: cargo test --release --test linux_boot -- --ignored --test-threads 1
 

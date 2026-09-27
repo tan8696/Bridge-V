@@ -46,6 +46,11 @@ const MIP_MEIP: u64 = 1 << 11;
 /// `bridgev boot` options.
 pub struct BootOptions {
     pub kernel: PathBuf,
+    /// M-mode firmware (OpenSBI `fw_dynamic` or `fw_jump`) loaded at the start of RAM and
+    /// entered in M-mode; `None` = the built-in SBI (D15).
+    pub firmware: Option<PathBuf>,
+    /// Offer Sv48 as well as Sv39 (satp mode 9, devicetree `riscv,sv48`).
+    pub sv48: bool,
     pub initrd: Option<PathBuf>,
     /// Use this DTB instead of the generated one.
     pub dtb: Option<PathBuf>,
@@ -147,6 +152,7 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
             ram_size: opts.ram,
             bootargs: opts.bootargs.clone(),
             initrd,
+            sv48: opts.sv48,
         }),
     };
     if let Some(p) = &opts.dump_dtb {
@@ -154,6 +160,28 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
     }
     mem.write_bytes(GuestVirt(dtb_addr), &dtb)
         .map_err(|f| anyhow::anyhow!("loading dtb: {f:?}"))?;
+
+    // Firmware (Phase 10): at the start of RAM, below the kernel. It is entered like QEMU's
+    // reset vector does: a0 = hart id, a1 = DTB, a2 = `struct fw_dynamic_info` (OpenSBI
+    // include/sbi/fw_dynamic.h, version 2: magic "OSBI", version, next_addr, next_mode = S,
+    // options, boot_hart), placed 1 MiB above the DTB. fw_jump ignores a2.
+    let fw_info = match &opts.firmware {
+        Some(p) => {
+            let fw = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
+            if RAM_BASE + fw.len() as u64 > entry {
+                bail!("firmware ({} bytes) overlaps the kernel", fw.len());
+            }
+            mem.write_bytes(GuestVirt(RAM_BASE), &fw)
+                .map_err(|f| anyhow::anyhow!("loading firmware: {f:?}"))?;
+            let info = dtb_addr + (1 << 20);
+            let words = [0x4942_534f, 2, entry, 1, 0, 0];
+            let bytes: Vec<u8> = words.iter().flat_map(|w: &u64| w.to_le_bytes()).collect();
+            mem.write_bytes(GuestVirt(info), &bytes)
+                .map_err(|f| anyhow::anyhow!("loading fw_dynamic_info: {f:?}"))?;
+            Some(info)
+        }
+        None => None,
+    };
     // Loader writes are not code modification.
     mem.smc_pages.clear();
 
@@ -171,23 +199,35 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
     mem.add_device(UART_BASE, 0x100, Box::new(uart));
     mem.add_device(SYSCON_BASE, 0x1000, Box::new(syscon));
 
-    // Hart 0 in S-mode at the kernel entry (§20.2).
     let mut cpu = CpuState::new_machine(entry);
-    cpu.prv = prv::S;
     cpu.softmmu = 1;
     cpu.x[10] = 0;
     cpu.x[11] = dtb_addr;
-    cpu.csr.medeleg = 0xb3ff & !(1 << 9); // everything delegable except ecall from S
-    cpu.csr.mideleg = 0x222; // SSI, STI, SEI
-    cpu.csr.mcounteren = 0x7;
+    match fw_info {
+        // Hart 0 in M-mode at the firmware, with reset CSR values: the firmware delegates.
+        Some(info) => {
+            cpu.pc = RAM_BASE;
+            cpu.x[12] = info;
+        }
+        // Hart 0 in S-mode at the kernel entry (§20.2).
+        None => {
+            cpu.prv = prv::S;
+            cpu.csr.medeleg = 0xb3ff & !(1 << 9); // everything delegable except ecall from S
+            cpu.csr.mideleg = 0x222; // SSI, STI, SEI
+            cpu.csr.mcounteren = 0x7;
+        }
+    }
     cpu.csr.deterministic_time = opts.deterministic;
     cpu.csr.wfi_idle = true;
+    cpu.csr.sv48 = opts.sv48;
 
+    // With firmware, S-mode ECALLs trap to it; otherwise the built-in SBI serves them.
+    let builtin_sbi = fw_info.is_none();
     let env = Env {
         user_mode: false,
         tohost: None,
         trace: false,
-        sbi: true,
+        sbi: builtin_sbi,
     };
     let mut engine = make_engine(opts.engine, &opts.jit)?;
     let mut st = SbiState {
@@ -214,13 +254,20 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
             let c = clint_state.lock().unwrap();
             (c.msip, now >= c.mtimecmp)
         };
-        let mut mip = cpu.csr.mip & !(MIP_MSIP | MIP_MTIP | MIP_MEIP | MIP_SEIP | MIP_STIP);
+        // STIP is the built-in SBI's timer; with firmware it is written by M-mode software.
+        let sw_stip = if builtin_sbi {
+            0
+        } else {
+            cpu.csr.mip & MIP_STIP
+        };
+        let mut mip =
+            cpu.csr.mip & !(MIP_MSIP | MIP_MTIP | MIP_MEIP | MIP_SEIP | MIP_STIP) | sw_stip;
         for (on, bit) in [
             (msip, MIP_MSIP),
             (mtip, MIP_MTIP),
             (meip, MIP_MEIP),
             (seip, MIP_SEIP),
-            (now >= st.stimecmp, MIP_STIP),
+            (builtin_sbi && now >= st.stimecmp, MIP_STIP),
         ] {
             if on {
                 mip |= bit;
@@ -251,7 +298,9 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
                 wfis += 1;
                 let deadline = clint_state.lock().unwrap().mtimecmp.min(st.stimecmp);
                 let t0 = std::time::Instant::now();
-                loop {
+                // Firmware parks the hart in WFI after writing the test finisher (poweroff):
+                // never sleep past a pending finish request.
+                while finish.lock().unwrap().is_none() {
                     let now = cpu.time();
                     if now >= deadline || !uart_state.lock().unwrap().rx.is_empty() {
                         break;

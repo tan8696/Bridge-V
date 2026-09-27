@@ -53,6 +53,13 @@ enum Engine {
     Lockstep,
 }
 
+/// `bridgev boot --mmu`.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum MmuArg {
+    Sv39,
+    Sv48,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum RegAllocArg {
     None,
@@ -211,6 +218,12 @@ enum Command {
         /// Kernel `Image` file.
         #[arg(long)]
         kernel: PathBuf,
+        /// M-mode firmware (OpenSBI fw_dynamic/fw_jump .bin) instead of the built-in SBI.
+        #[arg(long)]
+        firmware: Option<PathBuf>,
+        /// Virtual-memory modes offered to the guest (sv48 also allows Sv39).
+        #[arg(long, value_enum, default_value = "sv39")]
+        mmu: MmuArg,
         /// Initial ramdisk (cpio archive).
         #[arg(long)]
         initrd: Option<PathBuf>,
@@ -471,6 +484,8 @@ fn main() -> ExitCode {
         }
         Command::Boot {
             kernel,
+            firmware,
+            mmu,
             initrd,
             dtb,
             dump_dtb,
@@ -500,6 +515,8 @@ fn main() -> ExitCode {
             };
             let opts = BootOptions {
                 kernel,
+                firmware,
+                sv48: mmu == MmuArg::Sv48,
                 initrd,
                 dtb,
                 dump_dtb,
