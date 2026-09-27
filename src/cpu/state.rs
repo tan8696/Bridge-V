@@ -75,7 +75,8 @@ pub struct CpuState {
     /// Current privilege level (`prv::U/S/M`).
     pub prv: u8,
     pub mmu_idx: u8,
-    /// 1: memory accesses are translated (softmmu, D48); 0: direct user-mode memory.
+    /// 0: direct user-mode memory; 1: translated (softmmu, D48), system/bare mode; 2: softmmu
+    /// with a flat identity translation (user mode `--mem=softmmu`).
     pub softmmu: u8,
     _pad0: u8,
     /// Retired guest instructions.

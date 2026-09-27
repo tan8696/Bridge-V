@@ -55,7 +55,8 @@ fn signal_for(e: &Exception) -> i32 {
 pub fn run(path: &Path, args: &[String], envs: &[String], opts: RunOptions) -> Result<RunResult> {
     let mut p = loader::load(path, args, envs)?;
     p.cpu.csr.deterministic_time = opts.deterministic;
-    p.cpu.softmmu = opts.softmmu as u8;
+    // 2 = flat: translation is the identity and only changes with a TLB flush (D48).
+    p.cpu.softmmu = if opts.softmmu { 2 } else { 0 };
     let mut engine = make_engine(opts.engine, &opts.jit)?;
     if opts.reg_stats && !engine.enable_reg_stats() {
         anyhow::bail!("--stats=regs needs --engine interp");

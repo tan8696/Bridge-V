@@ -166,6 +166,14 @@ pub struct Jit {
 
 /// `TbKey::flags` bit marking a softmmu translation (D48).
 pub const FLAG_SOFT: u8 = 0x80;
+/// `TbKey::flags` bit: softmmu with a flat (user-mode identity) translation, which never
+/// changes without a flush, so chaining across pages is safe.
+pub const FLAG_FLAT: u8 = 0x40;
+
+fn soft_flags(cpu: &CpuState) -> u8 {
+    let flat = if cpu.softmmu == 2 { FLAG_FLAT } else { 0 };
+    FLAG_SOFT | flat | tlb::fetch_idx(cpu) | tlb::data_idx(cpu) << 2
+}
 
 /// Where the dispatcher continues at `cpu.pc` (`Jit::select`).
 pub enum Next {
@@ -290,7 +298,7 @@ impl Jit {
         let key = TbKey {
             pc: cpu.pc,
             slow: self.variant(fp_slow(cpu)),
-            flags: FLAG_SOFT | tlb::fetch_idx(cpu) | didx << 2,
+            flags: soft_flags(cpu),
             ppage,
         };
         let pc = cpu.pc;
@@ -470,7 +478,7 @@ impl Jit {
         }
         // The jump cache maps virtual pcs to TBs of one flags value and one translation
         // regime: start over when either changes (D48).
-        let flags = FLAG_SOFT | tlb::fetch_idx(cpu) | tlb::data_idx(cpu) << 2;
+        let flags = soft_flags(cpu);
         if self.jc_ctx != (flags, cpu.mmu_gen) {
             self.jc_ctx = (flags, cpu.mmu_gen);
             self.jc_version += 1;
@@ -504,10 +512,11 @@ impl Jit {
             return;
         }
         let (f, t) = (self.cache.get(from), self.cache.get(id));
-        let soft = f.key.flags & FLAG_SOFT != 0;
+        // System-mode translations can change without invalidating TBs: stay within a page.
+        let paged = f.key.flags & (FLAG_SOFT | FLAG_FLAT) == FLAG_SOFT;
         if !f.chainable
             || f.key.flags != t.key.flags
-            || (soft && f.guest_pc >> 12 != t.guest_pc >> 12)
+            || (paged && f.guest_pc >> 12 != t.guest_pc >> 12)
         {
             return;
         }
