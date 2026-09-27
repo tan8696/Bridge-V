@@ -204,6 +204,14 @@ impl Engine for Lockstep {
             let icpu = ArchState::capture(cpu);
             snapshot.restore(cpu);
             mem.undo_writes(&self.log);
+            // Code pages the reference run wrote (D49): the JIT run must find them marked too.
+            let smc = std::mem::take(&mut mem.smc_pages);
+            mem.remark_code(&smc);
+            if cpu.softmmu != 0 {
+                for &p in &smc {
+                    crate::mem::tlb::set_code_flag(cpu, mem.base() as u64, p, true);
+                }
+            }
             if cpu.softmmu != 0 && (cpu.tlb_fills, cpu.mmu_gen) != fills {
                 crate::mem::tlb::flush_all(cpu);
             }
@@ -235,7 +243,7 @@ impl Engine for Lockstep {
             }
             self.checked += 1;
             if jexit == BlockExit::Flush {
-                self.jit.flush();
+                self.jit.fence_i();
             }
             if let Err(stop) = deliver(jexit, env, cpu) {
                 return stop;
@@ -245,6 +253,10 @@ impl Engine for Lockstep {
 
     fn flush(&mut self) {
         self.jit.flush();
+    }
+
+    fn fence_i(&mut self) {
+        self.jit.fence_i();
     }
 
     fn stats(&self) -> String {

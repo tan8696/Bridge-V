@@ -62,9 +62,14 @@ pub trait Engine {
     /// Execute until a `Stop` condition, or until `max_insns` more instructions have retired
     /// (checked at block boundaries).
     fn run(&mut self, cpu: &mut CpuState, mem: &mut DirectMem, env: &Env, max_insns: u64) -> Stop;
-    /// Guest code may have changed (FENCE.I, `mmap`/`munmap` of executable memory,
-    /// `riscv_flush_icache`): drop all decoded or translated code.
+    /// Guest code may have changed (`mmap`/`munmap` of executable memory): drop all decoded or
+    /// translated code.
     fn flush(&mut self);
+    /// FENCE.I semantics (`riscv_flush_icache`): with eager SMC invalidation (D49) nothing
+    /// stale can remain, so engines may do less than `flush`.
+    fn fence_i(&mut self) {
+        self.flush();
+    }
     /// Engine statistics for `--stats` (empty if none).
     fn stats(&self) -> String {
         String::new()
@@ -184,6 +189,12 @@ pub fn exec_block(
             Flow::Next => {
                 pc = pc.wrapping_add(d.len as u64);
                 cpu.icount += 1;
+                // A store hit a page holding translated or decoded code: stop after it, so
+                // the rest of the block is decoded again (D49).
+                if !mem.smc_pages.is_empty() {
+                    cpu.pc = pc;
+                    return BlockExit::Continue;
+                }
             }
             Flow::Jump(target) => {
                 cpu.icount += 1;
@@ -209,6 +220,34 @@ pub fn exec_block(
     match fetch_fault {
         Some(e) => BlockExit::Trap(e),
         None => BlockExit::Continue,
+    }
+}
+
+/// Mark the page(s) a decoded block came from as code pages (D49): writes to them are then
+/// detected (and, for softmmu, take the store slow path). Physical pages with softmmu.
+pub fn mark_block_code(cpu: &mut CpuState, mem: &mut DirectMem, pc: u64, insns: &[Decoded]) {
+    let len: u64 = insns.iter().map(|d| d.len as u64).sum();
+    let mut pages = [pc, pc.wrapping_add(len.max(1) - 1)];
+    if cpu.softmmu != 0 {
+        for p in pages.iter_mut() {
+            // Already translated when the block was decoded: a TLB hit.
+            *p = mmu::fetch_page(cpu, mem, *p).unwrap_or(u64::MAX);
+        }
+    }
+    for p in pages {
+        if p != u64::MAX && mem.mark_code(p) && cpu.softmmu != 0 {
+            tlb::set_code_flag(cpu, mem.base() as u64, p & !0xfff, true);
+        }
+    }
+}
+
+/// Drop `mem.smc_pages` after the caller invalidated what it translated from them, clearing
+/// their TLB code flags.
+pub fn forget_smc_pages(cpu: &mut CpuState, mem: &mut DirectMem) {
+    for p in std::mem::take(&mut mem.smc_pages) {
+        if cpu.softmmu != 0 {
+            tlb::set_code_flag(cpu, mem.base() as u64, p, false);
+        }
     }
 }
 
@@ -257,6 +296,7 @@ impl Interp {
         // A block whose first fetch faulted depends on the TLB state: don't keep it.
         if !(b.insns.is_empty() && cpu.softmmu != 0) {
             self.cache.insert(key, b.clone());
+            mark_block_code(cpu, mem, pc, &b.insns);
         }
         b
     }
@@ -289,6 +329,11 @@ impl Interp {
             }
             if exit == BlockExit::Flush {
                 self.flush();
+            }
+            if !mem.smc_pages.is_empty() {
+                // Code this cache decoded was written (D49): decode everything again.
+                self.flush();
+                forget_smc_pages(cpu, mem);
             }
             if let Err(stop) = deliver(exit, env, cpu) {
                 return stop;

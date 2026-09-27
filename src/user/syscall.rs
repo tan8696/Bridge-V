@@ -379,7 +379,7 @@ impl Syscalls {
             }
             258 => Ret(-ENOSYS), // riscv_hwprobe: glibc falls back without it
             259 => {
-                interp.flush(); // riscv_flush_icache
+                interp.fence_i(); // riscv_flush_icache
                 Ret(0)
             }
             // prlimit64(pid, resource, new, old): struct rlimit {cur, max} is identical.

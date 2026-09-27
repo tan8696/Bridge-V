@@ -3,6 +3,10 @@
 //! layout mixing read-write, read-only, clean (D = 0), user, execute-only, unmapped and MMIO
 //! pages, with misaligned and page-crossing accesses, under random SUM/MXR.
 //!
+//! One page kind is a writable alias of the block's own code page: a store through it is
+//! self-modifying code (Phase 8), after which both engines stop and the second round
+//! re-decodes/re-translates the modified code.
+//!
 //! Each block runs from identical states in two worlds (interpreter, JIT), twice: first with
 //! a cold TLB (fills, walks, A/D updates), then again with the TLB the first run left (fast
 //! path hits). Compared: registers, pc, exit/exception, every data page, the page tables
@@ -14,7 +18,9 @@ use std::sync::{Arc, Mutex};
 use bridgev::cpu::csr::mstatus;
 use bridgev::cpu::state::CpuState;
 use bridgev::cpu::trap::prv;
-use bridgev::interp::{BlockExit, Engine, build_block_soft, exec_block};
+use bridgev::interp::{
+    BlockExit, Engine, build_block_soft, exec_block, forget_smc_pages, mark_block_code,
+};
 use bridgev::jit::{Jit, JitOptions, RegAlloc};
 use bridgev::mem::direct::DirectMem;
 use bridgev::mem::mmu::{self, SATP_SV39, pte};
@@ -43,6 +49,9 @@ enum Kind {
     ExecOnly,
     Unmapped,
     Mmio,
+    /// A writable alias of the block's own physical code page (SMC through another virtual
+    /// address, D49): both engines must stop right after such a store.
+    CodeAlias,
 }
 
 fn kind() -> impl Strategy<Value = Kind> {
@@ -54,6 +63,7 @@ fn kind() -> impl Strategy<Value = Kind> {
         1 => Just(Kind::ExecOnly),
         1 => Just(Kind::Unmapped),
         1 => Just(Kind::Mmio),
+        1 => Just(Kind::CodeAlias),
     ]
 }
 
@@ -181,6 +191,7 @@ fn world(c: &Case) -> World {
             Kind::ExecOnly => leaf(pa, x | ad),
             Kind::Unmapped => 0,
             Kind::Mmio => leaf(DEV_PA + k * 4096, r | w | ad),
+            Kind::CodeAlias => leaf(CODE_PA, r | w | ad),
         };
         put(&mut mem, L0 + ((DATA_VA >> 12) + k) * 8, p);
         for q in 0..512 {
@@ -206,6 +217,7 @@ struct Outcome {
     x: [u64; 32],
     pc: u64,
     icount: u64,
+    code: Vec<u64>,
     data: Vec<u64>,
     tables: Vec<u64>,
     dev: Vec<(bool, u64, u64, u64)>,
@@ -219,6 +231,7 @@ fn outcome(w: &mut World, exit: BlockExit) -> Outcome {
         x: w.cpu.x,
         pc: w.cpu.pc,
         icount: w.cpu.icount,
+        code: words(&w.mem, CODE_PA, 512),
         data: words(&w.mem, DATA_PA, 512 * PAGES),
         tables: words(&w.mem, ROOT, 3 * 512),
         dev: std::mem::take(&mut *w.log.lock().unwrap()),
@@ -266,7 +279,10 @@ fn diff(got: &Outcome, want: &Outcome) -> Vec<String> {
 
 fn run_interp(w: &mut World) -> Outcome {
     let b = build_block_soft(CODE_VA, &mut w.cpu, &mut w.mem, 128);
+    // As the interpreter engine does: the block's page becomes a code page.
+    mark_block_code(&mut w.cpu, &mut w.mem, CODE_VA, &b.insns);
     let e = exec_block(&mut w.cpu, &mut w.mem, &b.insns, b.fetch_fault, false);
+    forget_smc_pages(&mut w.cpu, &mut w.mem);
     outcome(w, e)
 }
 

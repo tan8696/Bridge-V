@@ -59,6 +59,9 @@ pub struct DirectMem {
     pub write_log: Option<Vec<(u64, u64, u64)>>,
     /// System mode: memory-mapped devices outside RAM, sorted by base (P7.3).
     pub devices: Vec<Device>,
+    /// Self-modifying code (Phase 8, D49): pages that held translated code and were written
+    /// (or remapped) since the engines last drained this list. Their code-page mark is gone.
+    pub smc_pages: Vec<u64>,
 }
 
 /// Host protection for guest permissions `p`: readable if the guest may read or execute
@@ -116,6 +119,7 @@ impl DirectMem {
             prot: PageProt::new(),
             write_log: None,
             devices: Vec::new(),
+            smc_pages: Vec::new(),
         })
     }
 
@@ -142,6 +146,7 @@ impl DirectMem {
         if end == start {
             return Ok(());
         }
+        self.forget_code(start, end);
         // SAFETY: the range lies inside our reservation (checked above) and MAP_FIXED only
         // replaces pages of that reservation.
         let r = unsafe {
@@ -174,6 +179,7 @@ impl DirectMem {
         if end == start {
             return Ok(());
         }
+        self.forget_code(start, end);
         // SAFETY: as in `map`; re-reserves the pages as PROT_NONE, dropping their contents.
         let r = unsafe {
             libc::mmap(
@@ -207,6 +213,7 @@ impl DirectMem {
                 "mprotect of unmapped range {start:#x}..{end:#x}"
             )));
         }
+        self.forget_code(start, end);
         self.set_host_prot(start, end, host_prot(p))?;
         for page in start / PAGE_SIZE..end / PAGE_SIZE {
             self.prot.set(page, p | MAPPED);
@@ -284,6 +291,7 @@ impl DirectMem {
     #[inline]
     pub fn store(&mut self, addr: u64, size: u64, val: u64) -> Result<(), MemFault> {
         self.check(addr, size, prot::W, Access::Store)?;
+        self.uncode_range(addr, size);
         let old = self.write_log.is_some().then(|| self.peek(addr, size));
         if let (Some(log), Some(old)) = (self.write_log.as_mut(), old) {
             log.push((addr, size, old));
@@ -341,6 +349,7 @@ impl DirectMem {
             return Ok(&mut []);
         }
         self.check(addr.0, len, need, Access::Store)?;
+        self.uncode_range(addr.0, len);
         // SAFETY: range checked as mapped; host pages are writable; exclusive via &mut self.
         Ok(unsafe { std::slice::from_raw_parts_mut(self.base.add(addr.0 as usize), len as usize) })
     }
@@ -352,6 +361,7 @@ impl DirectMem {
             return Ok(());
         }
         self.check(addr.0, data.len() as u64, MAPPED, Access::Store)?;
+        self.uncode_range(addr.0, data.len() as u64);
         let (start, end) = (page_floor(addr.0), page_ceil(addr.0 + data.len() as u64));
         let rw = libc::PROT_READ | libc::PROT_WRITE;
         self.set_host_prot(start, end, rw)
@@ -385,6 +395,76 @@ impl DirectMem {
                 4 => ptr::read_unaligned(p as *const u32) as u64,
                 _ => ptr::read_unaligned(p as *const u64),
             }
+        }
+    }
+
+    // ------------------------------------------------ self-modifying code (D49) ----
+
+    /// Mark the page containing `addr` as holding translated code. A guest-writable page
+    /// becomes read-only on the host, so direct-mode JIT stores to it fault (and are
+    /// recognized as SMC); interpreter and helper stores see the mark in `store`. Returns true
+    /// if the page was not marked before.
+    pub fn mark_code(&mut self, addr: u64) -> bool {
+        let page = addr / PAGE_SIZE;
+        let b = self.prot.get(page);
+        if b & MAPPED == 0 || b & CODE != 0 {
+            return false;
+        }
+        self.prot.set(page, b | CODE);
+        if b & prot::W != 0 {
+            let a = page * PAGE_SIZE;
+            self.set_host_prot(a, a + PAGE_SIZE, host_prot(b & prot::RWX & !prot::W))
+                .expect("mprotect of a mapped guest page");
+        }
+        true
+    }
+
+    /// Does the page containing `addr` hold translated code?
+    #[inline]
+    pub fn is_code(&self, addr: u64) -> bool {
+        addr < GUEST_SPACE && self.prot.get(addr / PAGE_SIZE) & CODE != 0
+    }
+
+    /// Drop the code mark of page `page` (a page number): restore host write access and
+    /// report the page in `smc_pages` so the engines invalidate what they translated from it.
+    fn uncode(&mut self, page: u64) {
+        let b = self.prot.get(page);
+        if b & CODE == 0 {
+            return;
+        }
+        self.prot.set(page, b & !CODE);
+        if b & prot::W != 0 {
+            let a = page * PAGE_SIZE;
+            self.set_host_prot(a, a + PAGE_SIZE, host_prot(b & prot::RWX))
+                .expect("mprotect of a mapped guest page");
+        }
+        self.smc_pages.push(page * PAGE_SIZE);
+    }
+
+    /// A write to `[addr, addr+len)` is about to happen (range already checked).
+    #[inline]
+    fn uncode_range(&mut self, addr: u64, len: u64) {
+        let (first, last) = (addr / PAGE_SIZE, (addr + len - 1) / PAGE_SIZE);
+        if (self.prot.get(first) | self.prot.get(last)) & CODE == 0 && last - first <= 1 {
+            return;
+        }
+        for page in first..=last {
+            self.uncode(page);
+        }
+    }
+
+    /// Pages `[start, end)` are about to be remapped or change permissions.
+    fn forget_code(&mut self, start: u64, end: u64) {
+        for page in start / PAGE_SIZE..end / PAGE_SIZE {
+            self.uncode(page);
+        }
+    }
+
+    /// Re-mark pages (lockstep: the reference run's writes are undone, so the JIT run must see
+    /// the same code pages).
+    pub fn remark_code(&mut self, pages: &[u64]) {
+        for &a in pages {
+            self.mark_code(a);
         }
     }
 
@@ -440,6 +520,8 @@ impl DirectMem {
 /// Internal marker bit: the page is mapped (so a page with no guest permissions is still
 /// distinguishable from an unmapped one).
 const MAPPED: u8 = 0x80;
+/// Internal marker bit: the page holds translated code (D49).
+const CODE: u8 = 0x40;
 
 impl Drop for DirectMem {
     fn drop(&mut self) {

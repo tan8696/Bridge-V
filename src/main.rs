@@ -80,6 +80,14 @@ fn parse_pin(s: &str) -> Result<PinList, String> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SmcArg {
+    /// Writes to code pages invalidate their translations at once; FENCE.I is cheap.
+    Eager,
+    /// Additionally flush every translation on FENCE.I (debug cross-check).
+    FlushOnFence,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum MemArg {
     /// Guest address g at host base + g, no checks in JIT code (user mode).
     Direct,
@@ -181,6 +189,9 @@ enum Command {
         /// Guest memory backend in user mode (bare mode always uses softmmu).
         #[arg(long, value_enum, default_value = "direct")]
         mem: MemArg,
+        /// Self-modifying code handling.
+        #[arg(long, value_enum, default_value = "eager")]
+        smc: SmcArg,
         /// Testing only: deliberately miscompile ADDI (lockstep must catch it).
         #[arg(long, hide = true)]
         inject_bug: bool,
@@ -312,6 +323,7 @@ fn main() -> ExitCode {
             profile_tbs,
             no_inline_fp,
             mem,
+            smc,
             regalloc,
             pin,
             dump_ir,
@@ -351,6 +363,7 @@ fn main() -> ExitCode {
                 pin: pin.0,
                 dump_ir,
                 inline_fp: !no_inline_fp,
+                smc_flush_on_fence: smc == SmcArg::FlushOnFence,
                 ..JitOptions::default()
             };
             match mode {

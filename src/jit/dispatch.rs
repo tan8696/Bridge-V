@@ -18,6 +18,7 @@ use crate::backend::x86::regs::Reg;
 use crate::ir::lift::{LiftOptions, lift_with};
 use crate::ir::opt::optimize;
 use crate::regalloc::linear_scan::{DLoc, OutOfSlots};
+use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cpu::state::{CpuState, JcEntry, exit, jc_index};
@@ -86,6 +87,9 @@ pub struct JitOptions {
     /// `--no-inline-fp` clears this: every FP instruction runs through `helper_interp_one`
     /// (the Phase 5 behaviour, for measurements; D47).
     pub inline_fp: bool,
+    /// `--smc=flush-on-fence`: FENCE.I flushes all translations (debug cross-check of the
+    /// eager invalidation, D49); by default it only resets the jump cache.
+    pub smc_flush_on_fence: bool,
 }
 
 impl Default for JitOptions {
@@ -106,6 +110,7 @@ impl Default for JitOptions {
             dump_ir: None,
             profile_tbs: false,
             inline_fp: true,
+            smc_flush_on_fence: false,
         }
     }
 }
@@ -122,6 +127,9 @@ pub struct JitStats {
     pub entries: u64,
     /// Softmmu: page-straddling instructions run in the interpreter.
     pub interpreted: u64,
+    /// SMC (D49): writes to code pages seen, and TBs invalidated by them.
+    pub smc_writes: u64,
+    pub smc_invalidated: u64,
     /// Guest instructions retired in JIT code.
     pub retired: u64,
     /// Exits by `exit_reason` (`exit::*`).
@@ -162,6 +170,10 @@ pub struct Jit {
     pinned: [Option<Reg>; 32],
     /// Softmmu: (TB flags, `CpuState::mmu_gen`) the jump-cache contents were filled under.
     jc_ctx: (u8, u64),
+    /// Code page (physical with softmmu) → TBs translated from it (SMC, D49).
+    page_tbs: FxHashMap<u64, Vec<u32>>,
+    /// Pages of new TBs still to be marked as code pages in `DirectMem`/the TLB.
+    new_code: Vec<u64>,
 }
 
 /// `TbKey::flags` bit marking a softmmu translation (D48).
@@ -248,6 +260,8 @@ impl Jit {
             last_exit: None,
             pinned,
             jc_ctx: (0, 0),
+            page_tbs: FxHashMap::default(),
+            new_code: Vec::new(),
         })
     }
 
@@ -400,6 +414,20 @@ impl Jit {
             key,
             chainable,
         });
+        // SMC tracking (D49): a TB lies in one page, except (direct mode) a last instruction
+        // that straddles into the next one.
+        let pages = if soft.is_some() {
+            [key.ppage, key.ppage]
+        } else {
+            let end = pc.wrapping_add(guest_bytes.max(1) as u64 - 1);
+            [pc & !0xfff, end & !0xfff]
+        };
+        for (k, &p) in pages.iter().enumerate() {
+            if k == 0 || p != pages[0] {
+                self.page_tbs.entry(p).or_default().push(id);
+                self.new_code.push(p);
+            }
+        }
         self.stats.translate_time += t0.elapsed();
         id
     }
@@ -473,8 +501,13 @@ impl Jit {
 
     /// What to run at `cpu.pc`, in either memory mode, linking the previous exit to it.
     pub fn select(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) -> Next {
+        if !mem.smc_pages.is_empty() {
+            self.drain_smc(cpu, mem);
+        }
         if cpu.softmmu == 0 {
-            return Next::Tb(self.next_tb(cpu.pc, mem, fp_slow(cpu)));
+            let id = self.next_tb(cpu.pc, mem, fp_slow(cpu));
+            self.mark_new_code(cpu, mem);
+            return Next::Tb(id);
         }
         // The jump cache maps virtual pcs to TBs of one flags value and one translation
         // regime: start over when either changes (D48).
@@ -497,7 +530,54 @@ impl Jit {
         }
         let id = self.tb_for_soft(cpu, mem, ppage);
         self.link_last(id);
+        self.mark_new_code(cpu, mem);
         Next::Tb(id)
+    }
+
+    /// Mark the pages of newly translated TBs as code pages (D49).
+    fn mark_new_code(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) {
+        for p in std::mem::take(&mut self.new_code) {
+            if mem.mark_code(p) && cpu.softmmu != 0 {
+                tlb::set_code_flag(cpu, mem.base() as u64, p, true);
+            }
+        }
+    }
+
+    /// Invalidate every TB translated from a page in `mem.smc_pages` (D49, §16): unlink the
+    /// exits chained into it, drop it from the map, stale the jump cache.
+    pub fn drain_smc(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) {
+        let mut any = false;
+        for &p in &mem.smc_pages {
+            for id in self.page_tbs.remove(&p).unwrap_or_default() {
+                if !self.cache.get(id).valid {
+                    continue;
+                }
+                self.stats.chain_unlinks +=
+                    chain::unlink_incoming(&mut self.cache, &mut self.cm, id) as u64;
+                self.cache.invalidate(id);
+                if self.last_exit.is_some_and(|(from, _, _)| from == id) {
+                    self.last_exit = None;
+                }
+                self.stats.smc_invalidated += 1;
+                any = true;
+            }
+        }
+        self.stats.smc_writes += mem.smc_pages.len() as u64;
+        crate::interp::forget_smc_pages(cpu, mem);
+        if any {
+            self.jc_version += 1;
+        }
+    }
+
+    /// FENCE.I (D49): eager invalidation leaves nothing stale; only the jump cache is reset,
+    /// or everything is flushed with `--smc=flush-on-fence`.
+    pub fn fence_i(&mut self) {
+        self.stats.fence_flushes += 1;
+        if self.opts.smc_flush_on_fence {
+            self.flush_all();
+        } else {
+            self.jc_version += 1;
+        }
     }
 
     /// Link the previous unlinked direct exit to TB `id` if allowed (§13.3): in softmmu mode
@@ -586,6 +666,7 @@ impl Jit {
         id: u32,
         budget: i64,
     ) -> BlockExit {
+        self.mark_new_code(cpu, mem);
         let (host, guest_pc) = {
             let tb = self.cache.get(id);
             (tb.host, tb.guest_pc)
@@ -631,8 +712,14 @@ impl Jit {
                 tval: cpu.exc_tval,
             }),
             exit::FLUSH => BlockExit::Flush,
+            exit::HOST_FAULT if self.is_smc_fault(cpu, mem) => self.smc_host_fault(cpu, mem),
             exit::HOST_FAULT => BlockExit::Trap(self.resolve_host_fault(cpu, mem)),
             exit::MMU_FAULT => BlockExit::Trap(self.resolve_mmu_fault(cpu)),
+            exit::SMC => BlockExit::Continue,
+            exit::SMC_STORE => {
+                self.smc_store_retired(cpu);
+                BlockExit::Continue
+            }
             r => panic!("JIT exit with unknown reason {r} at pc {:#x}", cpu.pc),
         };
         // After the host-fault refund: everything charged and not refunded has retired.
@@ -640,6 +727,9 @@ impl Jit {
         cpu.icount += (cpu.budget_ref - cpu.budget) as u64;
         self.stats.retired += cpu.icount - icount_before;
         self.stats.jalr += std::mem::take(&mut cpu.prof_jalr);
+        if !mem.smc_pages.is_empty() {
+            self.drain_smc(cpu, mem);
+        }
         let slot = (code & 3) as u8;
         self.last_exit = (slot < 2 && reason == exit::NONE).then_some((
             (code >> 2) as u32,
@@ -647,6 +737,47 @@ impl Jit {
             self.cache.generation,
         ));
         exit
+    }
+
+    /// Is this host fault a store to a guest-writable page that is write-protected because it
+    /// holds translated code (D49)?
+    fn is_smc_fault(&self, cpu: &CpuState, mem: &DirectMem) -> bool {
+        let g = cpu.fault_addr.wrapping_sub(mem.base() as u64);
+        mem.is_code(g) && mem.prot_of(g) & crate::mem::prot::W != 0
+    }
+
+    /// Direct mode, a JIT store hit a code page: rebuild the state before the store (as for a
+    /// fault), then retire the store in the interpreter, which unprotects the page and reports
+    /// it for invalidation. Execution continues after the store.
+    fn smc_host_fault(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) -> BlockExit {
+        let rip = cpu.fault_rip;
+        let tb = self
+            .cache
+            .find_host(rip)
+            .unwrap_or_else(|| panic!("host fault at {rip:#x} outside any TB"));
+        let idx = if tb.fault_sites.is_empty() {
+            let e = tb.entry_for(rip).expect("pcmap covers the TB");
+            cpu.pc = e.guest_pc;
+            cpu.budget += (tb.insns.len() as u32 - e.idx) as i64;
+            e.idx
+        } else {
+            apply_site(tb, cpu, rip).idx
+        };
+        let d = tb.insns[idx as usize];
+        exec_block(cpu, mem, &[d], None, false)
+    }
+
+    /// Softmmu, an inline store's slow path wrote a code page: the state is the site's, and
+    /// the store there retired.
+    fn smc_store_retired(&self, cpu: &mut CpuState) {
+        let rip = cpu.fault_rip;
+        let tb = self
+            .cache
+            .find_host(rip)
+            .unwrap_or_else(|| panic!("SMC store at {rip:#x} outside any TB"));
+        let site = apply_site(tb, cpu, rip);
+        cpu.pc = site.pc.wrapping_add(tb.insns[site.idx as usize].len as u64);
+        cpu.budget -= 1;
     }
 
     /// A softmmu slow path raised an exception (`exc_cause`/`exc_tval`): make the guest state
@@ -746,6 +877,8 @@ impl Jit {
     }
 
     fn flush_all(&mut self) {
+        self.page_tbs.clear();
+        self.new_code.clear();
         self.cache.flush();
         self.cm.reset();
         self.jc_version += 1;
@@ -779,7 +912,7 @@ impl Engine for Jit {
                 Next::Fault(e) => BlockExit::Trap(e),
             };
             if exit == BlockExit::Flush {
-                self.flush();
+                self.fence_i();
             }
             if let Err(stop) = deliver(exit, env, cpu) {
                 return stop;
@@ -790,6 +923,10 @@ impl Engine for Jit {
     fn flush(&mut self) {
         self.stats.fence_flushes += 1;
         self.flush_all();
+    }
+
+    fn fence_i(&mut self) {
+        Jit::fence_i(self);
     }
 
     fn stats(&self) -> String {
@@ -869,7 +1006,8 @@ impl Jit {
              {} full + {} code-change flushes, translate time {:.1} ms; \
              {} dispatcher entries ({:.0} per M guest insns); \
              exits: none {}, ecall {}, exception {}, flush {}, host-fault {}, budget {}, \
-             jump-cache miss {}, fp-variant {}, mmu-fault {}, straddle {}; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}; \
+             jump-cache miss {}, fp-variant {}, mmu-fault {}, smc {}, straddle {}; \
+             SMC: {} code-page writes, {} TBs invalidated; chain: {}, {} links, {} unlinks, {} jump-cache fills; {}; \
              regalloc {:?} (emitted code, all TBs): {} fills, {} spills, {} write-backs, \
              {} moves, {} retranslations",
             s.translated,
@@ -890,7 +1028,10 @@ impl Jit {
             s.exits[exit::LOOKUP as usize],
             s.exits[exit::FP_VARIANT as usize],
             s.exits[exit::MMU_FAULT as usize],
+            s.exits[exit::SMC as usize] + s.exits[exit::SMC_STORE as usize],
             s.interpreted,
+            s.smc_writes,
+            s.smc_invalidated,
             if self.opts.chain { "on" } else { "off" },
             s.chain_links,
             s.chain_unlinks,

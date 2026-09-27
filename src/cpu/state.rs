@@ -30,7 +30,13 @@ pub mod exit {
     /// A softmmu slow path raised `exc_cause`/`exc_tval` at the fault site whose host address
     /// is `fault_rip` (the dispatcher makes the state precise, D48).
     pub const MMU_FAULT: u32 = 8;
-    pub const COUNT: usize = 9;
+    /// A helper's store wrote to a page holding translated code (D49): `pc` is the next
+    /// instruction and the store retired. The dispatcher invalidates the page's TBs.
+    pub const SMC: u32 = 9;
+    /// The same from a softmmu inline store's slow path: the state is the fault site's at
+    /// `fault_rip`, and the store there retired.
+    pub const SMC_STORE: u32 = 10;
+    pub const COUNT: usize = 11;
 }
 
 /// Spill slots for IR temporaries (§8.1, §10).

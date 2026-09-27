@@ -342,18 +342,18 @@ fn exit_slots_are_aligned_and_target_their_stubs() {
     }
 }
 
-/// P3.2: link A→B by running, then invalidate B: A's exit must go back to its stub (no jump
-/// into stale code), and the retranslated B must be linked again.
+/// P3.3 + P8.4/P8.6(e): A (page 1) is chained to B (page 2); rewriting B's page invalidates B
+/// eagerly (no FENCE.I, no explicit call) and unlinks A's exit, while A stays valid.
 #[test]
 fn link_then_invalidate_unlinks() {
-    let a = [i_type(1, 7, 0, 7, 0x13), 0x0100_006F]; // addi x7,x7,1 ; jal x0,+16
+    const B: u64 = CODE + 0x1000;
+    let a = [i_type(1, 7, 0, 7, 0x13), 0x7FD0_006F]; // addi x7,x7,1 ; jal x0,+4092 (to B)
     let b_old = [i_type(10, 7, 0, 7, 0x13), ECALL]; // addi x7,x7,10 ; ecall
     let b_new = [i_type(100, 7, 0, 7, 0x13), ECALL];
     let mut rig = Rig::new(JitOptions::default());
     rig.mem.write_bytes(GuestVirt(CODE), &words(&a)).unwrap();
-    rig.mem
-        .write_bytes(GuestVirt(CODE + 20), &words(&b_old))
-        .unwrap();
+    rig.mem.write_bytes(GuestVirt(B), &words(&b_old)).unwrap();
+    rig.mem.smc_pages.clear(); // loader writes before anything was translated
     let run = |rig: &mut Rig| {
         let mut cpu = CpuState::new_user(CODE);
         assert_eq!(
@@ -366,33 +366,43 @@ fn link_then_invalidate_unlinks() {
     assert_eq!(run(&mut rig), (11, 3));
     // new_user starts with FS = Initial: the dispatcher used the slow FP variant (D47).
     let ida = rig.jit.tb_for_variant(CODE, &rig.mem, true);
-    let idb = rig.jit.tb_for_variant(CODE + 20, &rig.mem, true);
+    let idb = rig.jit.tb_for_variant(B, &rig.mem, true);
     let ex = rig.jit.tb(ida).exits[0].unwrap();
     assert_eq!(ex.linked, Some(idb));
     assert_eq!(rig.jit.tb(idb).incoming, vec![(ida, 0)]);
     let rel = i32::from_le_bytes(rig.jit.code_at(ex.patch_at, 4).try_into().unwrap());
     assert_eq!(ex.patch_at + 4 + rel as u64, rig.jit.tb(idb).host);
+    assert!(rig.mem.is_code(CODE) && rig.mem.is_code(B));
     // Second run goes A → B without the dispatcher.
     let entries = rig.jit.stats.entries;
     assert_eq!(run(&mut rig), (11, 3));
     assert_eq!(rig.jit.stats.entries - entries, 1);
-    // Change B's code and invalidate it.
-    rig.mem
-        .write_bytes(GuestVirt(CODE + 20), &words(&b_new))
-        .unwrap();
-    assert!(rig.jit.invalidate_pc(CODE + 20));
-    let ex = rig.jit.tb(ida).exits[0].unwrap();
-    assert_eq!(ex.linked, None);
-    let rel = i32::from_le_bytes(rig.jit.code_at(ex.patch_at, 4).try_into().unwrap());
-    assert_eq!(ex.patch_at + 4 + rel as u64, ex.stub);
-    assert_eq!(rig.jit.stats.chain_unlinks, 1);
-    // A now exits through its stub again and reaches the new B, which gets linked.
+    // Rewrite B's page: the write reports it, the next dispatch invalidates B and unlinks A.
+    rig.mem.write_bytes(GuestVirt(B), &words(&b_new)).unwrap();
+    assert_eq!(rig.mem.smc_pages, vec![B]);
     let entries = rig.jit.stats.entries;
     assert_eq!(run(&mut rig), (101, 3));
-    assert_eq!(rig.jit.stats.entries - entries, 2);
-    let idb2 = rig.jit.tb_for_variant(CODE + 20, &rig.mem, true);
+    assert_eq!(
+        rig.jit.stats.entries - entries,
+        2,
+        "A exited through its stub"
+    );
+    assert_eq!(rig.jit.stats.chain_unlinks, 1);
+    assert_eq!(
+        rig.jit.stats.smc_invalidated, 1,
+        "only B's page was written"
+    );
+    assert!(!rig.jit.tb(idb).valid && rig.jit.tb(ida).valid);
+    assert_eq!(rig.jit.tb_for_variant(CODE, &rig.mem, true), ida);
+    let idb2 = rig.jit.tb_for_variant(B, &rig.mem, true);
     assert_ne!(idb2, idb);
-    assert_eq!(rig.jit.tb(ida).exits[0].unwrap().linked, Some(idb2));
+    let ex = rig.jit.tb(ida).exits[0].unwrap();
+    assert_eq!(ex.linked, Some(idb2), "A → new B after the next run");
+    // The explicit API does the same.
+    assert!(rig.jit.invalidate_pc(B));
+    let ex = rig.jit.tb(ida).exits[0].unwrap();
+    let rel = i32::from_le_bytes(rig.jit.code_at(ex.patch_at, 4).try_into().unwrap());
+    assert_eq!((ex.linked, ex.patch_at + 4 + rel as u64), (None, ex.stub));
 }
 
 /// P3.3: a chained infinite loop (`jal x0, 0` linked to itself) still returns to the

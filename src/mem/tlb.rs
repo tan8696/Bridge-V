@@ -116,3 +116,24 @@ pub fn flush_all(cpu: &mut CpuState) {
     }
     cpu.mmu_gen = cpu.mmu_gen.wrapping_add(1);
 }
+
+/// Set (`on`) or clear the `TLB_CODE` flag on every write tag that maps physical page `page`
+/// (D49): stores to a page holding translated code must take the slow path. `mem_base` is the
+/// host address of physical 0 (`DirectMem::base`).
+pub fn set_code_flag(cpu: &mut CpuState, mem_base: u64, page: u64, on: bool) {
+    for t in cpu.tlb.iter_mut() {
+        for e in t.iter_mut() {
+            if e.addr_write == INVALID {
+                continue;
+            }
+            let vpage = e.addr_write & !0xfff;
+            if vpage.wrapping_add(e.addend).wrapping_sub(mem_base) == page {
+                if on {
+                    e.addr_write |= TLB_CODE;
+                } else {
+                    e.addr_write &= !TLB_CODE;
+                }
+            }
+        }
+    }
+}

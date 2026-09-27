@@ -237,6 +237,13 @@ pub unsafe extern "sysv64" fn helper_interp_one(cpu: *mut CpuState, raw: u64, pc
         // Discard any host flags raised by Rust code in the helper (none expected).
         reset_mxcsr();
         match flow {
+            // A store hit a page holding translated code: leave right after it (D49).
+            Flow::Next if !mem.smc_pages.is_empty() => {
+                cpu.icount += 1;
+                cpu.pc = pc.wrapping_add(d.len as u64);
+                cpu.exit_reason = exit::SMC;
+                1
+            }
             Flow::Next => 0,
             Flow::Jump(target) => {
                 cpu.icount += 1;
@@ -307,7 +314,12 @@ pub unsafe extern "sysv64" fn helper_mmu_access(
             })
         };
         match r {
-            Ok(v) => v,
+            Ok(v) => {
+                if !mem.smc_pages.is_empty() {
+                    cpu.exit_reason = exit::SMC_STORE;
+                }
+                v
+            }
             Err(e) => {
                 cpu.exc_cause = e.cause;
                 cpu.exc_tval = e.tval;

@@ -14,7 +14,7 @@
 //! check an access fault. Translations are cached in the `CpuState` TLB (`tlb.rs`).
 
 use super::direct::DirectMem;
-use super::tlb::{self, TLB_MMIO, TlbEntry, idx};
+use super::tlb::{self, TLB_CODE, TLB_MMIO, TlbEntry, idx};
 use super::{Access, PAGE_SIZE, prot};
 use crate::cpu::csr::mstatus;
 use crate::cpu::state::CpuState;
@@ -202,9 +202,16 @@ pub fn fill(
             tlb::INVALID
         }
     };
+    // Stores to a page holding translated code take the slow path (SMC, D49).
+    let write = tag(prot::W);
+    let code = if write != tlb::INVALID && mem.is_code(w.ppage) {
+        TLB_CODE
+    } else {
+        0
+    };
     cpu.tlb[mmu as usize][tlb::index(va)] = TlbEntry {
         addr_read: tag(prot::R),
-        addr_write: tag(prot::W),
+        addr_write: write | code,
         addr_code: tag(prot::X),
         addend: (mem.base() as u64)
             .wrapping_add(w.ppage)
