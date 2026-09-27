@@ -1,0 +1,1341 @@
+{
+ "host": {
+  "date": "2026-09-27T11:03:54+00:00",
+  "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "nproc": 4,
+  "pinned_cpu": 2,
+  "kernel": "6.18.44-fc-v37",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "qemu": "qemu-riscv64 version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+  "commit": "567255a",
+  "dirty": false,
+  "buildinfo": "# Bridge-V benchmark builds (tools/build-bench.sh), 2026-09-27T05:53:27Z\nriscv cc: riscv64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nhost cc:  gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\ncoremark: 1f483d5b8316753a742cbf5590caf5bd0a4e4777 make PORT_DIR=linux, PORT_CFLAGS=-O2, XCFLAGS='<arch> -static -DPERFORMANCE_RUN=1' (rv64: -march=rv64gc -mabi=lp64d)\ndhrystone: riscv-tests bcffa2b3188b040c611f90dc0b6e422f54775a09 benchmarks/dhrystone + guest/bench/dhrystone; flags: -O2 -static -std=gnu89 -w -I/home/user/Bridge-V/guest/bench/dhrystone -I/home/user/Bridge-V/third_party/riscv-tests/benchmarks/dhrystone, main: -Ddebug_printf=bridgev_dhry_printf, dhrystone.c: -DPASS2 (rv64: + -march=rv64gc -mabi=lp64d)\nfpbench: guest/bench/fp/fpbench.c; flags: -O2 -static -lm (rv64: + -march=rv64gc -mabi=lp64d)\ntlbbench: guest/bench/tlb/tlbbench.c + riscv-tests benchmarks/common; flags: -march=rv64gc -mabi=lp64d -DPREALLOCATE=1 -mcmodel=medany -static -std=gnu99 -O2 -fno-common -fno-builtin-printf   -fno-tree-loop-distribute-patterns -no-pie -fno-pic -Wl,--build-id=none -nostdlib -nostartfiles\n99bfd194b22b50dd901afbb7de5ce627a5f31c18b31c93d10911569bd53fe646  coremark-rv64.elf\na620cc327885b03d7192f1c8903230108142ae52fbd5c3bfb4ce785a2c3337b2  coremark-native\n270f2ef3dbed158a22f5af94af575e9bff69e4df1206b49c6251c2a02d3c3340  dhrystone-rv64.elf\n814582f7206a91542ffeb1f3a366954da5493bdcdf0a7a990c4aa9b4ef160374  dhrystone-native\nea586d23e8b487888127260f19559a591843c6d2d7e55c8a035079884b81ef44  fpbench-rv64.elf\nc8bf0c50fb17a7bcb8273e309c976fb2653f37bbda3109be38ba0ccdc6b4be31  fpbench-native\na1982c2064db169ecfaf422b056adeaecf57012af83882a62e310452d1e7c83e  tlbbench.riscv\n54954c19b412007f24ce7e6072dcf9ad460b0cafe570bbbe0812c1d3ce86e6d4  tlbuser-rv64.elf\n"
+ },
+ "params": {
+  "runs": 5,
+  "warmup": 1,
+  "target": 13.0,
+  "quick": false
+ },
+ "results": {
+  "coremark": {
+   "interp": {
+    "median": 454.283489,
+    "min": 435.526021,
+    "max": 470.441165,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 5833,
+    "mips": 163.0,
+    "guest_insns": 2093166785,
+    "secs": 12.845,
+    "insns_per_unit": 358849.097376993
+   },
+   "jit+linear": {
+    "median": 13409.4978,
+    "min": 12853.694008,
+    "max": 13746.325531,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 176764,
+    "mips": 4806.8,
+    "bytes_per_insn": 24.9,
+    "entries_per_m": 10,
+    "guest_insns": 63425021091,
+    "translate_ms": 8.6,
+    "secs": 13.195,
+    "translate_share": 0.0006517620310723759,
+    "insns_per_unit": 358811.86831594666
+   },
+   "softmmu": {
+    "median": 7526.440834,
+    "min": 7303.115937,
+    "max": 7619.878957,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 98205,
+    "mips": 2697.2,
+    "bytes_per_insn": 107.0,
+    "entries_per_m": 10,
+    "guest_insns": 35237219396,
+    "translate_ms": 12.1,
+    "secs": 13.064,
+    "translate_share": 0.0009262094304960196,
+    "insns_per_unit": 358812.88525024184
+   },
+   "qemu": {
+    "median": 8987.54394,
+    "min": 8651.684567,
+    "max": 9336.429309,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 117611
+   },
+   "native": {
+    "median": 25531.084155,
+    "min": 25354.238819,
+    "max": 25616.53735,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 336755
+   }
+  },
+  "dhrystone": {
+   "interp": {
+    "median": 472238.0,
+    "min": 430835.0,
+    "max": 482445.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 2987420,
+    "mips": 158.6,
+    "guest_insns": 1003999716,
+    "secs": 6.33,
+    "insns_per_unit": 336.07585006460425
+   },
+   "jit+linear": {
+    "median": 20728869.0,
+    "min": 20184104.0,
+    "max": 22565587.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 133687860,
+    "mips": 6955.4,
+    "bytes_per_insn": 24.3,
+    "entries_per_m": 10,
+    "guest_insns": 44919347526,
+    "translate_ms": 6.4,
+    "secs": 6.458,
+    "translate_share": 0.0009910188912976153,
+    "insns_per_unit": 336.00169473877435
+   },
+   "softmmu": {
+    "median": 10115192.0,
+    "min": 10095604.0,
+    "max": 10370023.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 67049138,
+    "mips": 3392.9,
+    "bytes_per_insn": 117.5,
+    "entries_per_m": 10,
+    "guest_insns": 22528736833,
+    "translate_ms": 8.2,
+    "secs": 6.64,
+    "translate_share": 0.0012349397590361445,
+    "insns_per_unit": 336.0033775974868
+   },
+   "qemu": {
+    "median": 4758387.0,
+    "min": 4604799.0,
+    "max": 4899881.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 30978188
+   },
+   "native": {
+    "median": 45562668.0,
+    "min": 44432669.0,
+    "max": 47145198.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 304819353
+   }
+  },
+  "fpbench": {
+   "interp": {
+    "median": 117.73,
+    "min": 115.183,
+    "max": 121.576,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 800,
+    "mips": 82.6,
+    "guest_insns": 561758697,
+    "secs": 6.8,
+    "insns_per_unit": 702198.37125
+   },
+   "jit+linear": {
+    "median": 3710.535,
+    "min": 3659.048,
+    "max": 3872.585,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 24001,
+    "mips": 2599.9,
+    "bytes_per_insn": 27.2,
+    "entries_per_m": 10,
+    "guest_insns": 16842782428,
+    "translate_ms": 7.5,
+    "secs": 6.478,
+    "translate_share": 0.001157764742204384,
+    "insns_per_unit": 701753.3614432731
+   },
+   "softmmu": {
+    "median": 2654.431,
+    "min": 2527.356,
+    "max": 2751.79,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 17438,
+    "mips": 1859.1,
+    "bytes_per_insn": 117.1,
+    "entries_per_m": 10,
+    "guest_insns": 12237275935,
+    "translate_ms": 10.1,
+    "secs": 6.582,
+    "translate_share": 0.001534487997569128,
+    "insns_per_unit": 701759.1429636426
+   },
+   "qemu": {
+    "median": 636.455,
+    "min": 610.762,
+    "max": 644.387,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 4098
+   },
+   "native": {
+    "median": 16589.055,
+    "min": 16278.152,
+    "max": 17378.731,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 115373
+   }
+  }
+ },
+ "raw": {
+  "coremark": {
+   "interp": [
+    {
+     "n": 5833,
+     "wall": 12.847958547998132,
+     "score": 454.283489,
+     "secs": 12.84,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2093166826,
+      "secs": 12.845,
+      "mips": 163.0,
+      "blocks_decoded": 1610
+     }
+    },
+    {
+     "n": 5833,
+     "wall": 12.641843820998474,
+     "score": 461.690676,
+     "secs": 12.634,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2093166662,
+      "secs": 12.639,
+      "mips": 165.6,
+      "blocks_decoded": 1613
+     }
+    },
+    {
+     "n": 5833,
+     "wall": 12.40564564899978,
+     "score": 470.441165,
+     "secs": 12.399,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2093166785,
+      "secs": 12.403,
+      "mips": 168.8,
+      "blocks_decoded": 1608
+     }
+    },
+    {
+     "n": 5833,
+     "wall": 12.907284511002217,
+     "score": 452.240657,
+     "secs": 12.898,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2093166814,
+      "secs": 12.902,
+      "mips": 162.2,
+      "blocks_decoded": 1610
+     }
+    },
+    {
+     "n": 5833,
+     "wall": 13.402191946002858,
+     "score": 435.526021,
+     "secs": 13.393,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2093166464,
+      "secs": 13.399,
+      "mips": 156.2,
+      "blocks_decoded": 1603
+     }
+    }
+   ],
+   "jit+linear": [
+    {
+     "n": 176764,
+     "wall": 12.874194918000285,
+     "score": 13746.325531,
+     "secs": 12.859,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 63425021297,
+      "secs": 12.87,
+      "mips": 4928.0,
+      "tbs": 1705,
+      "tb_guest_insns": 9588,
+      "bytes_per_insn": 24.9,
+      "translate_ms": 9.0,
+      "dispatcher_entries": 636298,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 176764,
+     "wall": 13.766990267999063,
+     "score": 12853.694008,
+     "secs": 13.752,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 63425020887,
+      "secs": 13.763,
+      "mips": 4608.4,
+      "tbs": 1697,
+      "tb_guest_insns": 9566,
+      "bytes_per_insn": 24.9,
+      "translate_ms": 8.9,
+      "dispatcher_entries": 636289,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 176764,
+     "wall": 13.198255221999716,
+     "score": 13409.4978,
+     "secs": 13.182,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 63425020807,
+      "secs": 13.195,
+      "mips": 4806.8,
+      "tbs": 1696,
+      "tb_guest_insns": 9565,
+      "bytes_per_insn": 24.9,
+      "translate_ms": 8.1,
+      "dispatcher_entries": 636287,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 176764,
+     "wall": 13.231088388998614,
+     "score": 13373.988046,
+     "secs": 13.217,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 63425021091,
+      "secs": 13.228,
+      "mips": 4794.9,
+      "tbs": 1707,
+      "tb_guest_insns": 9594,
+      "bytes_per_insn": 24.9,
+      "translate_ms": 8.2,
+      "dispatcher_entries": 636300,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 176764,
+     "wall": 13.186138218999986,
+     "score": 13420.696986,
+     "secs": 13.171,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 63425021234,
+      "secs": 13.182,
+      "mips": 4811.5,
+      "tbs": 1702,
+      "tb_guest_insns": 9585,
+      "bytes_per_insn": 24.9,
+      "translate_ms": 8.6,
+      "dispatcher_entries": 636294,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "softmmu": [
+    {
+     "n": 98205,
+     "wall": 13.068562577002012,
+     "score": 7526.440834,
+     "secs": 13.048,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 35237219281,
+      "secs": 13.064,
+      "mips": 2697.2,
+      "tbs": 1708,
+      "tb_guest_insns": 9654,
+      "bytes_per_insn": 107.0,
+      "translate_ms": 13.6,
+      "dispatcher_entries": 354432,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 98205,
+     "wall": 13.00086310000188,
+     "score": 7564.122314,
+     "secs": 12.983,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 35237219396,
+      "secs": 12.997,
+      "mips": 2711.2,
+      "tbs": 1708,
+      "tb_guest_insns": 9654,
+      "bytes_per_insn": 107.0,
+      "translate_ms": 12.1,
+      "dispatcher_entries": 354432,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 98205,
+     "wall": 13.46794830199724,
+     "score": 7303.115937,
+     "secs": 13.447,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 35237219522,
+      "secs": 13.464,
+      "mips": 2617.1,
+      "tbs": 1703,
+      "tb_guest_insns": 9644,
+      "bytes_per_insn": 107.0,
+      "translate_ms": 13.0,
+      "dispatcher_entries": 354426,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 98205,
+     "wall": 13.174572603002161,
+     "score": 7464.087558,
+     "secs": 13.157,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 35237219279,
+      "secs": 13.171,
+      "mips": 2675.3,
+      "tbs": 1708,
+      "tb_guest_insns": 9654,
+      "bytes_per_insn": 107.0,
+      "translate_ms": 11.8,
+      "dispatcher_entries": 354432,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 98205,
+     "wall": 12.903584738000063,
+     "score": 7619.878957,
+     "secs": 12.888,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 35237219553,
+      "secs": 12.9,
+      "mips": 2731.6,
+      "tbs": 1702,
+      "tb_guest_insns": 9638,
+      "bytes_per_insn": 107.0,
+      "translate_ms": 10.5,
+      "dispatcher_entries": 354424,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "qemu": [
+    {
+     "n": 117611,
+     "wall": 12.772442962999776,
+     "score": 9219.330564,
+     "secs": 12.757,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 117611,
+     "wall": 13.101959863000957,
+     "score": 8987.54394,
+     "secs": 13.086,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 117611,
+     "wall": 13.609326202000375,
+     "score": 8651.684567,
+     "secs": 13.594,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 117611,
+     "wall": 13.2243349700002,
+     "score": 8904.527559,
+     "secs": 13.208,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 117611,
+     "wall": 12.6133237009999,
+     "score": 9336.429309,
+     "secs": 12.597,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    }
+   ],
+   "native": [
+    {
+     "n": 336755,
+     "wall": 13.193948094998632,
+     "score": 25531.084155,
+     "secs": 13.19,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 336755,
+     "wall": 13.24781383500158,
+     "score": 25425.066063,
+     "secs": 13.245,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 336755,
+     "wall": 13.17121247599789,
+     "score": 25573.739368,
+     "secs": 13.168,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 336755,
+     "wall": 13.285480239999742,
+     "score": 25354.238819,
+     "secs": 13.282,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 336755,
+     "wall": 13.149445450002531,
+     "score": 25616.53735,
+     "secs": 13.146,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    }
+   ]
+  },
+  "dhrystone": {
+   "interp": [
+    {
+     "n": 2987420,
+     "wall": 6.942967030001455,
+     "score": 430835.0,
+     "secs": 6.934023466060093,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1003999716,
+      "secs": 6.939,
+      "mips": 144.7,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 2987420,
+     "wall": 6.623529948999931,
+     "score": 451562.0,
+     "secs": 6.615747117782275,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1003999716,
+      "secs": 6.62,
+      "mips": 151.7,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 2987420,
+     "wall": 6.20036212299965,
+     "score": 482445.0,
+     "secs": 6.192249893770274,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1003999716,
+      "secs": 6.197,
+      "mips": 162.0,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 2987420,
+     "wall": 6.321356651002134,
+     "score": 473083.0,
+     "secs": 6.314790427895317,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1003999716,
+      "secs": 6.319,
+      "mips": 158.9,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 2987420,
+     "wall": 6.334031326001423,
+     "score": 472238.0,
+     "secs": 6.326089810646327,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1003999716,
+      "secs": 6.33,
+      "mips": 158.6,
+      "blocks_decoded": 1090
+     }
+    }
+   ],
+   "jit+linear": [
+    {
+     "n": 133687860,
+     "wall": 6.259631028999138,
+     "score": 21452802.0,
+     "secs": 6.231720220043983,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 44919347526,
+      "secs": 6.24,
+      "mips": 7198.2,
+      "tbs": 1091,
+      "tb_guest_insns": 6207,
+      "bytes_per_insn": 24.3,
+      "translate_ms": 6.2,
+      "dispatcher_entries": 450524,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 133687860,
+     "wall": 6.638101434997225,
+     "score": 20184104.0,
+     "secs": 6.623423065992922,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 44919347526,
+      "secs": 6.634,
+      "mips": 6771.3,
+      "tbs": 1091,
+      "tb_guest_insns": 6207,
+      "bytes_per_insn": 24.3,
+      "translate_ms": 7.3,
+      "dispatcher_entries": 450524,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 133687860,
+     "wall": 6.597143048998987,
+     "score": 20308732.0,
+     "secs": 6.582777299931871,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 44919347526,
+      "secs": 6.593,
+      "mips": 6812.9,
+      "tbs": 1091,
+      "tb_guest_insns": 6207,
+      "bytes_per_insn": 24.3,
+      "translate_ms": 7.5,
+      "dispatcher_entries": 450524,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 133687860,
+     "wall": 6.461847009999474,
+     "score": 20728869.0,
+     "secs": 6.449356209448765,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 44919347526,
+      "secs": 6.458,
+      "mips": 6955.4,
+      "tbs": 1091,
+      "tb_guest_insns": 6207,
+      "bytes_per_insn": 24.3,
+      "translate_ms": 6.4,
+      "dispatcher_entries": 450524,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 133687860,
+     "wall": 5.936524226999609,
+     "score": 22565587.0,
+     "secs": 5.924413134034581,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 44919347526,
+      "secs": 5.933,
+      "mips": 7570.7,
+      "tbs": 1091,
+      "tb_guest_insns": 6207,
+      "bytes_per_insn": 24.3,
+      "translate_ms": 6.3,
+      "dispatcher_entries": 450524,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "softmmu": [
+    {
+     "n": 67049138,
+     "wall": 6.656205154999043,
+     "score": 10095604.0,
+     "secs": 6.64141917610873,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 22528736833,
+      "secs": 6.653,
+      "mips": 3386.4,
+      "tbs": 1090,
+      "tb_guest_insns": 6206,
+      "bytes_per_insn": 117.5,
+      "translate_ms": 8.1,
+      "dispatcher_entries": 227487,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 67049138,
+     "wall": 6.648872171997937,
+     "score": 10109180.0,
+     "secs": 6.632500163217986,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 22528736833,
+      "secs": 6.645,
+      "mips": 3390.3,
+      "tbs": 1090,
+      "tb_guest_insns": 6206,
+      "bytes_per_insn": 117.5,
+      "translate_ms": 9.1,
+      "dispatcher_entries": 227487,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 67049138,
+     "wall": 6.606018288999621,
+     "score": 10172590.0,
+     "secs": 6.591157020974992,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 22528736833,
+      "secs": 6.602,
+      "mips": 3412.2,
+      "tbs": 1090,
+      "tb_guest_insns": 6206,
+      "bytes_per_insn": 117.5,
+      "translate_ms": 8.2,
+      "dispatcher_entries": 227487,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 67049138,
+     "wall": 6.643808297001669,
+     "score": 10115192.0,
+     "secs": 6.6285581133803495,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 22528736833,
+      "secs": 6.64,
+      "mips": 3392.9,
+      "tbs": 1090,
+      "tb_guest_insns": 6206,
+      "bytes_per_insn": 117.5,
+      "translate_ms": 8.2,
+      "dispatcher_entries": 227487,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 67049138,
+     "wall": 6.481151227999362,
+     "score": 10370023.0,
+     "secs": 6.465669169682652,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 22528736833,
+      "secs": 6.477,
+      "mips": 3478.1,
+      "tbs": 1090,
+      "tb_guest_insns": 6206,
+      "bytes_per_insn": 117.5,
+      "translate_ms": 8.2,
+      "dispatcher_entries": 227487,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "qemu": [
+    {
+     "n": 30978188,
+     "wall": 6.741618944997754,
+     "score": 4604799.0,
+     "secs": 6.727370293469921,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 30978188,
+     "wall": 6.3364665750013955,
+     "score": 4899881.0,
+     "secs": 6.322232723611043,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 30978188,
+     "wall": 6.483000470001571,
+     "score": 4788380.0,
+     "secs": 6.469450628396243,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 30978188,
+     "wall": 6.523994678998861,
+     "score": 4758387.0,
+     "secs": 6.510228781307616,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 30978188,
+     "wall": 6.619362823999836,
+     "score": 4689676.0,
+     "secs": 6.605613692715659,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    }
+   ],
+   "native": [
+    {
+     "n": 304819353,
+     "wall": 6.693455519001873,
+     "score": 45562668.0,
+     "secs": 6.690112023290647,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 304819353,
+     "wall": 6.661212515999068,
+     "score": 45779284.0,
+     "secs": 6.658456104293811,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 304819353,
+     "wall": 6.863076556001033,
+     "score": 44432669.0,
+     "secs": 6.860253049394805,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 304819353,
+     "wall": 6.835717188001581,
+     "score": 44615155.0,
+     "secs": 6.832193074304012,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 304819353,
+     "wall": 6.467921142000705,
+     "score": 47145198.0,
+     "secs": 6.465544019986935,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    }
+   ]
+  },
+  "fpbench": {
+   "interp": [
+    {
+     "n": 800,
+     "wall": 6.6112566420015355,
+     "score": 121.167,
+     "secs": 6.602432,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 561758658,
+      "secs": 6.608,
+      "mips": 85.0,
+      "blocks_decoded": 1279
+     }
+    },
+    {
+     "n": 800,
+     "wall": 6.873073119997571,
+     "score": 116.539,
+     "secs": 6.864664,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 561758697,
+      "secs": 6.869,
+      "mips": 81.8,
+      "blocks_decoded": 1279
+     }
+    },
+    {
+     "n": 800,
+     "wall": 6.80406134399891,
+     "score": 117.73,
+     "secs": 6.795216,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 561758726,
+      "secs": 6.8,
+      "mips": 82.6,
+      "blocks_decoded": 1281
+     }
+    },
+    {
+     "n": 800,
+     "wall": 6.953856681000616,
+     "score": 115.183,
+     "secs": 6.945476,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 561758737,
+      "secs": 6.95,
+      "mips": 80.8,
+      "blocks_decoded": 1283
+     }
+    },
+    {
+     "n": 800,
+     "wall": 6.588919764999446,
+     "score": 121.576,
+     "secs": 6.580236,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 561758695,
+      "secs": 6.585,
+      "mips": 85.3,
+      "blocks_decoded": 1279
+     }
+    }
+   ],
+   "jit+linear": [
+    {
+     "n": 24001,
+     "wall": 6.482321310999396,
+     "score": 3710.535,
+     "secs": 6.46834,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 16842782428,
+      "secs": 6.478,
+      "mips": 2599.9,
+      "tbs": 1331,
+      "tb_guest_insns": 7942,
+      "bytes_per_insn": 27.2,
+      "translate_ms": 7.5,
+      "dispatcher_entries": 169976,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 24001,
+     "wall": 6.5020321880001575,
+     "score": 3698.993,
+     "secs": 6.488523,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 16842782439,
+      "secs": 6.499,
+      "mips": 2591.7,
+      "tbs": 1330,
+      "tb_guest_insns": 7941,
+      "bytes_per_insn": 27.2,
+      "translate_ms": 7.7,
+      "dispatcher_entries": 169975,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 24001,
+     "wall": 6.573505863001628,
+     "score": 3659.048,
+     "secs": 6.559356,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 16842782394,
+      "secs": 6.57,
+      "mips": 2563.6,
+      "tbs": 1330,
+      "tb_guest_insns": 7941,
+      "bytes_per_insn": 27.2,
+      "translate_ms": 7.9,
+      "dispatcher_entries": 169974,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 24001,
+     "wall": 6.210943442998541,
+     "score": 3872.585,
+     "secs": 6.19767,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 16842782502,
+      "secs": 6.207,
+      "mips": 2713.3,
+      "tbs": 1332,
+      "tb_guest_insns": 7947,
+      "bytes_per_insn": 27.2,
+      "translate_ms": 7.5,
+      "dispatcher_entries": 169975,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 24001,
+     "wall": 6.262763694998284,
+     "score": 3840.565,
+     "secs": 6.249341,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 16842782416,
+      "secs": 6.259,
+      "mips": 2690.8,
+      "tbs": 1326,
+      "tb_guest_insns": 7931,
+      "bytes_per_insn": 27.1,
+      "translate_ms": 7.5,
+      "dispatcher_entries": 169968,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "softmmu": [
+    {
+     "n": 17438,
+     "wall": 6.3522643169999355,
+     "score": 2751.79,
+     "secs": 6.336965,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 12237275900,
+      "secs": 6.349,
+      "mips": 1927.5,
+      "tbs": 1327,
+      "tb_guest_insns": 7931,
+      "bytes_per_insn": 117.1,
+      "translate_ms": 9.1,
+      "dispatcher_entries": 123921,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 17438,
+     "wall": 6.450135704999411,
+     "score": 2710.34,
+     "secs": 6.43388,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 12237275957,
+      "secs": 6.447,
+      "mips": 1898.2,
+      "tbs": 1328,
+      "tb_guest_insns": 7936,
+      "bytes_per_insn": 117.1,
+      "translate_ms": 10.1,
+      "dispatcher_entries": 123922,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 17438,
+     "wall": 6.916370297996764,
+     "score": 2527.356,
+     "secs": 6.899701,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 12237275977,
+      "secs": 6.913,
+      "mips": 1770.3,
+      "tbs": 1330,
+      "tb_guest_insns": 7940,
+      "bytes_per_insn": 117.1,
+      "translate_ms": 10.2,
+      "dispatcher_entries": 123924,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 17438,
+     "wall": 6.663651894003124,
+     "score": 2623.69,
+     "secs": 6.646363,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 12237275900,
+      "secs": 6.66,
+      "mips": 1837.5,
+      "tbs": 1327,
+      "tb_guest_insns": 7931,
+      "bytes_per_insn": 117.1,
+      "translate_ms": 10.3,
+      "dispatcher_entries": 123921,
+      "entries_per_m": 10
+     }
+    },
+    {
+     "n": 17438,
+     "wall": 6.586097826999321,
+     "score": 2654.431,
+     "secs": 6.569392,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 12237275935,
+      "secs": 6.582,
+      "mips": 1859.1,
+      "tbs": 1326,
+      "tb_guest_insns": 7930,
+      "bytes_per_insn": 117.1,
+      "translate_ms": 9.9,
+      "dispatcher_entries": 123918,
+      "entries_per_m": 10
+     }
+    }
+   ],
+   "qemu": [
+    {
+     "n": 4098,
+     "wall": 6.724846421999246,
+     "score": 610.762,
+     "secs": 6.709655,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 4098,
+     "wall": 6.453806272002112,
+     "score": 636.455,
+     "secs": 6.438786,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 4098,
+     "wall": 6.590234151000914,
+     "score": 623.176,
+     "secs": 6.575995,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 4098,
+     "wall": 6.453273293001985,
+     "score": 636.551,
+     "secs": 6.437821,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 4098,
+     "wall": 6.376315458997851,
+     "score": 644.387,
+     "secs": 6.359531,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    }
+   ],
+   "native": [
+    {
+     "n": 115373,
+     "wall": 7.017394823997165,
+     "score": 16447.849,
+     "secs": 7.014473,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 115373,
+     "wall": 6.940593332001299,
+     "score": 16632.487,
+     "secs": 6.936605,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 115373,
+     "wall": 7.0904438639990985,
+     "score": 16278.152,
+     "secs": 7.087598,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 115373,
+     "wall": 6.957877044998895,
+     "score": 16589.055,
+     "secs": 6.954766,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 115373,
+     "wall": 6.642052938001143,
+     "score": 17378.731,
+     "secs": 6.638747,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    }
+   ]
+  }
+ }
+}

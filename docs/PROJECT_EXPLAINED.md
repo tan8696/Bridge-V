@@ -4,7 +4,12 @@ This document explains Bridge-V from the ground up, for readers ranging from "ne
 - The exact engineering specification is [`CLAUDE.md`](../CLAUDE.md).
 - The build plan is [`ROADMAP.md`](ROADMAP.md).
 
-> **Status (2026-09-27):** Phase 8 (self-modifying code) complete. Bridge-V translates guest code into real x86-64 machine code; translated blocks jump directly into each other (block chaining, with an inline jump cache for function returns); each block goes through a small compiler (an intermediate representation, constant folding, removal of redundant register writes, and a register allocator that keeps four hot guest registers permanently in x86 registers). It passes everything the interpreter passes at every optimization level, including "lockstep" mode and a fuzzer that compared a million random blocks. Measured with a reproducible benchmark harness on the same machine: **CoreMark 13,498 iterations/s, 26.5× the interpreter, 1.52× QEMU and 52% of native x86-64 speed; Dhrystone 12,443 DMIPS, 39.6× the interpreter and 4.55× QEMU** (`docs/BENCHMARKS.md`). Since Phase 6, common floating-point instructions also run as inline SSE2/FMA3 code, bit-exact against the SoftFloat reference: 60× faster than calling the reference and 5.6× QEMU on an FP benchmark. Since Phase 7, Bridge-V also emulates the privileged architecture and Sv39 virtual memory: every guest address can be translated through page tables, with a software TLB checked inline by the generated code (a hit costs about 4 ns, a page-table walk about 28 ns). All 244 official riscv-tests pass, and CoreMark still runs at 2.7 billion instructions/s with every access translated.
+> **Status (2026-09-27):** all phases (0–11) are complete. Bridge-V translates guest code into real x86-64 machine code. Translated blocks jump directly into each other (block chaining, plus an inline jump cache for function returns). Each block goes through a small compiler: an intermediate representation, constant folding, removal of redundant register writes, and a register allocator that keeps four hot guest registers permanently in x86 registers. It runs Linux programs (user mode) and boots an unmodified Linux 6.8 kernel to a shell (system mode, with Sv39/Sv48 virtual memory through an inline software TLB). Final measurements on the same machine (`docs/BENCHMARKS.md`, commit `567255a`):
+> - **CoreMark:** 13,409 iterations/s (4.8 billion guest instructions/s), **1.49× QEMU** and 52.5% of native x86-64.
+> - **Dhrystone:** 11,798 DMIPS, **4.36× QEMU**.
+> - **FP benchmark:** **5.83× QEMU**.
+> - **Linux boot to the shell:** 1.48 s, against 1.54 s for QEMU.
+> - **Correctness:** all 244 official riscv-tests pass, and everything is checked in lockstep against the interpreter and by random fuzzers.
 
 ---
 
@@ -78,7 +83,7 @@ Here Bridge-V emulates a whole machine:
 - **A timer, an interrupt controller and a serial port** (the console you type into).
 - **The firmware interface (SBI)** that the kernel talks to.
 
-You boot a real, unmodified Linux kernel and get a shell prompt. This is what `qemu-system-riscv64` does. Bridge-V gets there in 1.25 seconds, a little faster than QEMU (1.50 s) on the same kernel. The firmware interface is built into Bridge-V itself, so no separate firmware image is needed. When the guest has nothing to do (it executes WFI, "wait for interrupt"), Bridge-V sleeps instead of spinning.
+You boot a real, unmodified Linux kernel and get a shell prompt. This is what `qemu-system-riscv64` does. Bridge-V gets there in about 1.3–1.5 seconds, depending on the machine, a little faster than QEMU on the same kernel and machine (final measurement: 1.48 s against 1.54 s). The firmware interface is built into Bridge-V itself, so no separate firmware image is needed. When the guest has nothing to do (it executes WFI, "wait for interrupt"), Bridge-V sleeps instead of spinning.
 
 ---
 
@@ -255,17 +260,27 @@ Everything else stays on the fast path.
 
 - **MIPS / "instructions per second"** means how many *guest* RISC-V instructions Bridge-V completes per second of wall-clock time.
 - **Speedup** means JIT time compared with the interpreter on the same workload (CoreMark, Dhrystone), same machine, same inputs.
-- **Measured (Phase 5, `docs/BENCHMARKS.md`)**, user mode, same machine:
+- **Final measurements (Phase 11, commit `567255a`, `docs/BENCHMARKS.md`)**, user mode, same machine:
 
-  | Configuration | CoreMark | vs interpreter | vs QEMU | vs native x86-64 |
-  |---|---|---|---|---|
-  | interpreter | 510 it/s | 1× | | 2% |
-  | JIT, fully optimized | 13,498 it/s (4.8 billion guest instructions/s) | 26.5× | 1.52× | 52% |
+  | Configuration | CoreMark | Dhrystone | FP benchmark |
+  |---|---|---|---|
+  | interpreter | 454 it/s | 472 k/s | 118 units/s |
+  | JIT, fully optimized | **13,409 it/s** (4.8 billion guest instructions/s) | **20.7 M/s** (11,798 DMIPS) | **3,711 units/s** |
+  | JIT, every access through the software TLB | 7,526 it/s | 10.1 M/s | 2,654 units/s |
+  | `qemu-riscv64` 8.2 | 8,988 it/s | 4.76 M/s | 636 units/s |
+  | native x86-64 (same source) | 25,531 it/s | 45.6 M/s | 16,589 units/s |
 
-  FP benchmark (Phase 6: nbody, matrix multiply, conversions): the fully optimized JIT runs 3,508 units/s, 27× the interpreter, 60× the same JIT with FP through the reference helper, 5.6× QEMU and 21% of native.
-
-  Each JIT technique's share: chaining alone is 13.8× the interpreter; pinning four registers takes it to 19.9×; the optimizer and register allocator to 26.5×.
-- **System mode (Phase 9):** booting Linux to the shell takes 1.25 s under the JIT (701 million guest instructions per second over the whole boot), 1.50 s under QEMU, and 9.99 s under the interpreter. That clears the old ≥ 100–120 MIPS target. The TLB (Phase 7) costs about 4 ns per hit and 28 ns per page walk.
+  - **The fully optimized JIT against the other configurations:**
+    - QEMU: 1.49× on CoreMark, 4.36× on Dhrystone and 5.83× on the FP benchmark.
+    - Native x86-64: 52.5%, 45.5% and 22.4% of native speed.
+  - **Against the interpreter:** 29.5× on CoreMark. The interpreter itself became about 10% slower during Phases 8–10, so the Phase 5 figure (26.5×, measured against a faster interpreter) is the fairer one.
+  - **Each JIT technique's share** (Phase 5):
+    - Chaining alone is 13.8× the interpreter.
+    - Pinning four registers takes it to 19.9×.
+    - The optimizer and register allocator take it to 26.5×.
+  - **Inline FP** (Phase 6) is 60× faster than sending every FP instruction through the reference helper.
+- **System mode:** booting Linux to the shell takes 1.48 s under the JIT (592 million guest instructions per second over the whole run), 1.54 s under QEMU, and 10.49 s under the interpreter. The same boot measured 1.25 s in Phase 9; a back-to-back comparison shows the old and new builds equally fast today, so the difference is the machine. Either way it clears the original ≥ 100–120 MIPS target by a wide margin.
+- **The software TLB** (Phase 7) costs 0.34 ns per access in throughput when it hits (about 3 ns of extra latency), and 28 ns (about 59 cycles) when it has to walk the page table.
 
 - Every real number is recorded in `docs/BENCHMARKS.md` and the phase reports, with the exact command and machine used. **No unmeasured number is ever reported as a result.**
 
@@ -282,11 +297,13 @@ Everything else stays on the fast path.
 
 ## 12. Project status and how it will be used
 
-- **Now:** Phases 0–9 and most of Phase 10 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining, an inline jump cache, an IR optimizer and register allocator, lockstep checking, a random-block fuzzer, and Milestone A: reproducible CoreMark and Dhrystone builds, a benchmark harness comparing the interpreter, every JIT level, QEMU and native code (`tools/bench.py`), a sampling profiler (`--profile-tbs`), and a one-command demo (`tools/demo-milestone-a.sh`), plus (Phase 6) inline floating point with an FP fuzzer and an FP benchmark. Phase 7 added privileged mode (M/S/U), Sv39 virtual memory and the inline software TLB. Phase 8 made self-modifying code safe: when a program writes to memory that holds code Bridge-V has already translated, exactly those translations are thrown away (and chained jumps into them are undone) before the new code runs, whether or not the program issues the RISC-V FENCE.I instruction. Phase 9 (Milestone B) boots an unmodified Linux kernel to a BusyBox shell. It adds a timer, an interrupt controller, a serial port, a power-off device, the firmware interface (SBI) and a generated devicetree. The whole boot is also checked instruction block by instruction block against the interpreter. Phase 10 (stretch goals) added:
+- **Now:** all phases are complete. Phases 0–9 and most of Phase 10 delivered the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining, an inline jump cache, an IR optimizer and register allocator, lockstep checking, a random-block fuzzer, and Milestone A: reproducible CoreMark and Dhrystone builds, a benchmark harness comparing the interpreter, every JIT level, QEMU and native code (`tools/bench.py`), a sampling profiler (`--profile-tbs`), and a one-command demo (`tools/demo-milestone-a.sh`), plus (Phase 6) inline floating point with an FP fuzzer and an FP benchmark. Phase 7 added privileged mode (M/S/U), Sv39 virtual memory and the inline software TLB. Phase 8 made self-modifying code safe: when a program writes to memory that holds code Bridge-V has already translated, exactly those translations are thrown away (and chained jumps into them are undone) before the new code runs, whether or not the program issues the RISC-V FENCE.I instruction. Phase 9 (Milestone B) boots an unmodified Linux kernel to a BusyBox shell. It adds a timer, an interrupt controller, a serial port, a power-off device, the firmware interface (SBI) and a generated devicetree. The whole boot is also checked instruction block by instruction block against the interpreter. Phase 10 (stretch goals) added:
   - real firmware (OpenSBI) instead of the built-in one, the four-level Sv48 page tables, machines with several CPUs (`--smp`, run one at a time), and a virtual disk Linux can mount;
   - in user mode: programs with threads (pthreads, run one thread at a time), signal handlers, dynamically linked programs (using the RISC-V `ld.so` and `libc.so`), and a GDB remote stub so a debugger can set breakpoints and single-step the guest.
 
   Two performance ideas (a return-address stack and superblocks) were analysed and not built; `docs/phase-reports/phase-10-not-pursued.md` explains why.
+
+  Phase 11 (polish) re-measured everything at the final commit, rewrote the README around real demo transcripts, and added [`WHITEBOARD.md`](WHITEBOARD.md), which walks through real translated blocks byte by byte.
 - **Milestone A (required):** CoreMark and Dhrystone run under both the interpreter and the JIT, with a printed speedup table.
 - **Milestone B (stretch):** Linux boots to a BusyBox shell. **Done**, with Linux 6.8.
 - **Usage:**

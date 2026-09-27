@@ -2,6 +2,37 @@
 
 Only numbers produced by the benchmark harness (`tools/bench.py`, P5.2) appear here, each with its commit, host and date. Ad-hoc numbers from earlier phases are in the phase reports.
 
+## Final results (Phase 11, 2026-09-27, commit `567255a`)
+
+`python3 tools/bench.py --suite coremark,dhrystone,fpbench --configs interp,jit+linear,softmmu,qemu,native` at the Phase 10 commit. Raw data: [`bench/2026-09-27-567255a-final/`](bench/2026-09-27-567255a-final/).
+
+Host: Intel(R) Xeon(R) Processor @ 2.10GHz (4 vCPU, pinned to CPU 2), kernel 6.18.44-fc-v37, rustc 1.94.1, qemu-riscv64 8.2.2. 5 measured runs after 1 warm-up, median (min–max). Shared cloud VM: expect noise of several percent.
+
+| workload | interp | **jit** (`jit+linear`) | softmmu | qemu-riscv64 | native x86-64 |
+|---|---:|---:|---:|---:|---:|
+| CoreMark (iterations/s) | 454 (436–470) | **13,409** (12,854–13,746) | 7,526 (7,303–7,620) | 8,988 (8,652–9,336) | 25,531 (25,354–25,617) |
+| Dhrystone (Dhrystones/s) | 472,238 | **20,728,869** (11,798 DMIPS) | 10,115,192 | 4,758,387 | 45,562,668 |
+| fpbench (units/s) | 118 (115–122) | **3,711** (3,659–3,873) | 2,654 (2,527–2,752) | 636 (611–644) | 16,589 (16,278–17,379) |
+
+| workload | jit guest MIPS | jit vs QEMU | jit vs native | softmmu vs QEMU | softmmu vs jit (direct) | jit vs interp |
+|---|---:|---:|---:|---:|---:|---:|
+| CoreMark | 4,807 | 1.49× | 0.525 | 0.84× | 0.56 | 29.5× |
+| Dhrystone | 6,955 | 4.36× | 0.455 | 2.13× | 0.49 | 43.9× |
+| fpbench | 2,600 | 5.83× | 0.224 | 4.17× | 0.72 | 31.5× |
+
+- **The interpreter is about 10% slower than at Phase 7** (CoreMark 520 → 454–471 it/s). This was confirmed with a clean re-run and in same-batch A/B runs of the old and new builds ([`interp-ab.md`](bench/2026-09-27-567255a-final/interp-ab.md)). The loss came a few percent at a time over Phases 8–10. The "vs interp" ratios at this commit are therefore about 10% higher than against the Phase 7 interpreter. Phase 5's 26.5× (CoreMark) and 39.6× (Dhrystone) are the conservative figures.
+- The JIT matches its earlier measurements (CoreMark 13,498 at Phase 5, 13,789–14,144 in the Phase 7 sessions). The spread between sessions is host variance.
+
+**Linux boot to a BusyBox shell** (`python3 tools/boot-bench.py --configs jit,interp,qemu --runs 5`, same code as `567255a`; [`bench/2026-09-27-567255a-boot/`](bench/2026-09-27-567255a-boot/)):
+
+| config | time to shell (s) | guest instructions | MIPS |
+|---|---:|---:|---:|
+| bridgev jit | 1.48 (1.34–1.50) | 926,085,442 | 592 |
+| bridgev interp | 10.49 (9.74–10.82) | 895,416,385 | 85 |
+| qemu-system-riscv64 | 1.54 (1.40–1.93) | — | — |
+
+- The JIT is slower here than in the Phase 9 measurement (1.25 s). A same-batch A/B of the Phase 9 build against this one shows the same speed (median 1.57 s vs 1.54 s; [`ab.md`](bench/2026-09-27-567255a-boot/ab.md)), so the difference is the host, not the code.
+
 ## Milestone A: CoreMark and Dhrystone, user mode (2026-09-26, commit `668723f`)
 
 Raw data (every run, host info, build hashes): [`bench/2026-09-26-668723f/results.json`](bench/2026-09-26-668723f/results.json).

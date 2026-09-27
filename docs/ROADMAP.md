@@ -753,11 +753,11 @@ Pick items in this order, as budget allows. Each gets its own mini-report (`phas
 
 ## Phase 11: Polish, presentation and resume
 
-- [ ] The README contains a demo (an asciinema recording or screenshots of the speedup and boot) and quick-start commands.
-- [ ] `docs/PROJECT_EXPLAINED.md` is updated with the real measured results and final architecture details.
-- [ ] Resume bullets in CLAUDE.md §28.1 are rewritten with **measured numbers only**.
-- [ ] Interview prep: re-derive the §28.5 byte encodings against the real emitter output. Prepare the whiteboard walkthrough from real TB dumps.
-- [ ] Optional: a blog post or write-up of the design, with lessons learned.
+- [x] The README contains a demo and quick-start commands. *(Phase 11: real text transcripts of a CoreMark JIT run, the Milestone A speedup and a Linux boot, since there is no terminal recorder in the container.)*
+- [x] `docs/PROJECT_EXPLAINED.md` is updated with the real measured results and final architecture details.
+- [x] Resume bullets in CLAUDE.md §28.1 are rewritten with **measured numbers only**.
+- [x] Interview prep: re-derive the §28.5 byte encodings against the real emitter output (`tests/emitter_golden.rs::interview_examples_28_5`). Prepare the whiteboard walkthrough from real TB dumps (`docs/WHITEBOARD.md`).
+- [x] Optional: a write-up of the design, with lessons learned. *(`docs/WHITEBOARD.md` plus §13 of the Phase 11 report; no separate blog post.)*
 
 ---
 

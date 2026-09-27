@@ -11,10 +11,10 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 10 (stretch goals) complete: 8 of 10 items done, 2 analysed and not pursued.** Done: OpenSBI boot (D53), Sv48 (D54), multithreaded user mode (D55, serialized), guest signals (D56), dynamic ELF/PIE (D57), virtio-blk (D58), GDB stub (D59), SMP guests (D60, serialized). Not pursued: return-address stack, superblocks (`phase-10-not-pursued.md`). Phase 9: Linux 6.8 boots to a BusyBox shell in 1.25 s under the JIT (QEMU TCG 1.50 s), lockstep-clean. Next up: Phase 11 (polish, presentation, resume numbers; `docs/ROADMAP.md`). |
+| Phase | **All phases complete (0–11).** Phase 11 (polish): final benchmark matrix at `567255a` (CoreMark 13,409 it/s = 1.49× QEMU, 52.5% of native; Dhrystone 4.36× QEMU; fpbench 5.83× QEMU; Linux boot to shell 1.48 s vs QEMU 1.54 s), README demo transcripts, measured resume bullets (§28.1), `docs/WHITEBOARD.md` from real TB dumps, §28.5 checked by `interview_examples_28_5`. Known issue: the interpreter is about 10% slower than at Phase 7 (gradual, Phases 8–10; `docs/bench/2026-09-27-567255a-final/interp-ab.md`). Phase 10: 8 of 10 stretch goals done (D53–D60), 2 analysed and not pursued. Next: owner decisions in `docs/ROADMAP.md` §18; optional follow-ups in the Phase 11 report §12. |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-09-milestone-b.md` and one `phase-10-*.md` per stretch goal |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-11-polish.md` (Phase 10: one `phase-10-*.md` per stretch goal) |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
 | Last updated | 2026-09-27 |
@@ -962,7 +962,7 @@ stub_k:  (dirty regs already written back on the path)
   - Jump-cache hit ratio
   - TLB miss rate
   - Code-cache size
-- **TLB microbenchmark:** a guest loop of N loads over a working set that fits in the TLB, versus one that is larger than it (forcing walks). Measure host cycles per access with `rdtsc` and report both. This is the data behind the "45 → 4 cycles" claim.
+- **TLB microbenchmark:** a guest loop of N loads over a working set that fits in the TLB, versus one that is larger than it (forcing walks). Measure host cycles per access with `rdtsc` and report both. Results: `tools/tlb-bench.py`, `docs/BENCHMARKS.md` and §28.1 (these replaced the original "45 → 4 cycles" target).
 - **Procedure:**
   - `taskset -c 2`, 1 warm-up run plus 5 measured runs, report the median and min/max.
   - Record the host CPU model, commit hash, flags and date.
@@ -1068,11 +1068,17 @@ Each phase ends with:
 
 ## 28. Resume bullets and interview presentation
 
-### 28.1 Resume bullets (targets: replace the numbers with measured values from `docs/BENCHMARKS.md` before use)
-- Engineered a 64-bit RISC-V to x86_64 dynamic binary translator supporting RV64IMAFD instruction extensions, executing compiled Linux binaries at over **120M instructions/sec**. *(Measured, Phase 5: CoreMark at 4.8 billion guest instructions/s in user mode, 26.5× the interpreter and 1.52× `qemu-riscv64`; Phase 7: CoreMark under `--mem=softmmu`, every access through the software TLB, runs at 2.7 billion guest instructions/s. Phase 9: a full Linux boot in system mode averages 701 million guest instructions/s, and reaches the shell in 1.25 s against QEMU's 1.50 s.)*
-- Eliminated dispatcher context switching by developing a runtime basic-block chaining mechanism that hot-patches native branch targets directly in executable cache memory.
-- Implemented an inline software TLB and SV39 virtual memory engine, reducing memory translation overhead from **45 cycles to 4 cycles** on cached hits. *(Measured, Phase 7: a TLB hit adds < 1 cycle per access in throughput and about 5–7 cycles of load-to-use latency; a miss with a full Sv39 walk costs about 59 nominal cycles (28 ns). Rewrite the bullet with these numbers.)*
-- Authored a custom JIT code emitter and register allocator mapping 32 guest registers to host x86_64 registers with zero-cost spill resolution for hot execution paths.
+### 28.1 Resume bullets (measured; Phase 11)
+Every number below comes from `docs/BENCHMARKS.md` (harness runs with the commit, host and method recorded). The host is an Intel Xeon @ 2.10 GHz shared cloud VM. Re-measure before quoting on other hardware.
+- Engineered a RISC-V (RV64GC) to x86-64 dynamic binary translator in Rust that runs unmodified Linux binaries at **4.8 billion guest instructions/s** on CoreMark. That is **1.49× `qemu-riscv64`** and 52.5% of the same code compiled natively. It also boots an unmodified Linux 6.8 kernel to a BusyBox shell in 1.48 s, against 1.54 s for `qemu-system-riscv64`. *(Final run at `567255a`. Dhrystone: 4.36× QEMU. FP benchmark: 5.83× QEMU.)*
+- Eliminated dispatcher round-trips with runtime block chaining. Block exits are hot-patched as 4-byte-aligned rel32 jumps in the code cache, and returns go through an inline jump cache. Dispatcher entries fell from **180,762 to 10 per million guest instructions**, and CoreMark ran **8.9× faster** than unchained translation (791 → 7,024 it/s). *(Phase 5, `668723f`.)*
+- Implemented Sv39/Sv48 virtual memory with an inline, direct-mapped software TLB. The hit path is 9 instructions and costs **0.34 ns per access in throughput** (about 3 ns of added load-to-use latency), against **28 ns (about 59 cycles) for a page-table walk**. CoreMark keeps 56% of its speed with every load and store translated. *(Phase 7 TLB microbenchmark, `2da741e`; the softmmu ratio is from `567255a`.)*
+- Hand-wrote the x86-64 machine-code emitter (REX/ModRM/SIB, golden-tested against the iced-x86 decoder) and a per-block linear-scan register allocator. It pins four hot guest registers in R12–R15, writes the others back lazily, and keeps precise-fault state in per-site maps instead of hot-path code: **1.9× on CoreMark over the chained baseline** (7,024 → 13,498 it/s). *(Phase 5.)*
+- Verified correctness with:
+  - all 244 official riscv-tests under every engine;
+  - lockstep differential execution against the reference interpreter, including a complete Linux boot (84 M blocks, divergence-free);
+  - randomized block fuzzing (10⁶ blocks, and 10⁶ FP cases bit-exact against Berkeley SoftFloat).
+- Do **not** use the original "120M instructions/sec" and "45 → 4 cycles" targets: the measurements above replace them.
 
 ### 28.2 Architecture walkthrough (2 minutes)
 1. Load the ELF (or kernel + DTB).
