@@ -92,3 +92,10 @@ jobs:
 
       - name: Benchmarks
         run: python3 tools/bench.py --configs "$CONFIGS" --runs 3 --out bench-out && cat bench-out/results.md >> "$GITHUB_STEP_SUMMARY"
+
+      # results.json holds every run and the host details (gh run download <run-id>).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results
+          path: bench-out/

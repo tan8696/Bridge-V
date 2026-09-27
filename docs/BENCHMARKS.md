@@ -2,6 +2,34 @@
 
 Only numbers produced by the benchmark harness (`tools/bench.py`, P5.2) appear here, each with its commit, host and date. Ad-hoc numbers from earlier phases are in the phase reports.
 
+## Tiered translation (Phase 12, D63, 2026-09-27, commits `53f9030` and `2e498ee`)
+
+`tools/boot-bench.py` and `tools/bench.py`, run by the `bench` workflow on a GitHub-hosted runner, because this phase had no Linux machine. Raw data and GitHub Actions run numbers: [`bench/2026-09-27-tier/`](bench/2026-09-27-tier/). Analysis: [`phase-reports/phase-12-tiered-translation.md`](phase-reports/phase-12-tiered-translation.md) §7.
+
+Host: AMD EPYC 7763 (4 vCPU, pinned to CPU 2), shared cloud VM. **A different host from the Phase 11 results below; compare only within these tables.** Boots: configurations take turns run by run, 1 warm-up each, median (min–max).
+
+**Linux boot to a BusyBox shell, by `--tier`** (`2e498ee`, 7 runs; the default is 32):
+
+| config | time to shell | TBs translated | host code | translate time |
+|---|---:|---:|---:|---:|
+| jit `--tier 0` (before Phase 12) | 1.30 s (1.28–1.50) | 65,634 | 44,501 KiB | 560.7 ms |
+| jit `--tier 16` | 1.07 s (1.05–1.08) | 23,163 | 16,219 KiB | 196.8 ms |
+| **jit `--tier 32` (default)** | **1.06 s (1.05–1.09)** | **18,023** | **12,631 KiB** | **154.2 ms** |
+| jit `--tier 64` | 1.09 s (1.07–1.10) | 13,391 | 9,310 KiB | 118.9 ms |
+| qemu-system-riscv64 8.2.2 | 1.41 s (1.37–1.43) | | | |
+
+The wider sweep at `53f9030` (5 runs): tier 0 1.32 s, 1 1.20 s, 4 1.16 s, 16 1.11 s, 64 1.11 s, 256 1.32 s; QEMU 1.41 s. In a fully interpreted boot (`--tier 1000000000`), 31% of the 65.7 k blocks ran once and 64% fewer than 16 times.
+
+**User mode** (`2e498ee`, `--configs jit+linear,jit-tier0 --runs 3`, 1 warm-up):
+
+| workload | default (tier 32) | `--tier 0` | translate time |
+|---|---:|---:|---:|
+| CoreMark (it/s) | 11,847 (11,794–11,858) | 11,833 (11,831–11,843) | 2.1 ms vs 10.3 ms |
+| Dhrystone (/s) | 16,710,005 (16,675,336–16,723,168) | 16,524,448 (16,242,056–16,543,770) | 1.2 ms vs 8.5 ms |
+| fpbench (units/s) | 2,079 (2,072–2,101) | 2,105 (2,105–2,105) | 1.4 ms vs 9.0 ms |
+
+The user-mode differences (+0.1%, +1.1%, −1.2%) are within the runner's noise between back-to-back configurations.
+
 ## Final results (Phase 11, 2026-09-27, commit `567255a`)
 
 `python3 tools/bench.py --suite coremark,dhrystone,fpbench --configs interp,jit+linear,softmmu,qemu,native` at the Phase 10 commit. Raw data: [`bench/2026-09-27-567255a-final/`](bench/2026-09-27-567255a-final/).

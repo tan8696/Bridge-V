@@ -11,13 +11,13 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **All phases complete (0–11).** Phase 11 (polish): final benchmark matrix at `567255a` (CoreMark 13,409 it/s = 1.49× QEMU, 52.5% of native; Dhrystone 4.36× QEMU; fpbench 5.83× QEMU; Linux boot to shell 1.48 s vs QEMU 1.54 s), README demo transcripts, measured resume bullets (§28.1), `docs/WHITEBOARD.md` from real TB dumps, §28.5 checked by `interview_examples_28_5`. After Phase 11: an interpreter regression from Phase 8 (about 10% on Dhrystone) was found and fixed by two complementary changes, merged (`f7f41aa` store path + `3869c44` per-instruction check; D61; `docs/bench/2026-09-27-interp-fix/`). Project licensed MIT OR Apache-2.0. Phase 10: 8 of 10 stretch goals done (D53–D60), 2 analysed and not pursued. Open: the remaining owner questions in `docs/ROADMAP.md` §18; optional follow-ups in the Phase 11 report §12. |
+| Phase | **All phases complete (0–12).** Phase 12 (tiered translation, post-roadmap, D63): the JIT engine interprets a block until it has run `--tier N` times (default 32) and only then translates it; on a GitHub runner the Linux boot to a shell went from 1.30 s to 1.06 s (QEMU 1.41 s) with 72% less translated code, and CoreMark/Dhrystone/fpbench are unchanged within noise (`docs/phase-reports/phase-12-tiered-translation.md`, `docs/bench/2026-09-27-tier/`). Phase 11 (polish): final benchmark matrix at `567255a` (CoreMark 13,409 it/s = 1.49× QEMU, 52.5% of native; Dhrystone 4.36× QEMU; fpbench 5.83× QEMU; Linux boot to shell 1.48 s vs QEMU 1.54 s), README demo transcripts, measured resume bullets (§28.1), `docs/WHITEBOARD.md` from real TB dumps, §28.5 checked by `interview_examples_28_5`. After Phase 11: an interpreter regression from Phase 8 (about 10% on Dhrystone) was found and fixed by two complementary changes, merged (`f7f41aa` store path + `3869c44` per-instruction check; D61; `docs/bench/2026-09-27-interp-fix/`). Project licensed MIT OR Apache-2.0. Phase 10: 8 of 10 stretch goals done (D53–D60), 2 analysed and not pursued. Open: the remaining owner questions in `docs/ROADMAP.md` §18; optional follow-ups in the Phase 11 report §12. |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-11-polish.md` (Phase 10: one `phase-10-*.md` per stretch goal) |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-12-tiered-translation.md` (Phase 10: one `phase-10-*.md` per stretch goal) |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
-| Last updated | 2026-09-27 |
+| Last updated | 2026-09-28 |
 
 Update this table at the end of every phase.
 
@@ -113,6 +113,7 @@ Update this table at the end of every phase.
 | D60 | SMP guest (Phase 10) | `bridgev boot --smp N` (≤ 8): each hart has its own `CpuState` and engine, and harts run round-robin per slice in the machine thread (no host parallelism; a switch clears the LR reservation). CLINT msip/mtimecmp and the PLIC's two contexts are per hart; the DT lists N CPUs. The built-in SBI returns cross-hart actions (IPI, remote FENCE.I/SFENCE.VMA, HSM start/stop) that the machine applies. With firmware, all harts enter OpenSBI. `DirectMem::smc_log` gives each hart's engine the code pages written since it last ran. WFI makes a hart wait until an interrupt is pending for it, and the host sleeps when all harts wait. | Real SMP semantics for Linux (4 CPUs up, with the built-in SBI and with OpenSBI) with no locking; parallel harts would need the D55 prerequisites. |
 | D61 | Interpreter SMC checks only where memory is written (after Phase 11) | Store instructions (`Store`, `FStore`, AMO/SC), and under softmmu also loads (their page walk may set A/D bits, and the JIT's `helper_mmu_access` stops after those too), return `Flow::Smc` when `mem.smc_pages` became non-empty; `exec_block` ends the block only then, and other instructions no longer test `smc_pages`. `DirectMem::check` returns the OR of the pages' permission bytes, so `store`, `slice_mut` and `write_bytes` see the CODE bit without a second lookup; code-page and lockstep write-log handling live in a cold `store_slow`, so the common store stays small enough to inline (`f7f41aa`, from a parallel session, merged). `Interp::run` drains `smc_pages` on entry as well as after each block, so code written between runs (syscalls, DMA, other harts) never executes stale. Amends D49. | The per-instruction check and the extra lookups per store cost about 10% on Dhrystone and 3–5% on CoreMark in the interpreter. Back-to-back harness runs put the merged fix at Phase 7 speed or slightly above (CoreMark 502 vs 485 it/s, Dhrystone 517,701 vs 507,877/s; `docs/bench/2026-09-27-interp-fix/`); either change alone left part of the loss in interleaved A/B runs. The entry drain also fixes the first stale instruction that the old check let run (`interp::tests::code_written_between_runs_is_redecoded`). |
 | D62 | License (finalisation) | Bridge-V's own code is dual-licensed **MIT OR Apache-2.0** (`LICENSE-MIT`, `LICENSE-APACHE`, `license` in `Cargo.toml`). The copyright line reads "The Bridge-V contributors". `third_party/` submodules and the downloaded guest images keep their own licenses. QEMU and other GPL code stay reference-only (never copied). | The owner's choice (ROADMAP §18 Q1). It is the Rust-ecosystem convention and compatible with every dependency (`libc`, `rustc-hash`, `clap`, `anyhow`, `cc`: MIT/Apache-2.0; SoftFloat: BSD-3-Clause). |
+| D63 | Interpreter tier for cold code (Phase 12) | `--tier N` (`DEFAULT_TIER` = 32, for `run` and `boot`): when `select()` finds no TB for a block, `cold_run` counts a run of its `TbKey`; while the count is at most N the block runs in the interpreter (`Next::Cold` → `exec_cold` → `exec_block`), and run N+1 translates it. Cold blocks are decoded once (`--max-block`, so the same boundaries as their TB) and cached by `TbKey`, so they survive TLB flushes like TBs; their pages are marked as code pages and indexed in `cold_pages`, and `drain_smc` drops their decoded copy on a write (D49); `flush_all` clears the tier's tables. A cold block clears `last_exit` (nothing to chain to); once translated, exits into it link as usual. Lockstep always runs with tier 0, so every block is still translated and compared. `--stats` adds blocks and instructions interpreted and a histogram of how often the still-cold blocks ran. Tests of translated code pass `--tier 0` (the `jit_lowering` rig, the JIT-only suite configurations, one Linux boot). | A boot runs most of its code only a few times: 31% of its 65.7 k blocks run once, 64% fewer than 16 times. Translating a block costs about 8.5 µs and an interpreted run about 0.1–0.16 µs, so translation pays only after about 55–90 runs; interpreting until then is the ski-rental rule (2-competitive). GitHub runner (AMD EPYC 7763), 7 interleaved boots: time to shell 1.30 s at tier 0, 1.07 s at 16, **1.06 s at 32**, 1.09 s at 64 (QEMU 1.41 s); host code 43.5 → 12.3 MiB. CoreMark +0.1%, Dhrystone +1.1%, fpbench −1.2% (noise), translation time 5–7× lower. `docs/bench/2026-09-27-tier/`. |
 
 ---
 
@@ -175,7 +176,7 @@ Guest RISC-V Binary (ELF64, EM_RISCV=243)   or   Kernel Image + DTB (system mode
 
 **Execution engines**, selected by `--engine`:
 - `interp`: the pre-decoded interpreter. It is the golden reference model, the baseline for speedup numbers, and the fallback helper (D14).
-- `jit`: the translator.
+- `jit`: the translator. By default a block runs `--tier` (32) times in the interpreter before it is translated (D63), so code that runs only a few times is never translated.
 - `lockstep`: runs the JIT and the interpreter side by side and compares full architectural state at every block boundary (§21).
 
 **Execution modes**, selected by `--mode`:
@@ -186,7 +187,9 @@ Guest RISC-V Binary (ELF64, EM_RISCV=243)   or   Kernel Image + DTB (system mode
 ```
 loop {
     deliver pending interrupts (system) / signals (user)
-    tb = jump_cache.get(pc, flags) ?? tb_map.get(pc, flags) ?? translate(pc, flags)
+    tb = jump_cache.get(pc, flags) ?? tb_map.get(pc, flags)
+    if tb is None && ++runs[pc, flags] <= TIER { interpret the block; continue }   // D63
+    tb = tb ?? translate(pc, flags)
     if chaining && last_exit.is_chainable() && may_link(last_tb, tb) { patch(last_tb.slot → tb.host) }
     cpu.budget = min(SLICE, insns_until_next_timer_event)
     ret = enter_jit(cpu, tb.host)              // extern "sysv64" fn(*mut CpuState, *const u8) -> u64
@@ -279,7 +282,8 @@ Bridge-V/
 │   ├── PROJECT_EXPLAINED.md  ← what the project is / does / is used for (plain language)
 │   ├── BENCHMARKS.md         ← measured results only
 │   └── phase-reports/        ← TEMPLATE.md + one report per completed phase (mandatory, D19)
-└── .github/workflows/ci.yml  ← fmt, clippy, test, riscv-tests
+└── .github/workflows/        ← ci.yml: fmt, clippy, test, riscv-tests, Linux boot;
+                                bench.yml: benchmarks on a push to bench/** (Phase 12)
 ```
 
 ---
@@ -988,17 +992,18 @@ bridgev run   [--mode=user] [--engine=interp|jit|lockstep] [--mem=direct|direct-
               [--no-chain] [--regalloc=none|pinned|linear] [--pin=x2,x1,x10,x15] [--max-block=N]
               [--tlb-size=256] [--code-cache=256M] [--wx=dualmap|mprotect] [--smc=eager|flush-on-fence]
               [--stats[=regs]] [--trace=insn|block] [--dump-ir] [--dump-x86] [--perf-map] [--deterministic]
-              [--profile-jit] [--profile-tbs] <elf> [guest args…]
+              [--profile-jit] [--profile-tbs] [--tier N] (interpreted runs before translation, D63) <elf> [guest args…]
 bridgev boot  --kernel Image [--dtb x.dtb] [--dump-dtb out.dtb] [--initrd rootfs.cpio]
               [--ram 512M] [--append "console=ttyS0 earlycon=sbi"] [--engine interp|jit|lockstep]
               [--regalloc …] [--no-chain] [--slice 100000] [--max-insns N] [--stats] [--deterministic]
               [--firmware fw_dynamic.bin] (OpenSBI in M-mode, D53) [--mmu sv39|sv48] (D54) [--disk img] (virtio-blk, D58)
-              [--smp N] (harts, D60)
+              [--smp N] (harts, D60) [--tier N] (default 32, D63)
 bridgev mkinitramfs --busybox busybox --out rootfs.cpio   # initramfs without root (D50)
 tools/fetch-guest-images.sh          # pinned Ubuntu riscv64 kernel + busybox-static, then mkinitramfs
-tools/boot-bench.py                  # time to shell: bridgev engines vs qemu-system-riscv64
+tools/boot-bench.py                  # time to shell: bridgev engines (<engine>[-opensbi][-sv48][-tierN]) vs qemu-system-riscv64
 bridgev disasm <elf>                 # decoder + disassembler check
 tools/bench.py [--suite ...] [--quick] # runs the §22 matrix; markdown + JSON (D43)
+git push origin HEAD:bench/<name>    # .github/workflows/bench.yml: boot sweep + CoreMark/Dhrystone/fpbench on a GitHub runner
 ```
 - Logging: the `BRIDGEV_LOG=debug|trace` environment variable.
 - `--stats`: guest instructions, TBs translated, bytes of code, chain patches/unlinks, jump-cache hits/misses, TLB hits/misses, exits by reason, time split (translate vs execute), MIPS.
@@ -1030,6 +1035,7 @@ Each phase ends with:
 | **8 SMC** | code-page tracking, TLB_CODE / mprotect+SIGSEGV, TB invalidation + unlink, FENCE.I, riscv_flush_icache | dedicated SMC tests (self-patching loop, JIT-in-guest) pass in both memory backends |
 | **9 Milestone B** | CLINT, PLIC, UART, syscon, built-in SBI, FDT generator, boot ROM, WFI idle, kernel/busybox build + artifact caching | Linux 6.6 boots to `/ #`; automated UART test passes; boot MIPS recorded |
 | **10 Stretch** | OpenSBI boot, SV48, multithreaded user mode (clone/futex, shared cache), MT CoreMark, dynamic ELF/ld.so, guest signals, virtio-blk, return-address stack, superblocks/traces, GDB stub, SMP guest | per-feature tests |
+| **12 Tiered translation** (post-roadmap) | interpreter tier for cold code (`--tier N`, D63), histogram of block run counts, threshold sweep, `bench` workflow | all suites pass tiered and untiered; Linux boot faster; user-mode benchmarks unchanged within noise |
 
 ## 25. Coding conventions
 
@@ -1080,6 +1086,7 @@ Every number below comes from `docs/BENCHMARKS.md` (harness runs with the commit
   - all 244 official riscv-tests under every engine;
   - lockstep differential execution against the reference interpreter, including a complete Linux boot (84 M blocks, divergence-free);
   - randomized block fuzzing (10⁶ blocks, and 10⁶ FP cases bit-exact against Berkeley SoftFloat).
+- Added an interpreter tier to the JIT (Phase 12): measured that 31% of the blocks in a Linux boot run only once, then made new code run in the reference interpreter until it has run 32 times (the ski-rental break-even between translation and interpretation cost) and translated only the blocks that proved hot. Time to a BusyBox shell dropped **18% (1.30 → 1.06 s, 1.33× `qemu-system-riscv64`)** with **72% less generated code**, and CoreMark/Dhrystone/fpbench stayed within noise. *(GitHub runner, AMD EPYC 7763, `2e498ee`; `docs/bench/2026-09-27-tier/`. QEMU's TCG translates every block on its first run; the idea itself is the classic interpreter-first tiering of HotSpot, V8 and HP Dynamo.)*
 - Do **not** use the original "120M instructions/sec" and "45 → 4 cycles" targets: the measurements above replace them.
 
 ### 28.2 Architecture walkthrough (2 minutes)
@@ -1146,6 +1153,7 @@ Every number below comes from `docs/BENCHMARKS.md` (harness runs with the commit
 - **Why can't a TB span pages, and why only link within a page in system mode?** Virtual→physical mappings can change without code changes (context switches, satp), so cross-page targets are re-validated through the TLB exec path.
 - **What are the x86 encoding pitfalls?** R12/RSP need a SIB byte, R13/RBP need a disp8, SIL/DIL need REX, and imm32 is sign-extended.
 - **Why a direct-mapped TLB?** A single compare fits in about 5 instructions with no associativity search. Conflict misses are cheap because the walk is in Rust and walks are cached. The size is a tunable, benchmarked parameter.
+- **Why not translate every block (D63)?** Translating a block costs about 8.5 µs; interpreting one run costs about 0.1–0.16 µs. A block must run about 55–90 times before translation pays, and most boot code runs far fewer times. Interpreting until the interpretation cost reaches the translation cost is the ski-rental rule: never worse than about 2× the best choice in hindsight. The measured optimum was flat between 16 and 64 runs; the default is 32.
 
 ---
 

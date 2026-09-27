@@ -20,6 +20,13 @@ Final measurements from the benchmark harness (`tools/bench.py`, `tools/boot-ben
 | CoreMark with every access through the software TLB (`--mem=softmmu`) | 7,526 it/s | 0.84× | 29.5% |
 | Linux 6.8 boot to a BusyBox shell (system mode) | **1.48 s** | `qemu-system-riscv64`: 1.54 s | — |
 
+**Tiered translation (Phase 12).** A boot runs most of its code only a few times: in a fully interpreted boot, 31% of the blocks ran exactly once. The JIT now runs a block in the interpreter until it has run 32 times (`--tier N`), and translates only the blocks that prove hot. On a GitHub-hosted runner (AMD EPYC 7763; the table above is from the Xeon):
+- time to shell fell from **1.30 s to 1.06 s**, against 1.41 s for `qemu-system-riscv64`;
+- the JIT generated **72% less code**;
+- CoreMark, Dhrystone and fpbench stayed within noise.
+
+Details: [`docs/phase-reports/phase-12-tiered-translation.md`](docs/phase-reports/phase-12-tiered-translation.md).
+
 **Correctness checks:**
 - All 244 official riscv-tests pass under every engine.
 - User programs match `qemu-riscv64` byte for byte.

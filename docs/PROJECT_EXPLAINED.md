@@ -8,7 +8,7 @@ This document explains Bridge-V from the ground up, for readers ranging from "ne
 > - **CoreMark:** 13,409 iterations/s (4.8 billion guest instructions/s), **1.49× QEMU** and 52.5% of native x86-64.
 > - **Dhrystone:** 11,798 DMIPS, **4.36× QEMU**.
 > - **FP benchmark:** **5.83× QEMU**.
-> - **Linux boot to the shell:** 1.48 s, against 1.54 s for QEMU.
+> - **Linux boot to the shell:** 1.48 s, against 1.54 s for QEMU. Since Phase 12, the JIT first interprets code that runs only a few times, and the boot is 18% faster: 1.06 s against QEMU's 1.41 s on a GitHub runner.
 > - **Correctness:** all 244 official riscv-tests pass, and everything is checked in lockstep against the interpreter and by random fuzzers.
 
 ---
@@ -234,6 +234,7 @@ Everything else stays on the fast path.
 | Part | What it does |
 |---|---|
 | **Reference interpreter** | A straightforward (pre-decoded) interpreter. It is the *golden model*: the JIT is checked against it instruction by instruction ("lockstep" mode). It is also the baseline for speedup numbers. |
+| **Interpreter tier (Phase 12)** | Translating a block costs about 8 µs, but most code in a Linux boot runs only a few times: almost a third of its blocks run exactly once. So the JIT engine first runs new code in the interpreter, and translates a block only after it has run 32 times (`--tier N`). This is the "ski-rental" rule: keep renting (interpreting) until renting has cost as much as buying (translating). It made the boot 18% faster on a GitHub runner, 1.33× QEMU there, with 72% less generated code. QEMU's TCG translates every block the first time it runs. |
 | **Decoder** | Turns raw bytes into structured instructions, including the 16-bit compressed forms, and rejects illegal encodings. |
 | **ELF loader and Linux syscall layer** | Loads executables and emulates about 40 Linux system calls. It translates data structures whose layout differs between RISC-V and x86 (e.g. `struct stat`). |
 | **Self-modifying code handling** | Programs such as JIT compilers and OS loaders sometimes write new code into memory. Bridge-V write-protects memory pages it has translated. On a write, it discards the affected translations and unlinks any chained jumps into them, so stale code never runs. |
@@ -280,6 +281,7 @@ Everything else stays on the fast path.
     - The optimizer and register allocator take it to 26.5×.
   - **Inline FP** (Phase 6) is 60× faster than sending every FP instruction through the reference helper.
 - **System mode:** booting Linux to the shell takes 1.48 s under the JIT (592 million guest instructions per second over the whole run), 1.54 s under QEMU, and 10.49 s under the interpreter. The same boot measured 1.25 s in Phase 9; a back-to-back comparison shows the old and new builds equally fast today, so the difference is the machine. Either way it clears the original ≥ 100–120 MIPS target by a wide margin.
+- **Tiered translation** (Phase 12, measured on a GitHub runner, AMD EPYC 7763, so compare within these numbers only): with the interpreter tier the boot to the shell takes 1.06 s instead of 1.30 s, against 1.41 s for QEMU on the same runner. The JIT translates 18 k blocks instead of 66 k. The user-mode benchmarks are unchanged within noise.
 - **The software TLB** (Phase 7) costs 0.34 ns per access in throughput when it hits (about 3 ns of extra latency), and 28 ns (about 59 cycles) when it has to walk the page table.
 
 - Every real number is recorded in `docs/BENCHMARKS.md` and the phase reports, with the exact command and machine used. **No unmeasured number is ever reported as a result.**

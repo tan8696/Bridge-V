@@ -27,7 +27,8 @@ This is the step-by-step build plan for Bridge-V, the RISC-V RV64GC → x86-64 J
 15. [Phase 9: Milestone B (boot Linux to a BusyBox shell)](#phase-9-milestone-b-boot-linux-to-a-busybox-shell)
 16. [Phase 10: Stretch goals](#phase-10-stretch-goals)
 17. [Phase 11: Polish, presentation and resume](#phase-11-polish-presentation-and-resume)
-18. [Open questions for the project owner](#18-open-questions-for-the-project-owner)
+18. [Phase 12: Tiered translation (post-roadmap)](#phase-12-tiered-translation-post-roadmap)
+19. [Open questions for the project owner](#18-open-questions-for-the-project-owner)
 
 ---
 
@@ -56,6 +57,7 @@ This is the step-by-step build plan for Bridge-V, the RISC-V RV64GC → x86-64 J
 | 9 | **Milestone B** | CLINT/PLIC/UART, SBI, devicetree, Linux 6.6 → BusyBox `/ #` | 7, 8 | XL | **B (stretch)** |
 | 10 | Stretch | OpenSBI, SV48, multithreading, dynamic ELF, signals, virtio, … | 9 | — | — |
 | 11 | Polish & presentation | README/demo, measured resume bullets, interview material | 5 (or 9) | S | — |
+| 12 | Tiered translation | Interpreter tier for cold code (`--tier N`, D63): translate only blocks that run often | 9 | S | — |
 
 ## 3. Dependency graph
 
@@ -758,6 +760,21 @@ Pick items in this order, as budget allows. Each gets its own mini-report (`phas
 - [x] Resume bullets in CLAUDE.md §28.1 are rewritten with **measured numbers only**.
 - [x] Interview prep: re-derive the §28.5 byte encodings against the real emitter output (`tests/emitter_golden.rs::interview_examples_28_5`). Prepare the whiteboard walkthrough from real TB dumps (`docs/WHITEBOARD.md`).
 - [x] Optional: a write-up of the design, with lessons learned. *(`docs/WHITEBOARD.md` plus §13 of the Phase 11 report; no separate blog post.)*
+
+---
+
+## Phase 12: Tiered translation (post-roadmap)
+
+**Goal:** stop paying translation for code that runs only a few times. The Phase 9 report measured translation at about 40% of the Linux boot. Decision D63; report: `docs/phase-reports/phase-12-tiered-translation.md`.
+
+- [x] **P12.1** Measure how often blocks run during a boot. *(`--stats` lists the still-cold blocks by run count; with `--tier 1000000000` every block stays cold: 31% of 65.7 k blocks run once.)*
+- [x] **P12.2** Interpreter tier in the JIT dispatcher: `--tier N`, cold blocks decoded once, keyed like TBs, invalidated like TBs on code writes; lockstep untiered. `src/jit/dispatch.rs`.
+- [x] **P12.3** Tests: riscv-tests at tiers 1, 3 and the default; guest programs at tier 2 (direct and softmmu); exact icount; `tier_translates_only_hot_blocks`; Linux boots at the default tier and one at `--tier 0`. Tests of translated code request `--tier 0`.
+- [x] **P12.4** Choose the default from a boot-time sweep. *(Tiers 0/1/4/16/64/256, then 0/16/32/64: 32 is fastest, 1.30 → 1.06 s.)*
+- [x] **P12.5** No regression in user mode. *(CoreMark +0.1%, Dhrystone +1.1%, fpbench −1.2%: runner noise.)*
+- [x] **P12.6** Benchmarks without a local Linux machine: `.github/workflows/bench.yml` (push to `bench/**`), `tools/boot-bench.py` tier configurations, interleaved runs, `--detail`.
+
+**Acceptance:** every suite passes with the tier on and off; the boot is faster; the user-mode benchmarks are unchanged within noise. All met (report §6–§7).
 
 ---
 
