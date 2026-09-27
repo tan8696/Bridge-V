@@ -2,6 +2,7 @@
 # Build all RISC-V guest test programs into guest/build/ (P0.4).
 #   asm:  guest/asm/<name>.S -> guest/build/<name>.elf              (clang + lld, no libc)
 #   C:    guest/c/<name>.c   -> guest/build/<name>-O{0,2}[-nc].elf  (static glibc)
+#                            and guest/build/<name>-O2-dyn.elf       (dynamic PIE, Phase 10)
 #         "-nc" = compiled without the C extension (rv64imafd). The glibc objects linked in are
 #         still rv64gc, so "-nc" binaries are compressed-free only in the program's own code.
 set -euo pipefail
@@ -29,6 +30,9 @@ for src in "$ROOT"/guest/c/*.c; do
       built=$((built + 1))
     done
   done
+  # Dynamically linked PIE (Phase 10): ld.so and libc come from the cross sysroot.
+  "$CC" -O2 -march=rv64gc -mabi=lp64d -Wall -Werror -o "$OUT/$name-O2-dyn.elf" "$src" -lm
+  built=$((built + 1))
 done
 
 # Bare-metal riscv-tests benchmarks (HTIF printf through tohost/fromhost, P7.7): qsort. In a

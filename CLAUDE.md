@@ -11,7 +11,7 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 9 (Milestone B) complete.** Linux 6.8 (Ubuntu's stock riscv64 kernel, D50) boots to a BusyBox shell on the built-in SBI in 1.25 s under the JIT (QEMU TCG 1.50 s, interpreter 9.99 s); the whole boot and a shell session also run clean under lockstep (84 M TBs, D52). Automated UART test in CI (`linux-boot`). Phase 8: eager SMC invalidation. Phase 7: Sv39 + inline TLB, all 244 riscv-tests. Phase 10 in progress: OpenSBI boot (D53) and Sv48 (D54) done; see `docs/phase-reports/phase-10-*.md`. |
+| Phase | **Phase 9 (Milestone B) complete.** Linux 6.8 (Ubuntu's stock riscv64 kernel, D50) boots to a BusyBox shell on the built-in SBI in 1.25 s under the JIT (QEMU TCG 1.50 s, interpreter 9.99 s); the whole boot and a shell session also run clean under lockstep (84 M TBs, D52). Automated UART test in CI (`linux-boot`). Phase 8: eager SMC invalidation. Phase 7: Sv39 + inline TLB, all 244 riscv-tests. Phase 10 in progress: OpenSBI boot (D53), Sv48 (D54), multithreaded user mode (D55, serialized), guest signals (D56) and dynamic ELF/PIE (D57) done; see `docs/phase-reports/phase-10-*.md`. |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
 | Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-09-milestone-b.md`, then `phase-10-*.md` per stretch goal |
@@ -105,6 +105,9 @@ Update this table at the end of every phase.
 | D52 | Lockstep over devices | The reference (interpreter) run performs its MMIO accesses and records them (`DirectMem::mmio_log`). The JIT run replays the log: reads return the recorded values, and writes are compared, not performed. Every device therefore sees each access once, in reference order, and a differing JIT access (address, size, kind, written value, count) is a divergence. | Without it, a device read-modify-write (e.g. the PLIC enable word) ran twice and diverged after 77.5 M identical TBs. With it, the whole Linux boot and shell session runs clean under `--engine lockstep` (84 M TBs). |
 | D53 | OpenSBI boot (Phase 10) | `bridgev boot --firmware <bin>` loads the firmware at the start of RAM and enters it in M-mode as QEMU's reset vector does: `a0` = hart, `a1` = DTB, `a2` = a version-2 `fw_dynamic_info` (next = kernel entry, S-mode) placed 1 MiB above the DTB. With firmware, S-mode ECALLs trap (`Env::sbi` off), `mip.STIP` belongs to M-mode software (the machine loop keeps it), and WFI idle never sleeps past a pending test-finisher request. The reference firmware is QEMU's bundled OpenSBI (`qemu-system-data`). | Validates the M-mode path against real firmware (lockstep-clean) without building OpenSBI (GitHub is blocked); `fw_dynamic` needs no compiled-in addresses. |
 | D54 | Sv48 (Phase 10) | `--mmu sv48` sets `Csrs::sv48`: `satp` then accepts mode 9 (otherwise WARL-ignored), the walker uses 4 levels and 48-bit canonical addresses, and the DT says `riscv,sv48`. Default stays Sv39. | Linux discovers the mode by probing `satp`; offering it per machine keeps the default identical to the validated Sv39 configuration. |
+| D55 | Multithreaded user mode (Phase 10) | `clone(CLONE_VM\|CLONE_THREAD)` starts a host thread with a copy of the caller's `CpuState` and **its own engine and translation cache** (`user/thread.rs`). Guest code runs under one fair ticket lock (GIL): a thread holds it for a slice (10 M instructions when others exist) or until its next syscall. Futex waits and sleeps run without it, as host syscalls on the guest word's host address (guest memory is host memory). exit wakes the CLEARTID word; exit_group ends the process. A thread switch clears LR reservations (SC may fail spuriously). A code write seen by one engine flushes the others (`DirectMem::smc_epoch`); mapping changes flush other threads' softmmu TLBs. Not in the roadmap's plan: no shared translation cache and no parallel execution, so there are no host atomics for AMOs and no exclusive sections. | Correct pthread semantics (mutexes, condvars, TLS, join, atomics) at a fraction of the cost. Parallel guest execution needs a shared, synchronized `DirectMem`/cache and atomic AMOs: left for later. MT CoreMark runs at about 88% of single-thread throughput (12,189 vs 13,923 it/s; QEMU runs the threads in parallel: 38,314). |
+| D56 | Guest signals (Phase 10) | Handlers from `rt_sigaction` get a Linux-layout riscv64 `rt_sigframe` (siginfo 128 + ucontext 960, `sc_regs` + D FP state) on the thread's stack or `sigaltstack`, with `ra` = a sigreturn trampoline page (`li a7,139; ecall`) mapped just above the stack. `rt_sigreturn` restores registers, FP state and mask. Sources: synchronous faults (SIGSEGV with MAPERR/ACCERR, SIGBUS, SIGILL, SIGTRAP; blocked or ignored = fatal, as force_sig) and kill/tkill/tgkill to this process (per-thread pending sets, delivered after the syscall or when unblocked). Masks and alternate stacks are per thread, actions per process. Asynchronous host signals are not forwarded. | Enough for glibc's `raise`/`abort`, fault handlers with `siglongjmp`, and alternate stacks; byte-identical to qemu-riscv64 on the test program. |
+| D57 | Dynamic ELF and PIE (Phase 10) | ET_DYN programs load at Linux's `ELF_ET_DYN_BASE` (0x2a_aaaa_a000). A `PT_INTERP` interpreter is loaded from the sysroot at 0x3f_8000_0000, with auxv `AT_BASE`/`AT_PHDR`/`AT_ENTRY`. `--sysroot` (`-L`, default `/usr/riscv64-linux-gnu` for dynamic programs) is searched first for the absolute paths of openat, faccessat, newfstatat, readlinkat and statx, as qemu's `-L` does. File mmaps are filled through a writable host mapping, then given their protection. `pread64`/`pwrite64` added. | Runs the cross toolchain's default (dynamic PIE) output with the distribution's ld.so and libc. |
 
 ---
 
@@ -844,15 +847,17 @@ stub_k:  (dirty regs already written back on the path)
   | 160 | uname (machine = "riscv64") | 169 | gettimeofday |
   | 172 | getpid | 178 | gettid |
   | 214 | brk | 215 | munmap |
-  | 220 | clone (stretch) | 222 | mmap |
+  | 220 | clone (threads, D55) | 222 | mmap |
   | 226 | mprotect | 233 | madvise |
   | 259 | riscv_flush_icache | 261 | prlimit64 |
   | 278 | getrandom | 291 | statx |
   | 293 | rseq (→ −ENOSYS) | | |
 
+  Phase 10 adds 67 pread64, 68 pwrite64, 115 clock_nanosleep, 129 kill / 130 tkill / 131 tgkill (delivered to guest handlers, D56), 132 sigaltstack, 134/135/139 with real signal semantics, 220 clone (threads, D55), 435 clone3 (→ −ENOSYS, glibc falls back to clone), and real futex waits/wakes.
+
   Anything unknown logs once and returns −ENOSYS.
 - **Struct translation is mandatory.** The guest riscv64 `struct stat` uses the asm-generic layout (128 bytes: dev, ino, mode u32, nlink u32, uid, gid, rdev, pad, size, blksize i32, pad, blocks, a/m/ctime with nsec). It differs from x86-64's 144-byte layout. Never pass guest structs straight through to host syscalls. The same applies to `sigaction`, `rlimit` (identical but check), `utsname` (identical sizes), `timespec` (identical on 64-bit).
-- **Signals** (stretch; needed by some programs, not by CoreMark):
+- **Signals** (stretch; needed by some programs, not by CoreMark). Implemented in Phase 10 for synchronous and self-directed signals (D56):
   - Guest handlers get an rt_sigframe on the guest stack: siginfo + ucontext with `sc_regs` (pc, x1…x31) + FP state. `rt_sigreturn` restores it.
   - Host async signals set a pending flag, which the dispatcher delivers within one slice.
 
@@ -1023,7 +1028,7 @@ Each phase ends with:
 ## 25. Coding conventions
 
 - `cargo fmt`, and `cargo clippy --all-targets -- -D warnings` before every commit. No `#[allow]` without a comment explaining it.
-- `unsafe` is allowed only in `jit/code_mem.rs`, `jit/trampoline.rs`, `jit/dispatch.rs` (the call into JIT code), `mem/direct.rs`, `user/signal.rs` and FFI shims. Every `unsafe` block needs a `// SAFETY:` comment.
+- `unsafe` is allowed only in `jit/code_mem.rs`, `jit/trampoline.rs`, `jit/dispatch.rs` (the call into JIT code), `mem/direct.rs`, `user/signal.rs` and FFI shims (host syscalls in `user/syscall.rs` and `user/thread.rs`). Every `unsafe` block needs a `// SAFETY:` comment.
 - ABI-visible structs are `#[repr(C)]`, and every offset the JIT uses is asserted with `const _: () = assert!(offset_of!(..) == ..)`.
 - JIT-called helpers are `extern "sysv64"`, never panic, and never unwind. Release profile: `panic = "abort"`, `lto = "thin"`, `codegen-units = 1`, `debug = 1` (symbols for profiling).
 - Guest addresses are `u64` newtypes: `GuestVirt`, `GuestPhys`. Host pointers are never mixed with guest addresses.

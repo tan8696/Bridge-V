@@ -1,0 +1,8 @@
+segv load: sig 11 code 1 addr 0x10
+segv store to text: sig 11 code 2 addr is main 1
+usr1: count 1 info 1 canary 1234567890 d 5.00
+while blocked: count 1
+after unblock: count 2
+usr2: on altstack 1, reset to default 1
+sigill: sig 4
+ignored usr1

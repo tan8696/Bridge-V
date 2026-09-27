@@ -1,0 +1,8 @@
+locked_sum 200000 atomic_sum 80000 cas_sum 160000 join 14
+tls[0] = 0
+tls[1] = 10
+tls[2] = 20
+tls[3] = 30
+main tls -1, distinct tids 1
+ping-pong rounds 1000
+spin-wait done (spun)

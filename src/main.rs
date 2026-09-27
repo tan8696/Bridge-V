@@ -141,6 +141,10 @@ enum Command {
     Run {
         #[arg(long, value_enum, default_value = "user")]
         mode: Mode,
+        /// Look up the program interpreter and absolute paths here first, like qemu's -L
+        /// (default for dynamically linked programs: /usr/riscv64-linux-gnu).
+        #[arg(long, short = 'L')]
+        sysroot: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "interp")]
         engine: Engine,
         /// Stop after this many guest instructions (bare mode default: 100M).
@@ -395,6 +399,7 @@ fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Run {
             mode,
+            sysroot,
             engine,
             max_insns,
             trace,
@@ -477,6 +482,7 @@ fn main() -> ExitCode {
                         deterministic,
                         reg_stats,
                         softmmu: mem == MemArg::Softmmu,
+                        sysroot,
                     };
                     run_user(&elf, args, opts, stats)
                 }

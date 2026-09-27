@@ -23,10 +23,14 @@ fn parses_all_guest_programs() {
             let data = std::fs::read(&p).unwrap();
             let elf = Elf::parse(&data).unwrap_or_else(|e| panic!("{}: {e:#}", p.display()));
             assert!(elf.loads().count() > 0, "{}: no PT_LOAD", p.display());
-            assert!(
-                elf.interp.is_none(),
-                "{}: unexpectedly dynamic",
-                p.display()
+            // Only the `-dyn` builds (Phase 10) name a program interpreter.
+            let dynamic = p.to_string_lossy().ends_with("-dyn.elf");
+            assert_eq!(
+                elf.interp.is_some(),
+                dynamic,
+                "{}: interpreter {:?}",
+                p.display(),
+                elf.interp
             );
             if p.to_string_lossy().contains("riscv-tests") {
                 assert!(elf.symbol("tohost").is_some(), "{}: no tohost", p.display());

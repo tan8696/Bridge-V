@@ -39,7 +39,7 @@ done
 for src in "$ROOT"/guest/c/*.c; do
   name=$(basename "$src" .c)
   if ((update)); then check "$name" "$BUILD/$name-O2.elf"; continue; fi
-  for v in O0 O2 O0-nc O2-nc; do check "$name" "$BUILD/$name-$v.elf"; done
+  for v in O0 O2 O0-nc O2-nc O2-dyn; do check "$name" "$BUILD/$name-$v.elf"; done
 done
 
 if ((update)); then echo "ref-check: expected files regenerated in ${EXP#"$ROOT"/}"; exit 0; fi

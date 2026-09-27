@@ -36,6 +36,9 @@ coremark() { # <cc> <extra flags> <output name>
 }
 coremark "$RV_CC" "$RV_ARCH" coremark-rv64.elf
 coremark "$HOST_CC" "" coremark-native
+# Multithreaded CoreMark (Phase 10): 4 contexts on 4 pthreads (CoreMark's own MULTITHREAD).
+coremark "$RV_CC" "$RV_ARCH -DMULTITHREAD=4 -DUSE_PTHREAD -pthread" coremark-mt4-rv64.elf
+coremark "$HOST_CC" "-DMULTITHREAD=4 -DUSE_PTHREAD -pthread" coremark-mt4-native
 
 DHRY="$ROOT/third_party/riscv-tests/benchmarks/dhrystone"
 # K&R-style C (implicit int): gnu89. -O2 like CoreMark; the sources' own

@@ -2,12 +2,12 @@
 //! (CLAUDE.md §14.1 layout, §19 stack/auxv; P1.14).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 use crate::cpu::state::CpuState;
-use crate::elf::{ET_EXEC, Elf, PF_R, PF_W, PF_X};
+use crate::elf::{ET_DYN, Elf, PF_R, PF_W, PF_X};
 use crate::mem::direct::DirectMem;
 use crate::mem::{GuestVirt, PAGE_SIZE, page_ceil, page_floor, prot};
 
@@ -57,6 +57,20 @@ pub struct Process {
     pub brk: u64,
     /// Absolute path of the executable (for `/proc/self/exe`).
     pub exe_path: String,
+    /// The running guest thread (Phase 10, `user::thread`): its id (the pid for the first
+    /// thread) and its `set_tid_address`/`CLONE_CHILD_CLEARTID` word (0 = none).
+    pub tid: i64,
+    pub clear_tid: u64,
+    /// Where absolute paths the guest opens are looked up first (qemu's `-L`), if any.
+    pub sysroot: Option<PathBuf>,
+    /// Guest signal handlers (process-wide), and the running thread's blocked and pending
+    /// signals and alternate stack {sp, flags, size} (Phase 10, `guest_signal`).
+    pub sigactions: [super::guest_signal::SigAction; super::guest_signal::NSIG + 1],
+    pub sigmask: u64,
+    pub sigpending: u64,
+    pub altstack: [u64; 3],
+    /// Signals sent to other threads (by tid), picked up when they next run.
+    pub thread_pending: std::collections::HashMap<i64, u64>,
 }
 
 fn elf_prot(flags: u32) -> u8 {
@@ -73,31 +87,27 @@ fn elf_prot(flags: u32) -> u8 {
     p
 }
 
-/// Load `path` with `args` (argv[0] included) and environment `envs`.
-pub fn load(path: &Path, args: &[String], envs: &[String]) -> Result<Process> {
-    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let elf = Elf::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
-    if let Some(i) = &elf.interp {
-        bail!(
-            "dynamically linked executables are not supported yet (interpreter {i}); link with -static"
-        );
-    }
-    if elf.e_type != ET_EXEC {
-        bail!("position-independent executables are not supported yet; link with -static -no-pie");
-    }
-    let mut mem = DirectMem::new()?;
+/// Where Linux (riscv64, Sv39) puts position-independent executables: `ELF_ET_DYN_BASE` =
+/// TASK_SIZE / 3 * 2, page-aligned (Phase 10).
+pub const ET_DYN_BASE: u64 = 0x2a_aaaa_a000;
+/// Where the program interpreter (ld.so) goes: above the mmap area (top-down from
+/// `0x3f_0000_0000`) and below the stack.
+pub const INTERP_BASE: u64 = 0x3f_8000_0000;
+/// Default sysroot for dynamically linked programs: Ubuntu's riscv64 cross glibc.
+pub const DEFAULT_SYSROOT: &str = "/usr/riscv64-linux-gnu";
 
+/// Map the PT_LOAD segments of `elf` at `vaddr + bias`; returns the end of the highest one.
+fn map_segments(mem: &mut DirectMem, elf: &Elf, bias: u64) -> Result<u64> {
     // Union of permissions per page: segments may share a page at their boundaries.
     let mut pages: BTreeMap<u64, u8> = BTreeMap::new();
     let mut end = 0;
     for seg in elf.loads() {
         let p = elf_prot(seg.flags);
-        for pg in
-            (page_floor(seg.vaddr)..page_ceil(seg.vaddr + seg.memsz)).step_by(PAGE_SIZE as usize)
-        {
+        let (lo, hi) = (seg.vaddr + bias, seg.vaddr + bias + seg.memsz);
+        for pg in (page_floor(lo)..page_ceil(hi)).step_by(PAGE_SIZE as usize) {
             *pages.entry(pg).or_default() |= p;
         }
-        end = end.max(seg.vaddr + seg.memsz);
+        end = end.max(hi);
     }
     // Map maximal runs of consecutive pages with equal permissions.
     let mut iter = pages.iter().peekable();
@@ -113,18 +123,81 @@ pub fn load(path: &Path, args: &[String], envs: &[String]) -> Result<Process> {
         mem.map(GuestVirt(start), next - start, p)?;
     }
     for seg in elf.loads() {
-        mem.write_bytes(GuestVirt(seg.vaddr), elf.segment_data(seg))
-            .map_err(|f| anyhow::anyhow!("writing segment at {:#x}: {f:?}", seg.vaddr))?;
+        mem.write_bytes(GuestVirt(seg.vaddr + bias), elf.segment_data(seg))
+            .map_err(|f| anyhow::anyhow!("writing segment at {:#x}: {f:?}", seg.vaddr + bias))?;
     }
+    Ok(end)
+}
+
+/// `path` inside `sysroot` if it exists there (qemu's `-L`), else `path` itself.
+pub fn in_sysroot(sysroot: Option<&Path>, path: &str) -> PathBuf {
+    if let Some(root) = sysroot
+        && path.starts_with('/')
+    {
+        let p = root.join(path.trim_start_matches('/'));
+        if p.symlink_metadata().is_ok() {
+            return p;
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// Load `path` with `args` (argv[0] included) and environment `envs`. A position-independent
+/// executable goes to `ET_DYN_BASE`; a dynamically linked one also gets its program
+/// interpreter (from `sysroot`, default `DEFAULT_SYSROOT`) at `INTERP_BASE`, which starts
+/// first and finds the program through the auxiliary vector (Phase 10).
+pub fn load(
+    path: &Path,
+    args: &[String],
+    envs: &[String],
+    sysroot: Option<&Path>,
+) -> Result<Process> {
+    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let elf = Elf::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
+    let mut mem = DirectMem::new()?;
+    let bias = if elf.e_type == ET_DYN { ET_DYN_BASE } else { 0 };
+    let end = map_segments(&mut mem, &elf, bias)?;
+    let sysroot = match (sysroot, &elf.interp) {
+        (Some(s), _) => Some(s.to_path_buf()),
+        (None, Some(_)) => Some(PathBuf::from(DEFAULT_SYSROOT)),
+        (None, None) => None,
+    };
+    let (entry, interp_base) = match &elf.interp {
+        Some(i) => {
+            let ipath = in_sysroot(sysroot.as_deref(), i);
+            let idata = std::fs::read(&ipath).with_context(|| {
+                format!(
+                    "reading the program interpreter {} (use --sysroot)",
+                    ipath.display()
+                )
+            })?;
+            let ie = Elf::parse(&idata).with_context(|| format!("parsing {}", ipath.display()))?;
+            if ie.e_type != ET_DYN {
+                bail!(
+                    "program interpreter {} is not position-independent",
+                    ipath.display()
+                );
+            }
+            map_segments(&mut mem, &ie, INTERP_BASE)?;
+            (ie.entry + INTERP_BASE, INTERP_BASE)
+        }
+        None => (elf.entry + bias, 0),
+    };
 
     mem.map(GuestVirt(STACK_TOP - STACK_SIZE), STACK_SIZE, prot::RW)?;
+    // The signal-return trampoline, one page above the stack (like the vDSO's).
+    use super::guest_signal::{SIGTRAMP, SIGTRAMP_CODE};
+    mem.map(GuestVirt(SIGTRAMP), PAGE_SIZE, prot::R | prot::X)?;
+    let code: Vec<u8> = SIGTRAMP_CODE.iter().flat_map(|w| w.to_le_bytes()).collect();
+    mem.write_bytes(GuestVirt(SIGTRAMP), &code)
+        .map_err(|f| anyhow::anyhow!("writing the sigreturn trampoline: {f:?}"))?;
     let exe_path = std::fs::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .into_owned();
-    let sp = build_stack(&mut mem, &elf, &exe_path, args, envs)?;
+    let sp = build_stack(&mut mem, &elf, bias, interp_base, &exe_path, args, envs)?;
 
-    let mut cpu = CpuState::new_user(elf.entry);
+    let mut cpu = CpuState::new_user(entry);
     cpu.x[2] = sp;
     let brk = page_ceil(end);
     Ok(Process {
@@ -133,6 +206,14 @@ pub fn load(path: &Path, args: &[String], envs: &[String]) -> Result<Process> {
         brk_start: brk,
         brk,
         exe_path,
+        tid: std::process::id() as i64,
+        clear_tid: 0,
+        sysroot,
+        sigactions: [super::guest_signal::SigAction::default(); super::guest_signal::NSIG + 1],
+        sigmask: 0,
+        sigpending: 0,
+        altstack: [0; 3],
+        thread_pending: Default::default(),
     })
 }
 
@@ -143,6 +224,8 @@ pub fn load(path: &Path, args: &[String], envs: &[String]) -> Result<Process> {
 fn build_stack(
     mem: &mut DirectMem,
     elf: &Elf,
+    bias: u64,
+    interp_base: u64,
     exe: &str,
     args: &[String],
     envs: &[String],
@@ -177,13 +260,13 @@ fn build_stack(
         )
     };
     let auxv: [(u64, u64); 16] = [
-        (AT_PHDR, elf.phdr_vaddr().unwrap_or(0)),
+        (AT_PHDR, elf.phdr_vaddr().map_or(0, |a| a + bias)),
         (AT_PHENT, 56),
         (AT_PHNUM, elf.phnum as u64),
         (AT_PAGESZ, PAGE_SIZE),
-        (AT_BASE, 0),
+        (AT_BASE, interp_base),
         (AT_FLAGS, 0),
-        (AT_ENTRY, elf.entry),
+        (AT_ENTRY, elf.entry + bias),
         (AT_UID, uid as u64),
         (AT_EUID, euid as u64),
         (AT_GID, gid as u64),

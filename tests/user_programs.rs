@@ -144,7 +144,7 @@ fn initial_stack_layout() {
     };
     let args: Vec<String> = ["prog", "a", "bc"].map(String::from).to_vec();
     let envs = vec!["X=1".to_string()];
-    let p = loader::load(&path, &args, &envs).unwrap();
+    let p = loader::load(&path, &args, &envs, None).unwrap();
     let sp = p.cpu.x[2];
     assert_eq!(sp % 16, 0, "sp must be 16-byte aligned");
     let word = |a: u64| p.mem.load(a, 8).unwrap();

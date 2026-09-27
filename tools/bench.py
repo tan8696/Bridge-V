@@ -160,7 +160,22 @@ class FpBench(Workload):
         return float(score.group(1)), float(secs.group(1)), errors
 
 
-WORKLOADS = {w.name: w for w in (CoreMark(), Dhrystone(), FpBench())}
+class CoreMarkMT(CoreMark):
+    """CoreMark's own MULTITHREAD=4 build on pthreads (Phase 10): n iterations per thread,
+    4n in total. Pinned to 4 CPUs so native code and QEMU can run the threads in parallel;
+    bridgev runs guest threads one at a time (D55)."""
+    threads = 4
+
+    def __init__(self):
+        Workload.__init__(self, "coremark-mt4", "coremark-mt4-rv64.elf", "coremark-mt4-native",
+                          "iterations per thread", 10.0, 20, 1.0)
+
+    def parse(self, out, n):
+        return CoreMark.parse(self, out.replace(f"Iterations       : {4 * n}",
+                                                f"Iterations       : {n}"), n)
+
+
+WORKLOADS = {w.name: w for w in (CoreMark(), Dhrystone(), FpBench(), CoreMarkMT())}
 
 
 def command(cfg, w, n, cpu):
@@ -173,7 +188,9 @@ def command(cfg, w, n, cpu):
     else:
         cmd = prog
     if cpu is not None:
-        cmd = ["taskset", "-c", str(cpu)] + cmd
+        threads = getattr(w, "threads", 1)
+        cpus = str(cpu) if threads == 1 else f"0-{min(threads, os.cpu_count() or 1) - 1}"
+        cmd = ["taskset", "-c", cpus] + cmd
     return cmd
 
 

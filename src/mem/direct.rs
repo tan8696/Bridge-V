@@ -64,6 +64,9 @@ pub struct DirectMem {
     pub smc_pages: Vec<u64>,
     /// Lockstep: device accesses of the reference run, replayed by the checked run (D52).
     pub mmio_log: Option<MmioLog>,
+    /// Count of code-page writes ever reported (Phase 10): a guest thread whose engine did not
+    /// see a write (another thread made it) flushes its translations.
+    pub smc_epoch: u64,
 }
 
 /// One device access (`val` = the value read or written).
@@ -168,6 +171,7 @@ impl DirectMem {
             devices: Vec::new(),
             smc_pages: Vec::new(),
             mmio_log: None,
+            smc_epoch: 0,
         })
     }
 
@@ -487,6 +491,7 @@ impl DirectMem {
                 .expect("mprotect of a mapped guest page");
         }
         self.smc_pages.push(page * PAGE_SIZE);
+        self.smc_epoch += 1;
     }
 
     /// A write to `[addr, addr+len)` is about to happen (range already checked).

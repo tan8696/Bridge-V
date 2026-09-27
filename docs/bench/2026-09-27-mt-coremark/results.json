@@ -1,0 +1,256 @@
+{
+ "host": {
+  "date": "2026-09-27T05:56:36+00:00",
+  "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "nproc": 4,
+  "pinned_cpu": 2,
+  "kernel": "6.18.44-fc-v37",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "qemu": "qemu-riscv64 version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+  "commit": "6b5a7c2",
+  "dirty": true,
+  "buildinfo": "# Bridge-V benchmark builds (tools/build-bench.sh), 2026-09-27T05:53:27Z\nriscv cc: riscv64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nhost cc:  gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\ncoremark: 1f483d5b8316753a742cbf5590caf5bd0a4e4777 make PORT_DIR=linux, PORT_CFLAGS=-O2, XCFLAGS='<arch> -static -DPERFORMANCE_RUN=1' (rv64: -march=rv64gc -mabi=lp64d)\ndhrystone: riscv-tests bcffa2b3188b040c611f90dc0b6e422f54775a09 benchmarks/dhrystone + guest/bench/dhrystone; flags: -O2 -static -std=gnu89 -w -I/home/user/Bridge-V/guest/bench/dhrystone -I/home/user/Bridge-V/third_party/riscv-tests/benchmarks/dhrystone, main: -Ddebug_printf=bridgev_dhry_printf, dhrystone.c: -DPASS2 (rv64: + -march=rv64gc -mabi=lp64d)\nfpbench: guest/bench/fp/fpbench.c; flags: -O2 -static -lm (rv64: + -march=rv64gc -mabi=lp64d)\ntlbbench: guest/bench/tlb/tlbbench.c + riscv-tests benchmarks/common; flags: -march=rv64gc -mabi=lp64d -DPREALLOCATE=1 -mcmodel=medany -static -std=gnu99 -O2 -fno-common -fno-builtin-printf   -fno-tree-loop-distribute-patterns -no-pie -fno-pic -Wl,--build-id=none -nostdlib -nostartfiles\n99bfd194b22b50dd901afbb7de5ce627a5f31c18b31c93d10911569bd53fe646  coremark-rv64.elf\na620cc327885b03d7192f1c8903230108142ae52fbd5c3bfb4ce785a2c3337b2  coremark-native\n270f2ef3dbed158a22f5af94af575e9bff69e4df1206b49c6251c2a02d3c3340  dhrystone-rv64.elf\n814582f7206a91542ffeb1f3a366954da5493bdcdf0a7a990c4aa9b4ef160374  dhrystone-native\nea586d23e8b487888127260f19559a591843c6d2d7e55c8a035079884b81ef44  fpbench-rv64.elf\nc8bf0c50fb17a7bcb8273e309c976fb2653f37bbda3109be38ba0ccdc6b4be31  fpbench-native\na1982c2064db169ecfaf422b056adeaecf57012af83882a62e310452d1e7c83e  tlbbench.riscv\n54954c19b412007f24ce7e6072dcf9ad460b0cafe570bbbe0812c1d3ce86e6d4  tlbuser-rv64.elf\n"
+ },
+ "params": {
+  "runs": 5,
+  "warmup": 1,
+  "target": 13.0,
+  "quick": false
+ },
+ "results": {
+  "coremark-mt4": {
+   "jit+linear": {
+    "median": 12189.239473,
+    "min": 12045.400822,
+    "max": 12346.993327,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 160514,
+    "mips": 4372.5,
+    "bytes_per_insn": 26.2,
+    "entries_per_m": 6875,
+    "guest_insns": 230376812659,
+    "translate_ms": 10.7,
+    "secs": 52.687,
+    "translate_share": 0.0002030861502837512,
+    "insns_per_unit": 1435244.3566230983
+   },
+   "qemu": {
+    "median": 38313.648216,
+    "min": 37722.001215,
+    "max": 38636.639168,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 481229
+   },
+   "native": {
+    "median": 99438.990503,
+    "min": 98447.785943,
+    "max": 100566.368956,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 1306156
+   }
+  }
+ },
+ "raw": {
+  "coremark-mt4": {
+   "jit+linear": [
+    {
+     "n": 160514,
+     "wall": 52.01612115800026,
+     "score": 12346.993327,
+     "secs": 52.001,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 230376812583,
+      "secs": 52.012,
+      "mips": 4429.3,
+      "tbs": 1861,
+      "tb_guest_insns": 10144,
+      "bytes_per_insn": 26.2,
+      "translate_ms": 9.4,
+      "dispatcher_entries": 2148,
+      "entries_per_m": 6889
+     }
+    },
+    {
+     "n": 160514,
+     "wall": 53.31965842699992,
+     "score": 12045.400822,
+     "secs": 53.303,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 230376812659,
+      "secs": 53.316,
+      "mips": 4321.0,
+      "tbs": 1857,
+      "tb_guest_insns": 10135,
+      "bytes_per_insn": 26.2,
+      "translate_ms": 10.7,
+      "dispatcher_entries": 2144,
+      "entries_per_m": 6875
+     }
+    },
+    {
+     "n": 160514,
+     "wall": 52.56989792400009,
+     "score": 12217.536916,
+     "secs": 52.552,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 230376812865,
+      "secs": 52.565,
+      "mips": 4382.7,
+      "tbs": 1855,
+      "tb_guest_insns": 10132,
+      "bytes_per_insn": 26.1,
+      "translate_ms": 12.0,
+      "dispatcher_entries": 2141,
+      "entries_per_m": 6861
+     }
+    },
+    {
+     "n": 160514,
+     "wall": 53.063834589999715,
+     "score": 12103.987181,
+     "secs": 53.045,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 230376812345,
+      "secs": 53.06,
+      "mips": 4341.8,
+      "tbs": 1863,
+      "tb_guest_insns": 10145,
+      "bytes_per_insn": 26.2,
+      "translate_ms": 12.9,
+      "dispatcher_entries": 2149,
+      "entries_per_m": 6898
+     }
+    },
+    {
+     "n": 160514,
+     "wall": 52.69090162399971,
+     "score": 12189.239473,
+     "secs": 52.674,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 230376812943,
+      "secs": 52.687,
+      "mips": 4372.5,
+      "tbs": 1856,
+      "tb_guest_insns": 10127,
+      "bytes_per_insn": 26.2,
+      "translate_ms": 10.4,
+      "dispatcher_entries": 2143,
+      "entries_per_m": 6866
+     }
+    }
+   ],
+   "qemu": [
+    {
+     "n": 481229,
+     "wall": 50.25784026199972,
+     "score": 38313.648216,
+     "secs": 50.241,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 481229,
+     "wall": 49.84297059099981,
+     "score": 38636.639168,
+     "secs": 49.821,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 481229,
+     "wall": 50.97146408599974,
+     "score": 37782.715371,
+     "secs": 50.947,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 481229,
+     "wall": 51.04678727600003,
+     "score": 37722.001215,
+     "secs": 51.029,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 481229,
+     "wall": 50.2167101619998,
+     "score": 38347.231906,
+     "secs": 50.197,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    }
+   ],
+   "native": [
+    {
+     "n": 1306156,
+     "wall": 51.95531635899988,
+     "score": 100564.433238,
+     "secs": 51.953,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 1306156,
+     "wall": 52.579004238999914,
+     "score": 99372.79367,
+     "secs": 52.576,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 1306156,
+     "wall": 51.95474759900026,
+     "score": 100566.368956,
+     "secs": 51.952,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 1306156,
+     "wall": 53.07312404299955,
+     "score": 98447.785943,
+     "secs": 53.07,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    },
+    {
+     "n": 1306156,
+     "wall": 52.543894464000005,
+     "score": 99438.990503,
+     "secs": 52.541,
+     "valid": true,
+     "errors": [],
+     "too_short": false
+    }
+   ]
+  }
+ }
+}

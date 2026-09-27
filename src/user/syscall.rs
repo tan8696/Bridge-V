@@ -14,7 +14,6 @@ use crate::mem::{GuestVirt, PAGE_SIZE, page_ceil, prot};
 use super::loader::{MMAP_TOP, Process};
 
 const EPERM: i64 = 1;
-const EAGAIN: i64 = 11;
 const ENOMEM: i64 = 12;
 const EFAULT: i64 = 14;
 const EINVAL: i64 = 22;
@@ -26,9 +25,35 @@ const ENOSYS: i64 = 38;
 pub enum SysOut {
     /// Return this value in a0 and continue.
     Ret(i64),
-    /// The process exits with this status.
+    /// The process exits with this status (exit_group, or a fatal signal).
     Exit(i32),
+    /// This thread exits (exit); the process ends with its last thread (Phase 10).
+    ThreadExit(i32),
+    /// Create a thread (clone with CLONE_VM | CLONE_THREAD); a0 of the parent gets its tid.
+    Clone(CloneArgs),
+    /// A host syscall that may block (futex wait, sleeps): the thread layer runs it without
+    /// holding the guest lock. Pointer arguments are already host addresses.
+    Block(i64, [u64; 6]),
+    /// The registers were set by the syscall itself (rt_sigreturn): no a0, no pc advance.
+    NoRet,
 }
+
+/// `clone(flags, newsp, parent_tid, tls, child_tid)` (asm-generic argument order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloneArgs {
+    pub flags: u64,
+    pub stack: u64,
+    pub parent_tid: u64,
+    pub tls: u64,
+    pub child_tid: u64,
+}
+
+pub const CLONE_VM: u64 = 0x100;
+pub const CLONE_THREAD: u64 = 0x10000;
+pub const CLONE_SETTLS: u64 = 0x80000;
+pub const CLONE_PARENT_SETTID: u64 = 0x100000;
+pub const CLONE_CHILD_CLEARTID: u64 = 0x200000;
+pub const CLONE_CHILD_SETTID: u64 = 0x1000000;
 
 /// Host syscall return value → guest return value (`-errno` on failure).
 fn host_ret(r: i64) -> i64 {
@@ -60,6 +85,18 @@ fn guest_cstr(p: &Process, addr: u64) -> Result<CString, i64> {
         v.push(b);
     }
     Err(-ENAMETOOLONG)
+}
+
+/// A path the guest reads through: an absolute path is looked up in the sysroot first, as
+/// qemu's `-L` does (Phase 10: dynamically linked programs find ld.so's libraries there).
+fn guest_path(p: &Process, addr: u64) -> Result<CString, i64> {
+    use std::os::unix::ffi::OsStringExt;
+    let path = guest_cstr(p, addr)?;
+    let (Some(root), Ok(s)) = (&p.sysroot, path.to_str()) else {
+        return Ok(path);
+    };
+    let host = super::loader::in_sysroot(Some(root), s);
+    CString::new(host.into_os_string().into_vec()).map_err(|_| -EINVAL)
 }
 
 /// Host pointer to `len` guest bytes with permissions `need`, or -EFAULT.
@@ -122,6 +159,10 @@ impl Syscalls {
                     a[0], a[1], a[2]
                 ),
                 SysOut::Exit(c) => eprintln!("[syscall {nr}: exit {c}]"),
+                SysOut::ThreadExit(c) => eprintln!("[syscall {nr}: thread exit {c}]"),
+                SysOut::Clone(c) => eprintln!("[syscall {nr}: clone {c:x?}]"),
+                SysOut::Block(h, a) => eprintln!("[syscall {nr}: blocking host {h} {a:x?}]"),
+                SysOut::NoRet => eprintln!("[syscall {nr}: registers restored]"),
             }
         }
         r
@@ -171,7 +212,11 @@ impl Syscalls {
             }
             // mkdirat, unlinkat, faccessat
             34 | 35 | 48 => ret((|| {
-                let path = guest_cstr(p, a[1])?;
+                let path = if nr == 48 {
+                    guest_path(p, a[1])?
+                } else {
+                    guest_cstr(p, a[1])?
+                };
                 // SAFETY: path is a valid C string; the other arguments are integers.
                 Ok(host_ret(unsafe {
                     match nr {
@@ -188,7 +233,7 @@ impl Syscalls {
             })()),
             // openat(dirfd, path, flags, mode): asm-generic O_* flags equal x86-64's.
             56 => ret((|| {
-                let path = guest_cstr(p, a[1])?;
+                let path = guest_path(p, a[1])?;
                 // SAFETY: path is a valid C string.
                 Ok(host_ret(unsafe {
                     libc::openat(
@@ -229,6 +274,19 @@ impl Syscalls {
                     unsafe { libc::write(a[0] as i32, buf, a[2] as usize) } as i64,
                 ))
             })()),
+            // pread64 / pwrite64(fd, buf, count, offset)
+            67 | 68 => ret((|| {
+                let need = if nr == 67 { prot::W } else { prot::R };
+                let buf = gptr(p, a[1], a[2], need)?;
+                // SAFETY: buf covers a[2] guest bytes with the needed access.
+                Ok(host_ret(unsafe {
+                    if nr == 67 {
+                        libc::pread(a[0] as i32, buf, a[2] as usize, a[3] as i64) as i64
+                    } else {
+                        libc::pwrite(a[0] as i32, buf, a[2] as usize, a[3] as i64) as i64
+                    }
+                }))
+            })()),
             // readv / writev(fd, iov, iovcnt): struct iovec {base, len} is identical.
             65 | 66 => ret(self.rw_vec(p, nr == 65, a[0] as i32, a[1], a[2])),
             // readlinkat(dirfd, path, buf, size)
@@ -240,6 +298,7 @@ impl Syscalls {
                     let r = write_guest(p, a[2], &exe[..n]);
                     return if r < 0 { Err(r) } else { Ok(n as i64) };
                 }
+                let path = guest_path(p, a[1])?;
                 let buf = gptr(p, a[2], a[3], prot::W)?;
                 // SAFETY: path is a C string; buf covers a[3] writable bytes.
                 Ok(host_ret(unsafe {
@@ -256,7 +315,7 @@ impl Syscalls {
                 // SAFETY: an all-zero stat is a valid value to be overwritten.
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
                 let r = if nr == 79 {
-                    let path = guest_cstr(p, a[1])?;
+                    let path = guest_path(p, a[1])?;
                     // SAFETY: path is a C string; st is a valid out-pointer.
                     unsafe { libc::fstatat(a[0] as i32, path.as_ptr(), &mut st, a[3] as i32) }
                 } else {
@@ -271,23 +330,75 @@ impl Syscalls {
                 let w = write_guest(p, buf, &stat_to_guest(&st));
                 if w < 0 { Err(w) } else { Ok(0) }
             })()),
-            // exit / exit_group
-            93 | 94 => SysOut::Exit((a[0] & 0xff) as i32),
-            // set_tid_address: single-threaded, the tid is the pid.
-            96 => Ret(std::process::id() as i64),
-            // futex: single-threaded, so waking is a no-op and waiting cannot succeed.
-            98 => Ret(if a[1] & 0x7f == 1 { 0 } else { -EAGAIN }),
+            // exit (this thread) / exit_group (the process)
+            93 => SysOut::ThreadExit((a[0] & 0xff) as i32),
+            94 => SysOut::Exit((a[0] & 0xff) as i32),
+            // set_tid_address: remembered for the thread's exit (CLONE_CHILD_CLEARTID).
+            96 => {
+                p.clear_tid = a[0];
+                Ret(p.tid)
+            }
+            // futex: guest memory is host memory, so the host futex does the work (threads are
+            // host threads). Waits block, so they run without the guest lock.
+            98 => (|| -> Result<SysOut, i64> {
+                const WAIT: u64 = 0;
+                const WAKE: u64 = 1;
+                const REQUEUE: u64 = 3;
+                const CMP_REQUEUE: u64 = 4;
+                const WAIT_BITSET: u64 = 9;
+                const WAKE_BITSET: u64 = 10;
+                let uaddr = gptr(p, a[0], 4, prot::R)? as u64;
+                Ok(match a[1] & 0x7f {
+                    WAIT | WAIT_BITSET => {
+                        let ts = if a[3] == 0 {
+                            0
+                        } else {
+                            gptr(p, a[3], 16, prot::R)? as u64
+                        };
+                        SysOut::Block(libc::SYS_futex, [uaddr, a[1], a[2], ts, 0, a[5]])
+                    }
+                    // SAFETY (both host calls): the addresses are mapped guest words.
+                    WAKE | WAKE_BITSET => Ret(host_ret(unsafe {
+                        libc::syscall(libc::SYS_futex, uaddr, a[1], a[2], 0, 0, a[5])
+                    })),
+                    REQUEUE | CMP_REQUEUE => {
+                        let uaddr2 = gptr(p, a[4], 4, prot::R)? as u64;
+                        Ret(host_ret(unsafe {
+                            libc::syscall(libc::SYS_futex, uaddr, a[1], a[2], a[3], uaddr2, a[5])
+                        }))
+                    }
+                    _ => Ret(-ENOSYS),
+                })
+            })()
+            .unwrap_or_else(Ret),
             // set_robust_list
             99 => Ret(0),
             // nanosleep / clock_gettime / clock_getres / gettimeofday: timespec/timeval match.
-            101 => ret((|| {
-                let req = gptr(p, a[0], 16, prot::R)?;
-                let rem = gptr(p, a[1], if a[1] == 0 { 0 } else { 16 }, prot::W)?;
-                // SAFETY: pointers cover a struct timespec each (or are null).
-                Ok(host_ret(unsafe {
-                    libc::syscall(libc::SYS_nanosleep, req, rem)
-                }))
-            })()),
+            // Sleeps block: they run without the guest lock (Phase 10).
+            101 => (|| -> Result<SysOut, i64> {
+                let req = gptr(p, a[0], 16, prot::R)? as u64;
+                let rem = if a[1] == 0 {
+                    0
+                } else {
+                    gptr(p, a[1], 16, prot::W)? as u64
+                };
+                Ok(SysOut::Block(libc::SYS_nanosleep, [req, rem, 0, 0, 0, 0]))
+            })()
+            .unwrap_or_else(Ret),
+            // clock_nanosleep(clock, flags, req, rem)
+            115 => (|| -> Result<SysOut, i64> {
+                let req = gptr(p, a[2], 16, prot::R)? as u64;
+                let rem = if a[3] == 0 {
+                    0
+                } else {
+                    gptr(p, a[3], 16, prot::W)? as u64
+                };
+                Ok(SysOut::Block(
+                    libc::SYS_clock_nanosleep,
+                    [a[0], a[1], req, rem, 0, 0],
+                ))
+            })()
+            .unwrap_or_else(Ret),
             113 | 114 | 169 => ret((|| {
                 let buf = gptr(p, if nr == 169 { a[0] } else { a[1] }, 16, prot::W)?;
                 // SAFETY: buf covers a struct timespec/timeval.
@@ -300,23 +411,123 @@ impl Syscalls {
                 }))
             })()),
             124 => Ret(0), // sched_yield
-            // kill / tgkill aimed at this process: terminate as if by the signal.
-            129 | 131 => {
-                let sig = if nr == 129 { a[1] } else { a[2] };
-                eprintln!("bridgev: guest killed itself with signal {sig}");
-                SysOut::Exit(128 + (sig as i32 & 0x7f))
+            // kill(pid, sig) / tkill(tid, sig) / tgkill(tgid, tid, sig) (Phase 10: signals to
+            // this process are delivered to its handlers; others go to the host).
+            129..=131 => {
+                use super::guest_signal as gs;
+                let pid = std::process::id() as i64;
+                let (target, tid, sig) = match nr {
+                    129 => (a[0] as i64, None, a[1]),
+                    130 => (pid, Some(a[0] as i64), a[1]),
+                    _ => (a[0] as i64, Some(a[1] as i64), a[2]),
+                };
+                if sig > gs::NSIG as u64 {
+                    return Ret(-EINVAL);
+                }
+                if target != pid && target != 0 {
+                    // SAFETY: plain host kill of another process.
+                    return Ret(host_ret(
+                        unsafe { libc::kill(target as i32, sig as i32) } as i64
+                    ));
+                }
+                if sig != 0 {
+                    match tid {
+                        Some(t) if t != p.tid => {
+                            *p.thread_pending.entry(t).or_default() |= 1 << (sig - 1);
+                        }
+                        _ => gs::raise(p, sig as u32),
+                    }
+                }
+                Ret(0)
             }
-            // sigaltstack, rt_sigaction, rt_sigprocmask: accepted; no delivery (Phase 10).
-            132 => Ret(0),
-            134 | 135 => {
-                if a[2] != 0 {
-                    let size = if nr == 134 { 24 } else { 8 }; // struct sigaction / sigset_t
-                    let w = write_guest(p, a[2], &vec![0u8; size]);
+            // sigaltstack(ss, old): stack_t {ss_sp, ss_flags (i32), ss_size}.
+            132 => {
+                let old = p.altstack;
+                if a[1] != 0 {
+                    let flags = if old[2] == 0 { 2 } else { old[1] }; // SS_DISABLE
+                    let mut b = [0u8; 24];
+                    b[..8].copy_from_slice(&old[0].to_le_bytes());
+                    b[8..12].copy_from_slice(&(flags as u32).to_le_bytes());
+                    b[16..].copy_from_slice(&old[2].to_le_bytes());
+                    let w = write_guest(p, a[1], &b);
                     if w < 0 {
                         return Ret(w);
                     }
                 }
+                if a[0] != 0 {
+                    let rd = |o| p.mem.load(a[0] + o, 8);
+                    let (Ok(sp), Ok(fl), Ok(sz)) = (rd(0), rd(8), rd(16)) else {
+                        return Ret(-EFAULT);
+                    };
+                    let fl = fl & 0xffff_ffff;
+                    p.altstack = if fl & 2 != 0 { [0; 3] } else { [sp, fl, sz] };
+                }
                 Ret(0)
+            }
+            // rt_sigaction(sig, act, oldact): struct sigaction {handler, flags, mask}.
+            134 => {
+                use super::guest_signal as gs;
+                let sig = a[0] as usize;
+                if sig == 0 || sig > gs::NSIG {
+                    return Ret(-EINVAL);
+                }
+                if a[2] != 0 {
+                    let o = p.sigactions[sig];
+                    let mut b = [0u8; 24];
+                    b[..8].copy_from_slice(&o.handler.to_le_bytes());
+                    b[8..16].copy_from_slice(&o.flags.to_le_bytes());
+                    b[16..].copy_from_slice(&o.mask.to_le_bytes());
+                    let w = write_guest(p, a[2], &b);
+                    if w < 0 {
+                        return Ret(w);
+                    }
+                }
+                if a[1] != 0 {
+                    if sig as u32 == gs::SIGKILL || sig as u32 == gs::SIGSTOP {
+                        return Ret(-EINVAL);
+                    }
+                    let rd = |o| p.mem.load(a[1] + o, 8);
+                    let (Ok(handler), Ok(flags), Ok(mask)) = (rd(0), rd(8), rd(16)) else {
+                        return Ret(-EFAULT);
+                    };
+                    p.sigactions[sig] = gs::SigAction {
+                        handler,
+                        flags,
+                        mask: mask & !gs::UNBLOCKABLE,
+                    };
+                }
+                Ret(0)
+            }
+            // rt_sigprocmask(how, set, oldset)
+            135 => {
+                use super::guest_signal as gs;
+                if a[2] != 0 {
+                    let w = write_guest(p, a[2], &p.sigmask.to_le_bytes());
+                    if w < 0 {
+                        return Ret(w);
+                    }
+                }
+                if a[1] != 0 {
+                    let Ok(set) = p.mem.load(a[1], 8) else {
+                        return Ret(-EFAULT);
+                    };
+                    p.sigmask = match a[0] {
+                        0 => p.sigmask | set,
+                        1 => p.sigmask & !set,
+                        2 => set,
+                        _ => return Ret(-EINVAL),
+                    } & !gs::UNBLOCKABLE;
+                }
+                Ret(0)
+            }
+            // rt_sigreturn: registers come back from the signal frame.
+            139 => {
+                if super::guest_signal::sigreturn(p) {
+                    SysOut::NoRet
+                } else {
+                    eprintln!("bridgev: bad signal frame at sp {:#x}", p.cpu.x[2]);
+                    SysOut::Exit(128 + 11)
+                }
             }
             // uname: struct utsname is 6 × 65 bytes on both architectures.
             160 => {
@@ -343,7 +554,29 @@ impl Syscalls {
                 Ret(write_guest(p, a[0], &buf))
             }
             // getpid, getppid, getuid, geteuid, getgid, getegid, gettid
-            172 | 178 => Ret(std::process::id() as i64),
+            172 => Ret(std::process::id() as i64),
+            178 => Ret(p.tid), // gettid
+            // clone: threads only (fork-style clones are not supported).
+            220 => {
+                let c = CloneArgs {
+                    flags: a[0],
+                    stack: a[1],
+                    parent_tid: a[2],
+                    tls: a[3],
+                    child_tid: a[4],
+                };
+                if c.flags & (CLONE_VM | CLONE_THREAD) == CLONE_VM | CLONE_THREAD {
+                    SysOut::Clone(c)
+                } else {
+                    if self.warned.insert(nr) {
+                        eprintln!(
+                            "bridgev: clone without CLONE_VM|CLONE_THREAD (fork) unsupported"
+                        );
+                    }
+                    Ret(-ENOSYS)
+                }
+            }
+            435 => Ret(-ENOSYS), // clone3: glibc falls back to clone
             // SAFETY (all four): argument-less libc getters.
             173 => Ret(unsafe { libc::getppid() } as i64),
             174 => Ret(unsafe { libc::getuid() } as i64),
@@ -404,7 +637,7 @@ impl Syscalls {
             })()),
             // statx: struct statx is architecture-independent (256 bytes).
             291 => ret((|| {
-                let path = guest_cstr(p, a[1])?;
+                let path = guest_path(p, a[1])?;
                 let buf = gptr(p, a[4], 256, prot::W)?;
                 // SAFETY: path is a C string; buf covers a struct statx.
                 Ok(host_ret(unsafe {
@@ -518,10 +751,13 @@ impl Syscalls {
                 None => return -ENOMEM,
             }
         };
-        if p.mem.map(GuestVirt(start), len, pr).is_err() {
+        let file = flags & MAP_ANONYMOUS == 0;
+        // A file mapping is filled through the host mapping: writable until then.
+        let map_prot = if file { pr | prot::W } else { pr };
+        if p.mem.map(GuestVirt(start), len, map_prot).is_err() {
             return -ENOMEM;
         }
-        if flags & MAP_ANONYMOUS == 0 {
+        if file {
             // File mapping: copy the contents (MAP_PRIVATE semantics; MAP_SHARED writes are
             // not written back — acceptable for the static programs Phase 1 targets).
             let Ok(dst) = p.mem.slice_mut(GuestVirt(start), len, 0) else {
@@ -540,6 +776,9 @@ impl Syscalls {
                 let e = host_ret(-1);
                 let _ = p.mem.unmap(GuestVirt(start), len);
                 return e;
+            }
+            if map_prot != pr && p.mem.protect(GuestVirt(start), len, pr).is_err() {
+                return -ENOMEM;
             }
         }
         if pr & prot::X != 0 {
