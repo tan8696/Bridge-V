@@ -23,6 +23,8 @@ jobs:
       CONFIGS: jit-tier0,jit-tier1,jit-tier4,jit-tier16,jit-tier64,jit-tier256,qemu
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install 1.94 --profile minimal
