@@ -1,0 +1,226 @@
+[    0.000000] Linux version 6.8.0-60-generic (buildd@bos03-riscv64-060) (riscv64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #63.1-Ubuntu SMP PREEMPT_DYNAMIC Thu May  1 06:01:27 UTC 2025 (Ubuntu 6.8.0-60.63.1-generic 6.8.12)
+[    0.000000] Machine model: bridgev,virt
+[    0.000000] SBI specification v2.0 detected
+[    0.000000] SBI implementation ID=0xb5 Version=0x1
+[    0.000000] SBI TIME extension detected
+[    0.000000] SBI IPI extension detected
+[    0.000000] SBI RFENCE extension detected
+[    0.000000] SBI SRST extension detected
+[    0.000000] SBI DBCN extension detected
+[    0.000000] earlycon: sbi0 at I/O port 0x0 (options '')
+[    0.000000] printk: legacy bootconsole [sbi0] enabled
+[    0.000000] efi: UEFI not found.
+[    0.000000] cma: Reserved 32 MiB at 0x000000009dc00000 on node -1
+[    0.000000] NUMA: No NUMA configuration found
+[    0.000000] NUMA: Faking a node at [mem 0x0000000080000000-0x000000009fffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x9fff81c0-0x9fff9fff]
+[    0.000000] Zone ranges:
+[    0.000000]   DMA32    [mem 0x0000000080000000-0x000000009fffffff]
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080000000-0x000000009fffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000009fffffff]
+[    0.000000] SBI HSM extension detected
+[    0.000000] riscv: base ISA extensions acdfim
+[    0.000000] riscv: ELF capabilities acdfim
+[    0.000000] percpu: Embedded 51 pages/cpu s85032 r8192 d115672 u208896
+[    0.000000] Kernel command line: console=ttyS0 earlycon=sbi
+[    0.000000] Dentry cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 129024
+[    0.000000] Policy zone: DMA32
+[    0.000000] mem auto-init: stack:all(zero), heap alloc:on, heap free:off
+[    0.000000] Memory: 423272K/524288K available (12952K kernel code, 6991K rwdata, 10240K rodata, 6136K init, 799K bss, 68248K reserved, 32768K cma-reserved)
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.000000] Dynamic Preempt: voluntary
+[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=32 to nr_cpu_ids=1.
+[    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] riscv-intc: 64 local interrupts mapped
+[    0.000000] plic: plic@c000000: mapped 53 interrupts with 1 handlers for 2 contexts.
+[    0.000000] riscv: providing IPIs using SBI IPI extension
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] clocksource: riscv_clocksource: mask: 0xffffffffffffffff max_cycles: 0x24e6a1710, max_idle_ns: 440795202120 ns
+[    0.000123] sched_clock: 64 bits at 10MHz, resolution 100ns, wraps every 4398046511100ns
+[    0.006489] Console: colour dummy device 80x25
+[    0.014735] Calibrating delay loop (skipped), value calculated using timer frequency.. 20.00 BogoMIPS (lpj=40000)
+[    0.015010] pid_max: default: 32768 minimum: 301
+[    0.019656] LSM: initializing lsm=lockdown,capability,landlock,yama,apparmor,integrity
+[    0.020231] landlock: Up and running.
+[    0.020283] Yama: becoming mindful.
+[    0.023574] AppArmor: AppArmor initialized
+[    0.027672] Mount-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[    0.027773] Mountpoint-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[    0.078413] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.079585] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.080602] ASID allocator using 16 bits (65536 entries)
+[    0.082367] rcu: Hierarchical SRCU implementation.
+[    0.082480] rcu: 	Max phase no-delay instances is 1000.
+[    0.089300] EFI services will not be available.
+[    0.095281] smp: Bringing up secondary CPUs ...
+[    0.096182] smp: Brought up 1 node, 1 CPU
+[    0.112877] devtmpfs: initialized
+[    0.126425] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.126764] futex hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    0.134227] pinctrl core: initialized pinctrl subsystem
+[    0.162338] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.176462] DMA: preallocated 128 KiB GFP_KERNEL pool for atomic allocations
+[    0.177843] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+[    0.178348] audit: initializing netlink subsys (disabled)
+[    0.183212] audit: type=2000 audit(0.132:1): state=initialized audit_enabled=0 res=1
+[    0.188830] thermal_sys: Registered thermal governor 'fair_share'
+[    0.188892] thermal_sys: Registered thermal governor 'bang_bang'
+[    0.189000] thermal_sys: Registered thermal governor 'step_wise'
+[    0.189012] thermal_sys: Registered thermal governor 'user_space'
+[    0.189021] thermal_sys: Registered thermal governor 'power_allocator'
+[    0.189469] cpuidle: using governor ladder
+[    0.189685] cpuidle: using governor menu
+[    0.213683] cpu0: Ratio of byte access time to unaligned word access is 0.37, unaligned accesses are slow
+[    0.236326] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.236437] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.236466] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.236475] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.266783] ACPI: Interpreter disabled.
+[    0.268541] iommu: Default domain type: Translated
+[    0.268668] iommu: DMA domain TLB invalidation policy: strict mode
+[    0.276177] SCSI subsystem initialized
+[    0.279380] usbcore: registered new interface driver usbfs
+[    0.279795] usbcore: registered new interface driver hub
+[    0.280150] usbcore: registered new device driver usb
+[    0.280820] pps_core: LinuxPPS API ver. 1 registered
+[    0.280880] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.281011] PTP clock support registered
+[    0.282622] EDAC MC: Ver: 3.0.0
+[    0.298048] NetLabel: Initializing
+[    0.298141] NetLabel:  domain hash size = 128
+[    0.298161] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO
+[    0.299344] NetLabel:  unlabeled traffic allowed by default
+[    0.305028] mctp: management component transport protocol core
+[    0.305168] NET: Registered PF_MCTP protocol family
+[    0.306893] vgaarb: loaded
+[    0.310499] clocksource: Switched to clocksource riscv_clocksource
+[    0.326443] VFS: Disk quotas dquot_6.6.0
+[    0.326804] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    0.333586] AppArmor: AppArmor Filesystem Enabled
+[    0.334296] pnp: PnP ACPI: disabled
+[    0.361113] NET: Registered PF_INET protocol family
+[    0.363132] IP idents hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[    0.411176] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[    0.411666] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.412574] TCP established hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.412967] TCP bind hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[    0.413167] TCP: Hash tables configured (established 4096 bind 4096)
+[    0.416749] MPTCP token hash table entries: 512 (order: 1, 12288 bytes, linear)
+[    0.417371] UDP hash table entries: 256 (order: 1, 8192 bytes, linear)
+[    0.417724] UDP-Lite hash table entries: 256 (order: 1, 8192 bytes, linear)
+[    0.420256] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.420819] NET: Registered PF_XDP protocol family
+[    0.421164] PCI: CLS 0 bytes, default 64
+[    0.431974] Initialise system trusted keyrings
+[    0.434505] Key type blacklist registered
+[    0.435856] Trying to unpack rootfs image as initramfs...
+[    0.448361] workingset: timestamp_bits=44 max_order=17 bucket_order=0
+[    0.448799] zbud: loaded
+[    0.468269] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[    0.473089] Freeing initrd memory: 1680K
+[    0.476382] fuse: init (API version 7.39)
+[    0.481104] integrity: Platform Keyring initialized
+[    0.481612] integrity: Machine keyring initialized
+[    0.543928] Key type asymmetric registered
+[    0.544118] Asymmetric key parser 'x509' registered
+[    0.544775] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[    0.546443] io scheduler mq-deadline registered
+[    0.555223] shpchp: Standard Hot Plug PCI Controller Driver version: 0.4
+[    0.562236] Serial: 8250/16550 driver, 32 ports, IRQ sharing enabled
+[    0.602778] printk: legacy console [ttyS0] disabled
+[    0.608496] 10000000.serial: ttyS0 at MMIO 0x10000000 (irq = 12, base_baud = 230400) is a 16550A
+[    0.610720] printk: legacy console [ttyS0] enabled
+[    0.610720] printk: legacy console [ttyS0] enabled
+[    0.611568] printk: legacy bootconsole [sbi0] disabled
+[    0.611568] printk: legacy bootconsole [sbi0] disabled
+[    0.615945] SuperH (H)SCI(F) driver initialized
+[    0.644369] loop: module loaded
+[    0.652275] tun: Universal TUN/TAP device driver, 1.6
+[    0.653226] PPP generic driver version 2.4.2
+[    0.657203] mousedev: PS/2 mouse device common for all mice
+[    0.658788] i2c_dev: i2c /dev entries driver
+[    0.662836] syscon-poweroff poweroff: pm_power_off already claimed for sbi_srst_power_off
+[    0.663732] syscon-poweroff: probe of poweroff failed with error -16
+[    0.664598] device-mapper: core: CONFIG_IMA_DISABLE_HTABLE is disabled. Duplicate IMA measurements will not be recorded in the IMA log.
+[    0.665006] device-mapper: uevent: version 1.0.3
+[    0.666597] device-mapper: ioctl: 4.48.0-ioctl (2023-03-01) initialised: dm-devel@redhat.com
+[    0.668061] EDAC DEVICE0: Giving out device to module Sifive ECC Manager controller sifive_edac.0: DEV sifive_edac.0 (INTERRUPT)
+[    0.671002] ledtrig-cpu: registered to indicate activity on CPUs
+[    0.672334] drop_monitor: Initializing network drop monitor service
+[    0.674653] NET: Registered PF_INET6 protocol family
+[    0.704506] Segment Routing with IPv6
+[    0.705029] In-situ OAM (IOAM) with IPv6
+[    0.705805] NET: Registered PF_PACKET protocol family
+[    0.706579] Key type dns_resolver registered
+[    0.722628] registered taskstats version 1
+[    0.727317] Loading compiled-in X.509 certificates
+[    0.741685] Loaded X.509 cert 'Build time autogenerated kernel key: 02ae19b6d0367938ea2db78f2344df9175a22aba'
+[    0.743786] Loaded X.509 cert 'Canonical Ltd. Live Patch Signing: 14df34d1a87cf37625abec039ef2bf521249b969'
+[    0.745396] Loaded X.509 cert 'Canonical Ltd. Kernel Module Signing: 88f752e560a1e0737e31163a466ad7b70a850c19'
+[    0.745577] blacklist: Loading compiled-in revocation X.509 certificates
+[    0.748028] Loaded X.509 cert 'Canonical Ltd. Secure Boot Signing: 61482aa2830d0ab2ad5af10b7250da9033ddcef0'
+[    0.748409] Loaded X.509 cert 'Canonical Ltd. Secure Boot Signing (2017): 242ade75ac4a15e50d50c84b0d45ff3eae707a03'
+[    0.748678] Loaded X.509 cert 'Canonical Ltd. Secure Boot Signing (ESM 2018): 365188c1d374d6b07c3c8f240f8ef722433d6a8b'
+[    0.748980] Loaded X.509 cert 'Canonical Ltd. Secure Boot Signing (2019): c0746fd6c5da3ae827864651ad66ae47fe24b3e8'
+[    0.749148] Loaded X.509 cert 'Canonical Ltd. Secure Boot Signing (2021 v1): a8d54bbb3825cfb94fa13c9f8a594a195c107b8d'
+[    0.749343] Loaded X.509 cert 'Canonical Ltd. Secure Boot Signing (2021 v2): 4cf046892d6fd3c9a5b03f98d845f90851dc6a8c'
+[    0.749557] Loaded X.509 cert 'Canonical Ltd. Secure Boot Signing (2021 v3): 100437bb6de6e469b581e61cd66bce3ef4ed53af'
+[    0.749738] Loaded X.509 cert 'Canonical Ltd. Secure Boot Signing (Ubuntu Core 2019): c1d57b8f6b743f23ee41f4f7ee292f06eecadfb9'
+[    0.779163] Key type .fscrypt registered
+[    0.779292] Key type fscrypt-provisioning registered
+[    0.788962] Key type encrypted registered
+[    0.789173] AppArmor: AppArmor sha256 policy hashing enabled
+[    0.789817] ima: No TPM chip found, activating TPM-bypass!
+[    0.790111] Loading compiled-in module X.509 certificates
+[    0.792188] Loaded X.509 cert 'Build time autogenerated kernel key: 02ae19b6d0367938ea2db78f2344df9175a22aba'
+[    0.792455] ima: Allocated hash algorithm: sha256
+[    0.796032] ima: No architecture policies found
+[    0.798867] evm: Initialising EVM extended attributes:
+[    0.799043] evm: security.selinux
+[    0.799095] evm: security.SMACK64
+[    0.799144] evm: security.SMACK64EXEC
+[    0.799186] evm: security.SMACK64TRANSMUTE
+[    0.799231] evm: security.SMACK64MMAP
+[    0.799283] evm: security.apparmor
+[    0.799325] evm: security.ima
+[    0.799379] evm: security.capability
+[    0.799440] evm: HMAC attrs: 0x1
+[    0.804427] Legacy PMU implementation is available
+[    0.807564] clk: Disabling unused clocks
+[    0.821043] Freeing unused kernel image (initmem) memory: 6136K
+[    0.824572] Checked W+X mappings: passed, no W+X pages found
+[    0.825030] Run /init as init process
+
+Bridge-V: BusyBox v1.36.1 on Linux 6.8.0-60-generic
+
+
+BusyBox v1.36.1 (Ubuntu 1:1.36.1-6ubuntu3.1) built-in shell (ash)
+Enter 'help' for a list of built-in commands.
+
+/ # uname -a
+Linux (none) 6.8.0-60-generic #63.1-Ubuntu SMP PREEMPT_DYNAMIC Thu May  1 06:01:27 UTC 2025 riscv64 GNU/Linux
+/ # cat /proc/cpuinfo
+processor	: 0
+hart		: 0
+isa		: rv64imafdc_zicntr_zicsr_zifencei
+mmu		: sv39
+mvendorid	: 0x0
+marchid		: 0x0
+mimpid		: 0x0
+hart isa	: rv64imafdc_zicntr_zicsr_zifencei
+
+/ # ls /
+bin   dev   etc   init  proc  root  sbin  sys   tmp   usr
+/ # poweroff -f
+[    1.147652] reboot: Power down

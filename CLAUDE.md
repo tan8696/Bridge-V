@@ -11,13 +11,13 @@ This file is the single source of truth for the project: scope, architecture, de
 
 | Item | State |
 |---|---|
-| Phase | **Phase 8 (self-modifying code) complete.** Eager per-page invalidation in both memory backends; FENCE.I only resets the jump cache; no measurable cost on CoreMark (0 code-page writes). Phase 7: Sv39 + inline TLB, all 244 riscv-tests, softmmu CoreMark 54% of direct. Next up: Phase 9, task P9.1 (`docs/ROADMAP.md`). |
+| Phase | **Phase 9 (Milestone B) complete.** Linux 6.8 (Ubuntu's stock riscv64 kernel, D50) boots to a BusyBox shell on the built-in SBI in 1.25 s under the JIT (QEMU TCG 1.50 s, interpreter 9.99 s); the whole boot and a shell session also run clean under lockstep (84 M TBs, D52). Automated UART test in CI (`linux-boot`). Phase 8: eager SMC invalidation. Phase 7: Sv39 + inline TLB, all 244 riscv-tests. Next up: Phase 10 stretch goals, starting with the OpenSBI boot (`docs/ROADMAP.md`). |
 | Language | Rust (decided, see §3) |
 | Detailed plan | [`docs/ROADMAP.md`](docs/ROADMAP.md), with task IDs, tests and acceptance criteria per phase |
-| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-08-smc.md` |
+| Phase reports | [`docs/phase-reports/`](docs/phase-reports/), latest: `phase-09-milestone-b.md` |
 | Project explainer | [`docs/PROJECT_EXPLAINED.md`](docs/PROJECT_EXPLAINED.md) |
 | Blockers | None. GitHub push access was fixed on 2026-09-26 (Claude GitHub App installed). |
-| Last updated | 2026-09-26 |
+| Last updated | 2026-09-27 |
 
 Update this table at the end of every phase.
 
@@ -67,7 +67,7 @@ Update this table at the end of every phase.
 | D14 | Unsupported instructions | The JIT emits a full-sync `call helper_interp_one(cpu, insn, pc)`, so every instruction the interpreter supports also runs under the JIT. | Correct first, then fast, one instruction at a time. |
 | D15 | System boot | First a **built-in SBI** implemented in Rust. The guest starts in S-mode at the kernel entry, and S-mode `ecall` is serviced natively. Later, run real **OpenSBI** (`fw_jump.bin`) in M-mode to validate. | Fastest bring-up. OpenSBI then exercises M-mode. |
 | D16 | Machine model | Memory map and devicetree compatible with QEMU `virt` | Stock kernel `defconfig` works unchanged. |
-| D17 | Guest software | Linux **6.6 LTS**, BusyBox **1.36.x** static, initramfs embedded in the kernel | Well-trodden on QEMU virt. |
+| D17 | Guest software | Linux **6.6 LTS**, BusyBox **1.36.x** static, initramfs embedded in the kernel  *Superseded by D50 (Phase 9): Ubuntu's stock 6.8 kernel and busybox-static.* | Well-trodden on QEMU virt. |
 | D18 | Dependencies | Runtime: `libc`, `rustc-hash`, `clap` (derive), `anyhow`, `cc` (build-time, SoftFloat). Dev: `iced-x86` (decoder + fmt features), `proptest`. Anything else must be justified in this table. | Minimal attack surface and fast builds. |
 | D19 | Process | The detailed plan lives in `docs/ROADMAP.md`, and §24 here is its summary. **Every phase ends with a detailed report** at `docs/phase-reports/phase-NN-<name>.md`, based on `TEMPLATE.md`. A phase isn't done without its report. | Owner requirement: a written account of what was done, how it works and how it was verified, after every phase. |
 | D20 | Reference validation | Guest programs are checked against `qemu-riscv64` 8.2.2 with byte-exact stdout and exit codes (`tests/data/expected/`). riscv-tests are validated under `qemu-system-riscv64 -M spike` (HTIF). Tests QEMU itself gets wrong are listed in `tests/data/qemu-known-failures.txt` (XFAIL, and an XPASS is an error). | Every input is proven valid before bridgev runs it, so a future failure is bridgev's bug, not a bad test binary. |
@@ -100,6 +100,9 @@ Update this table at the end of every phase.
 | D47 | Inline FP (Phase 6) | IR back end only. f registers stay in `CpuState`; each inline op uses XMM0–2 as scratch. F/D loads, stores, `fmv` and sign injection are integer IR (`ReadF`/`WriteF`/`Unbox`). add/sub/mul/div/sqrt, fcvt.s.d/d.s, FMA (FMA3 only), feq/flt/fle, fcvt.{w,l}.{s,d} and fcvt.{s,d}.{w,wu,l} are inline for rm = RNE or DYN (RTZ too for float→int). fmin/fmax, fclass, the other unsigned conversions and other static rounding modes use `helper_interp_one`. Tail fix-ups: NaN canonicalization, unboxed single → canonical NaN, float→int saturation, NV for FMA (0 × ∞) + qNaN. fflags: `enter_jit` loads MXCSR 0x1F80; `exit_jit` and `helper_interp_one` fold IE/ZE/OE/UE/PE into NV/DZ/OF/UF/NX (the helper also resets MXCSR before and after). TBs come in two variants keyed `(pc, fp_slow)`: the fast one requires FS = Dirty and, if it has dynamic-rm ops, frm = RNE, re-checked in the prologue (exit reason 7 `FP_VARIANT`, nothing executed); the slow one is the helper-only code. `Block::fp_guard/fp_dyn` carry the guard so DCE cannot drop it. `--no-inline-fp` forces the slow variant. | Bit-exact against SoftFloat (1e6-case fuzzer, fflags included) at 60× the helper path on fpbench. XMM allocation across ops is left for later. |
 | D48 | Softmmu (Phase 7) | `cpu.softmmu` (0x116) selects translated memory: always in bare/system mode, `--mem=softmmu` in user mode (where translation is the identity and `DirectMem`'s guest permissions act as physical permissions; the TLB is flushed after brk/mmap/munmap/mremap/mprotect). Physical memory = RAM mapped in `DirectMem` at its physical address + `DirectMem::devices` (MMIO); anything else is an access fault. **Four MMU indices** (U, S, S+SUM, M/Bare) so Linux's SUM toggling and MPRV need no flush; MXR changes, satp writes and SFENCE.VMA flush all (`tlb::flush_all`, which bumps `cpu.mmu_gen`). TLB: 256 direct-mapped 32-byte entries per index at 0x10580, tags = vpage \| flags (MMIO bit 3, CODE bit 4), `addr_write` only after D is set; the walker sets A/D itself (Svadu-like, §14.3). Interpreter: `mem::mmu::{load,store,fetch16}`; decoded blocks keyed (pc, fetch index), dropped on `mmu_gen` change. JIT: TBs keyed `TbKey{pc, fp_slow, flags = 0x80 \| fetch_idx \| data_idx << 2, physical page}`; IR loads/stores probe the TLB inline (9 instructions to the access, `tlb_probe`) with a cold slow path per site that saves the caller-saved registers to `fault_regs`, refunds the unretired budget, calls `helper_mmu_access(cpu, va, info, val)`, restores, and either continues or exits with reason 8 `MMU_FAULT` (the stub also saves R12–R15 and `fault_rip` = the site, so the D37 state map makes the fault precise). Chaining only between TBs with equal flags on the same virtual page, never out of a TB ending in a CSR instruction; the jump cache is reset when (flags, `mmu_gen`) changes. A 32-bit instruction straddling a page is interpreted (never translated). The naive back end sends loads/stores through `helper_interp_one`. `satp` accepts Sv39 (supersedes D24). | QEMU-style softmmu with zero cost for direct mode; one mechanism serves user-mode softmmu, bare-metal and (Phase 9) Linux. Precise faults reuse D37's state maps. |
 | D49 | Self-modifying code (Phase 8) | Eager invalidation keyed by page. `DirectMem` keeps a CODE bit per page (physical page with softmmu): set when an engine decodes or translates from the page (a guest-writable page then becomes host read-only), dropped by every write path (`store`, `slice_mut`, `write_bytes`, `map`/`unmap`/`protect`), which reports the page in `DirectMem::smc_pages`. Softmmu write tags of code pages carry `TLB_CODE` (set at fill and when a page becomes code). Both engines stop **right after** a store to a code page: the interpreter ends the block; `helper_interp_one` exits with reason 9 `SMC` (store retired, pc = next); a softmmu inline store's slow path exits with reason 10 `SMC_STORE` (state from its fault site, then pc += len and the store counted as retired); a direct-mode JIT store takes a host SIGSEGV, and the dispatcher rebuilds the state at the site and retires the store in the interpreter. The JIT keeps `page_tbs: page → [TbId]` and, when draining `smc_pages`, unlinks and invalidates every TB of the page and stales the jump cache; the interpreter drops its decoded blocks. With nothing stale left, FENCE.I and `riscv_flush_icache` only reset the jump cache (`--smc=flush-on-fence` restores the full flush). Lockstep re-marks pages the reference run wrote before the JIT run. | Correct for x86-style code patching (no FENCE.I) and cheap for RISC-V-style (FENCE.I no longer throws away the translation cache); zero cost when code and data pages are separate (CoreMark: 0 code-page writes). |
+| D50 | Guest software and machine (Phase 9) | **Kernel:** Ubuntu 24.04's riscv64 `linux-image-6.8.0-60-generic` (a stock 6.8 kernel, EFI-stub `Image` with the ns16550a, PLIC, SBI timer/console and syscon drivers built in). **Userland:** Ubuntu `busybox-static` 1.36.1. Both are fetched from the Ubuntu ports archive with pinned SHA-256 (`tools/fetch-guest-images.sh`). The initramfs comes from `bridgev mkinitramfs` (newc cpio with device nodes, no root needed; `/init` mounts proc/sys/devtmpfs and runs `sh` on the console). **Machine:** built-in SBI (D15; legacy, BASE, TIME, IPI, RFENCE, HSM, SRST, DBCN) serves S-mode ECALLs in Rust. Devices: CLINT, PLIC (53 level-triggered sources, M and S contexts), NS16550A (instant TX, RX from a stdin thread, IRQ 10) and the SiFive test finisher, all on `DirectMem::devices`. The FDT is generated per §20.3. A slice loop (`--slice`, default 100 000) runs the engine, and between slices moves CLINT/SBI timer, msip and PLIC outputs into `mip`. WFI with nothing pending in `mip & mie` stops the engine (exit reason 11 `WFI`), and the loop sleeps until the next timer deadline or console input; with deterministic time WFI stays a no-op. Supersedes D17. | kernel.org and GitHub are blocked by the container's network policy, and the Ubuntu archive is reachable. Its kernel is an unmodified 6.x distro kernel, so goal §1 is unchanged, and the pinned packages make the images reproducible without a release store. |
+| D51 | System-mode chaining and jump cache (Phase 9) | (1) A direct exit leaving the TB's virtual page (never linked in system mode, D48) looks the target up in the jump cache inline (`jc_cross_page`) instead of returning to the dispatcher. (2) Jump-cache entries hold `pc ^ flags << 56` (`jc_tagged`), and lookups XOR the TB's flags in (`movabs r11, tag; xor r11, rax`), so privilege and SUM changes need no reset. The jump cache is reset only when `cpu.jc_gen` moves (full TLB flushes). (3) SFENCE.VMA with an address flushes that page in every MMU index and its jump-cache entries (`tlb::flush_page`), or everything if the address lies in the range of superpages cached since the last full flush (`cpu.tlb_super`). ASIDs are ignored. (4) TBs ending in a CSR instruction chain again: `helper_interp_one` leaves the TB (pc = next) when the instruction changed the TB flags or `jc_gen`, made an interrupt deliverable, or was SFENCE.VMA. Amends D48. | Linux boot under the JIT: dispatcher entries 6.5 M → 0.7 M, TLB fills 1.44 M → 0.6 M, time to shell 1.80 s → 1.30 s (QEMU 1.48 s). |
+| D52 | Lockstep over devices | The reference (interpreter) run performs its MMIO accesses and records them (`DirectMem::mmio_log`). The JIT run replays the log: reads return the recorded values, and writes are compared, not performed. Every device therefore sees each access once, in reference order, and a differing JIT access (address, size, kind, written value, count) is a divergence. | Without it, a device read-modify-write (e.g. the PLIC enable word) ran twice and diverged after 77.5 M identical TBs. With it, the whole Linux boot and shell session runs clean under `--engine lockstep` (84 M TBs). |
 
 ---
 
@@ -611,7 +614,7 @@ stub_k:  (dirty regs already written back on the path)
 - **Unlinking** (B invalidated): for each `(A,k)` in `B.incoming`, reset the rel32 to point at A's own `stub_k`.
 - **`may_link(A,B)`** requires:
   - The same `TbFlags`.
-  - In system mode, `B.guest_pc` must be on the **same virtual page** as A. The virtual→physical mapping can change without TB invalidation, so a cross-page transfer goes through the jump cache and TLB exec check instead.
+  - In system mode, `B.guest_pc` must be on the **same virtual page** as A. The virtual→physical mapping can change without TB invalidation, so a cross-page transfer goes through the jump cache and TLB exec check instead. As built (D51), a cross-page direct exit probes the jump cache inline before falling back to the dispatcher.
   - In user mode (flat mapping), link freely.
 - **Prologue of every TB** (D12): `sub qword [rbp+BUDGET-128], n_insns ; jl budget_stub`. It is 2 instructions and keeps chained infinite loops pre-emptible. `budget_stub` exits with `pc = this TB`, having executed nothing.
 - `--no-chain` disables linking so the speedup from chaining can be measured.
@@ -629,6 +632,7 @@ stub_k:  (dirty regs already written back on the path)
     jmp   qword [rbp + r10 + JC_OFF-128 + 8]
 ```
 - Flush the jump cache on: a change of priv or TbFlags, a satp write, SFENCE.VMA, FENCE.I, TB invalidation (remove the matching entries), and a cache flush.
+- As built (D51): entries carry the TB flags (`pc ^ flags << 56`), so a priv/flags change needs no flush. A full TLB flush (satp, MXR, SFENCE.VMA without an address) resets the jump cache, and SFENCE.VMA with an address drops only that page's entries.
 - Stretch: a return-address stack (shadow stack) that predicts `ret` (`jalr x0, 0(ra)`).
 
 ---
@@ -709,10 +713,10 @@ stub_k:  (dirty regs already written back on the path)
   4. Restore the registers and test `exit_reason`. On a fault, also store R12–R15 and `fault_rip` = the site, and exit (slot 2). The dispatcher applies the site's state map (D37), so the fault is precise without per-site store code. Otherwise move the value into the destination and jump to `.Lret_N`.
 - **Flush:**
   - `satp` write: flush all.
-  - `SFENCE.VMA`: flush all (per-page/ASID flushing is a later optimization).
+  - `SFENCE.VMA`: with rs1 = x0, flush all. With an address, flush that page in every MMU index, or everything if it lies in a superpage range cached since the last full flush (D51). ASIDs are ignored.
   - MXR change: flush all. SUM and MPRV/MPP select separate indices (U, S, S+SUM, M/Bare), so they need no flush (D48).
   - Privilege change: nothing to flush (separate TLB per index).
-  - Every flush bumps `cpu.mmu_gen`, which drops the interpreter's decoded blocks and resets the jump cache.
+  - Every flush bumps `cpu.mmu_gen`, which drops the interpreter's decoded blocks. Full flushes also bump `cpu.jc_gen`, which resets the jump cache; a single-page flush clears that page's jump-cache entries itself (D51).
 - **Stats:** `--stats` prints the number of TLB fills (walks), `mmu-fault` exits and page-straddling instructions. Hits are not counted (no counter on the hot path). A microbenchmark measures the cost per access on hit and miss (§22, P7.9).
 
 ---
@@ -749,7 +753,7 @@ stub_k:  (dirty regs already written back on the path)
   - `pc = xtvec.BASE`, or `BASE + 4·cause` for vectored interrupts
 - **MRET/SRET:** `priv = xPP`, `xIE = xPIE`, `xPIE = 1`, `xPP = U` (MRET also clears MPRV when MPP ≠ M), `pc = xepc`.
 - **mstatus bits used:** SIE1 MIE3 SPIE5 MPIE7 SPP8 MPP12:11 FS14:13 MPRV17 SUM18 MXR19 TVM20 TW21 TSR22 UXL/SXL=2 SD63.
-- **Interrupt delivery.** Only the dispatcher delivers interrupts, between TBs. The budget (D12) bounds latency. The following end the block so pending interrupts are noticed promptly: instructions that can unmask interrupts (csr writes to mstatus/sstatus/mie/sie, MRET, SRET) and WFI. WFI idles the host until the next timer deadline or an async event.
+- **Interrupt delivery.** Only the dispatcher delivers interrupts, between TBs. The budget (D12) bounds latency. The following end the block so pending interrupts are noticed promptly: instructions that can unmask interrupts (csr writes to mstatus/sstatus/mie/sie, MRET, SRET) and WFI. WFI idles the host until the next timer deadline or an async event. As built (D50): a WFI with nothing pending in `mip & mie` exits the engine (reason 11), and the machine loop sleeps until the next CLINT/SBI timer deadline or console input. A TB ending in a CSR instruction may be chained: `helper_interp_one` leaves to the dispatcher only if the instruction changed the TB flags or the mappings, or made an interrupt deliverable (D51).
 - **Time.** `mtime` runs at 10 MHz (`timebase-frequency = 10000000`), derived from the host monotonic clock. With `--deterministic`, `mtime = icount / K`, which makes runs reproducible for lockstep debugging.
 
 ## 16. Self-modifying code (SMC) and cache invalidation
@@ -973,8 +977,13 @@ bridgev run   [--mode=user] [--engine=interp|jit|lockstep] [--mem=direct|direct-
               [--tlb-size=256] [--code-cache=256M] [--wx=dualmap|mprotect] [--smc=eager|flush-on-fence]
               [--stats[=regs]] [--trace=insn|block] [--dump-ir] [--dump-x86] [--perf-map] [--deterministic]
               [--profile-jit] [--profile-tbs] <elf> [guest args…]
-bridgev boot  --kernel Image [--firmware fw_jump.bin] [--dtb x.dtb] [--initrd rootfs.cpio]
-              [--ram 512M] [--append "console=ttyS0"] [--engine …] [--stats] [--deterministic]
+bridgev boot  --kernel Image [--dtb x.dtb] [--dump-dtb out.dtb] [--initrd rootfs.cpio]
+              [--ram 512M] [--append "console=ttyS0 earlycon=sbi"] [--engine interp|jit|lockstep]
+              [--regalloc …] [--no-chain] [--slice 100000] [--max-insns N] [--stats] [--deterministic]
+              (--firmware fw_jump.bin: Phase 10, OpenSBI)
+bridgev mkinitramfs --busybox busybox --out rootfs.cpio   # initramfs without root (D50)
+tools/fetch-guest-images.sh          # pinned Ubuntu riscv64 kernel + busybox-static, then mkinitramfs
+tools/boot-bench.py                  # time to shell: bridgev engines vs qemu-system-riscv64
 bridgev disasm <elf>                 # decoder + disassembler check
 tools/bench.py [--suite ...] [--quick] # runs the §22 matrix; markdown + JSON (D43)
 ```
@@ -1049,7 +1058,7 @@ Each phase ends with:
 ## 28. Resume bullets and interview presentation
 
 ### 28.1 Resume bullets (targets: replace the numbers with measured values from `docs/BENCHMARKS.md` before use)
-- Engineered a 64-bit RISC-V to x86_64 dynamic binary translator supporting RV64IMAFD instruction extensions, executing compiled Linux binaries at over **120M instructions/sec**. *(Measured, Phase 5: CoreMark at 4.8 billion guest instructions/s in user mode, 26.5× the interpreter and 1.52× `qemu-riscv64`; Phase 7: CoreMark under `--mem=softmmu`, every access through the software TLB, runs at 2.7 billion guest instructions/s.)*
+- Engineered a 64-bit RISC-V to x86_64 dynamic binary translator supporting RV64IMAFD instruction extensions, executing compiled Linux binaries at over **120M instructions/sec**. *(Measured, Phase 5: CoreMark at 4.8 billion guest instructions/s in user mode, 26.5× the interpreter and 1.52× `qemu-riscv64`; Phase 7: CoreMark under `--mem=softmmu`, every access through the software TLB, runs at 2.7 billion guest instructions/s. Phase 9: a full Linux boot in system mode averages 701 million guest instructions/s, and reaches the shell in 1.25 s against QEMU's 1.50 s.)*
 - Eliminated dispatcher context switching by developing a runtime basic-block chaining mechanism that hot-patches native branch targets directly in executable cache memory.
 - Implemented an inline software TLB and SV39 virtual memory engine, reducing memory translation overhead from **45 cycles to 4 cycles** on cached hits. *(Measured, Phase 7: a TLB hit adds < 1 cycle per access in throughput and about 5–7 cycles of load-to-use latency; a miss with a full Sv39 walk costs about 59 nominal cycles (28 ns). Rewrite the bullet with these numbers.)*
 - Authored a custom JIT code emitter and register allocator mapping 32 guest registers to host x86_64 registers with zero-cost spill resolution for hot execution paths.

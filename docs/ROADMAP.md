@@ -693,33 +693,34 @@ Walkthroughs of the invalidation sequence (with logs), the test matrix, and the 
 **Entry criteria:** Phases 7 and 8 done.
 
 ### P9.1 Devices (L), `src/system/`
-- [ ] CLINT: mtime from the host monotonic clock (or icount under `--deterministic`), mtimecmp → MTIP, msip → MSIP.
-- [ ] PLIC: priorities, pending, per-context enable and threshold, claim/complete. Context 1 (S-mode) → SEIP.
-- [ ] UART 16550A: the register model per §20.1. TX goes to stdout. A stdin reader thread (raw tty) feeds the RX FIFO and raises IRQ 10 via the PLIC.
-- [ ] syscon test finisher: poweroff and reboot.
+- [x] CLINT: mtime from the host monotonic clock (or icount under `--deterministic`), mtimecmp → MTIP, msip → MSIP.
+- [x] PLIC: priorities, pending, per-context enable and threshold, claim/complete. Context 1 (S-mode) → SEIP.
+- [x] UART 16550A: the register model per §20.1. TX goes to stdout. A stdin reader thread feeds the RX FIFO and raises IRQ 10 via the PLIC. (The host tty is left in its mode; raw mode is a later nicety.)
+- [x] syscon test finisher: poweroff and reboot.
+- [x] WFI idle (D50): WFI with nothing pending stops the engine; the machine sleeps until the next timer deadline or console input.
 - **Tests:** a device unit test for each register-level behaviour.
 
 ### P9.2 Devicetree generator (M), `src/system/fdt.rs`
-- [ ] An FDT blob writer (§20.3). Validate it by decompiling with `dtc -I dtb -O dts` and diffing against the expected `.dts` in a test.
+- [x] An FDT blob writer (§20.3). Validated by decompiling with `dtc -I dtb -O dts` in a unit test (`fdt::tests::dtc_accepts_the_blob`: no warnings, expected nodes and properties).
 
 ### P9.3 Boot flow and built-in SBI (M), `src/system/machine.rs`, `sbi.rs`
-- [ ] Image loading and header validation, DTB placement, and S-mode start state (§20.2).
-- [ ] The SBI extensions from the §20.2 table: BASE, TIME, IPI, RFENCE, HSM, SRST, DBCN, plus legacy console.
+- [x] Image loading and header validation, DTB placement, and S-mode start state (§20.2).
+- [x] The SBI extensions from the §20.2 table: BASE, TIME, IPI, RFENCE, HSM, SRST, DBCN, plus legacy console.
 
 ### P9.4 Guest image build and caching (M), `guest/linux/`
-- [ ] `build.sh`: fetch Linux 6.6.x and BusyBox 1.36.x (with pinned versions and checksums). Build the kernel with `defconfig` + `bridgev.config`, build BusyBox statically, create the initramfs (`/init` script), and embed it.
-- [ ] **Validate the image in `qemu-system-riscv64 -M virt` first** (the reference boot log).
-- [ ] Cache the artifacts outside git (a GitHub release or CI artifact). `tools/fetch-guest-images.sh` downloads them. Record the SHA-256 checksums.
+- [x] ~~`build.sh`: fetch Linux 6.6.x and BusyBox 1.36.x~~ Replaced (D50): kernel.org and GitHub are blocked from the container, so `tools/fetch-guest-images.sh` takes Ubuntu 24.04's stock riscv64 kernel 6.8.0-60 and busybox-static 1.36.1 from the Ubuntu archive, and `bridgev mkinitramfs` builds the initramfs. Original plan: fetch Linux 6.6.x and BusyBox 1.36.x (with pinned versions and checksums). Build the kernel with `defconfig` + `bridgev.config`, build BusyBox statically, create the initramfs (`/init` script), and embed it.
+- [x] **Validate the image in `qemu-system-riscv64 -M virt` first** (the reference boot log). It boots under QEMU with QEMU's devicetree and with bridgev's (`tools/boot-bench.py` configs `qemu`, `qemu-bvdtb`).
+- [x] Cache the artifacts outside git (a GitHub release or CI artifact). `tools/fetch-guest-images.sh` downloads them. Record the SHA-256 checksums. (The pinned Ubuntu packages are the store; CI caches the .debs.)
 
 ### P9.5 Bring-up (L)
-- [ ] Boot under `--engine=interp` first, with `earlycon=sbi` for early output. Then boot under jit, using lockstep to find divergences.
-- [ ] Record every bring-up bug and its fix in the report. Typical culprits are FS-state handling, sstatus views, timer interrupts, SUM/MXR, A/D bits, `sfence.vma`, WFI and UART IRQ flow.
+- [x] Boot under `--engine=interp` first, with `earlycon=sbi` for early output. Then boot under jit, using lockstep to find divergences.
+- [x] Record every bring-up bug and its fix in the report. Typical culprits are FS-state handling, sstatus views, timer interrupts, SUM/MXR, A/D bits, `sfence.vma`, WFI and UART IRQ flow.
 
 ### P9.6 Automated boot test (M), `tests/linux_boot.rs` (ignored by default, run in a dedicated CI job)
-- [ ] Spawn `bridgev boot` with piped stdio and wait for `/ #` (with a timeout). Send `uname -a; cat /proc/cpuinfo; ls /; poweroff`, check the output, and expect a clean exit via SRST or syscon.
+- [x] Spawn `bridgev boot` with piped stdio and wait for `/ #` (with a timeout). Send `uname -a; cat /proc/cpuinfo; ls /; poweroff`, check the output, and expect a clean exit via SRST or syscon.
 
 ### P9.7 Boot performance (S)
-- [ ] Time to shell, MIPS during boot, TLB miss rate, and a comparison with `qemu-system-riscv64` TCG on the same image.
+- [x] Time to shell, MIPS during boot, TLB miss rate, and a comparison with `qemu-system-riscv64` TCG on the same image.
 
 ### Phase 9 acceptance criteria
 - Linux 6.6 reaches `/ #` under jit.

@@ -127,6 +127,22 @@ Raw data: [`bench/2026-09-27-6c95332-softmmu/results.json`](bench/2026-09-27-6c9
 - A miss with an Sv39 walk costs 28.1 ns per access.
 - Details: [`bench/2026-09-27-2da741e-softmmu/tlb.md`](bench/2026-09-27-2da741e-softmmu/tlb.md) and the Phase 7 report §7.2.
 
+## Linux boot to a BusyBox shell (Phase 9, 2026-09-27, commit `c24bc9c`)
+
+`python3 tools/boot-bench.py --configs jit,interp,qemu,qemu-bvdtb --runs 5`. Host: Intel Xeon @ 2.10 GHz (noisy shared VM); `taskset -c 2`, 1 warm-up run, then 5 measured runs; median (min–max).
+- Guest: Ubuntu 24.04 riscv64 kernel 6.8.0-60 + busybox-static 1.36.1 initramfs (`tools/fetch-guest-images.sh`), 512 MiB, 1 hart.
+- Time to shell = process start until `/ # ` appears on the console. Instructions and MIPS cover the whole run, up to `poweroff -f` typed at the prompt.
+- QEMU 8.2.2 TCG uses its bundled OpenSBI and its own devicetree (`qemu`), or bridgev's devicetree (`qemu-bvdtb`).
+
+| config | time to shell (s) | guest instructions | MIPS |
+|---|---:|---:|---:|
+| bridgev jit | 1.25 (1.21–1.42) | 930,751,294 | 701 |
+| bridgev interp | 9.99 (9.82–10.21) | 895,355,098 | 89 |
+| qemu-system-riscv64 | 1.50 (1.36–1.56) | — | — |
+| qemu-system-riscv64 + bridgev DTB | 1.62 (1.25–1.72) | — | — |
+
+Raw output, a full boot log and one run's `--stats`: [`bench/2026-09-27-c24bc9c-boot/`](bench/2026-09-27-c24bc9c-boot/). Before the system-mode chaining work (D51), at `ee9f7a6`: jit 1.80 s (3 runs), QEMU 1.48 s ([`bench/2026-09-27-ee9f7a6-boot/`](bench/2026-09-27-ee9f7a6-boot/)); after D51, at `a08a562`: jit 1.30 s ([`bench/2026-09-27-a08a562-boot/`](bench/2026-09-27-a08a562-boot/)). Analysis: Phase 9 report §3.6 and §7.
+
 ## Earlier harness runs
 - [`bench/2026-09-26-3099969-baseline.md`](bench/2026-09-26-3099969-baseline.md): the same matrix before the Phase 5 tuning (budget in memory). `jit+linear` CoreMark 13,041, Dhrystone 18.4 M. The before/after of the tuning itself was measured in a same-batch A/B run: Phase 5 report §7.3.
 

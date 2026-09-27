@@ -1,0 +1,5 @@
+`bridgev boot --stats` of one jit boot at c24bc9c (uname, cat /proc/cpuinfo, ls /, poweroff -f):
+bridgev: machine stopped: PowerOff
+bridgev: 928557222 guest instructions in 1.524 s (609.4 MIPS)
+bridgev: 1175 SBI calls; 26 WFI idles, 0.077 s idle; jit: 66669 TBs translated (416763 guest insns, 45181 KiB host code, 111.0 bytes/insn), 0 full + 800 code-change flushes, translate time 552.0 ms; 703121 dispatcher entries (757 per M guest insns); exits: none 289008, ecall 2137, exception 9, flush 400, host-fault 0, budget 17003, jump-cache miss 393922, fp-variant 0, mmu-fault 499, smc 117, wfi 26, straddle 218443; SMC: 117 code-page writes, 10611 TBs invalidated; chain: on, 46904 links, 5663 unlinks, 456273 jump-cache fills; JALR count needs --profile-jit; regalloc Linear (emitted code, all TBs): 90976 fills, 1199 spills, 138397 write-backs, 58766 moves, 0 retranslations
+softmmu: 673941 TLB fills

@@ -63,12 +63,14 @@ Hello, world!
 
 The RISC-V program never knows it's not on real RISC-V hardware. This is the same job `qemu-riscv64` does.
 
-### 4.2 System mode: emulate an entire RISC-V computer (stretch goal)
+### 4.2 System mode: emulate an entire RISC-V computer (Milestone B, done)
 ```
-bridgev boot --kernel Image          # a RISC-V Linux kernel
-[    0.000000] Linux version 6.6.x ... riscv64 ...
+bridgev boot --kernel Image --initrd rootfs.cpio     # a RISC-V Linux kernel + a tiny root filesystem
+[    0.000000] Linux version 6.8.0-60-generic ... riscv64 ...
+[    0.000000] SBI specification v2.0 detected
 ...
-/ #                                  # an interactive BusyBox shell
+/ # uname -a                                          # an interactive BusyBox shell
+Linux (none) 6.8.0-60-generic ... riscv64 GNU/Linux
 ```
 Here Bridge-V emulates a whole machine:
 - **The CPU's privilege levels**, so the kernel and user programs are isolated.
@@ -76,7 +78,7 @@ Here Bridge-V emulates a whole machine:
 - **A timer, an interrupt controller and a serial port** (the console you type into).
 - **The firmware interface (SBI)** that the kernel talks to.
 
-You boot a real, unmodified Linux kernel and get a shell prompt. This is what `qemu-system-riscv64` does.
+You boot a real, unmodified Linux kernel and get a shell prompt. This is what `qemu-system-riscv64` does. Bridge-V gets there in 1.25 seconds, a little faster than QEMU (1.50 s) on the same kernel. The firmware interface is built into Bridge-V itself, so no separate firmware image is needed. When the guest has nothing to do (it executes WFI, "wait for interrupt"), Bridge-V sleeps instead of spinning.
 
 ---
 
@@ -263,12 +265,7 @@ Everything else stays on the fast path.
   FP benchmark (Phase 6: nbody, matrix multiply, conversions): the fully optimized JIT runs 3,508 units/s, 27× the interpreter, 60× the same JIT with FP through the reference helper, 5.6× QEMU and 21% of native.
 
   Each JIT technique's share: chaining alone is 13.8× the interpreter; pinning four registers takes it to 19.9×; the optimizer and register allocator to 26.5×.
-- **Still targets** (CLAUDE.md §22), for later phases:
-
-  | Configuration | Target |
-  |---|---|
-  | JIT in system mode (with SoftMMU) | ≥ 100–120 MIPS |
-  | TLB | ~4–5 cycles on a hit vs tens of cycles for a page walk |
+- **System mode (Phase 9):** booting Linux to the shell takes 1.25 s under the JIT (701 million guest instructions per second over the whole boot), 1.50 s under QEMU, and 9.99 s under the interpreter. That clears the old ≥ 100–120 MIPS target. The TLB (Phase 7) costs about 4 ns per hit and 28 ns per page walk.
 
 - Every real number is recorded in `docs/BENCHMARKS.md` and the phase reports, with the exact command and machine used. **No unmeasured number is ever reported as a result.**
 
@@ -285,13 +282,13 @@ Everything else stays on the fast path.
 
 ## 12. Project status and how it will be used
 
-- **Now:** Phases 0–8 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining, an inline jump cache, an IR optimizer and register allocator, lockstep checking, a random-block fuzzer, and Milestone A: reproducible CoreMark and Dhrystone builds, a benchmark harness comparing the interpreter, every JIT level, QEMU and native code (`tools/bench.py`), a sampling profiler (`--profile-tbs`), and a one-command demo (`tools/demo-milestone-a.sh`), plus (Phase 6) inline floating point with an FP fuzzer and an FP benchmark. Phase 7 added privileged mode (M/S/U), Sv39 virtual memory and the inline software TLB. Phase 8 made self-modifying code safe: when a program writes to memory that holds code Bridge-V has already translated, exactly those translations are thrown away (and chained jumps into them are undone) before the new code runs, whether or not the program issues the RISC-V FENCE.I instruction. The next phase boots Linux.
+- **Now:** Phases 0–8 are complete: the toolchain, CI, the decoder and disassembler, the reference interpreter with Linux user-mode emulation, a JIT (`bridgev run --engine jit program.elf`) with a hand-written x86-64 encoder, a W^X code buffer, block chaining, an inline jump cache, an IR optimizer and register allocator, lockstep checking, a random-block fuzzer, and Milestone A: reproducible CoreMark and Dhrystone builds, a benchmark harness comparing the interpreter, every JIT level, QEMU and native code (`tools/bench.py`), a sampling profiler (`--profile-tbs`), and a one-command demo (`tools/demo-milestone-a.sh`), plus (Phase 6) inline floating point with an FP fuzzer and an FP benchmark. Phase 7 added privileged mode (M/S/U), Sv39 virtual memory and the inline software TLB. Phase 8 made self-modifying code safe: when a program writes to memory that holds code Bridge-V has already translated, exactly those translations are thrown away (and chained jumps into them are undone) before the new code runs, whether or not the program issues the RISC-V FENCE.I instruction. Phase 9 (Milestone B) boots an unmodified Linux kernel to a BusyBox shell. It adds a timer, an interrupt controller, a serial port, a power-off device, the firmware interface (SBI) and a generated devicetree. The whole boot is also checked instruction block by instruction block against the interpreter. Next come the stretch goals (Phase 10).
 - **Milestone A (required):** CoreMark and Dhrystone run under both the interpreter and the JIT, with a printed speedup table.
-- **Milestone B (stretch):** Linux 6.6 boots to a BusyBox shell.
+- **Milestone B (stretch):** Linux boots to a BusyBox shell. **Done**, with Linux 6.8.
 - **Planned usage:**
   ```
   bridgev run   [--engine=interp|jit|lockstep] [--stats] program.elf [args]
-  bridgev boot  --kernel Image [--initrd rootfs.cpio] [--ram 512M]
+  bridgev boot  --kernel Image [--initrd rootfs.cpio] [--ram 512M]   # tools/fetch-guest-images.sh gets both
   bridgev disasm program.elf
   bridgev bench coremark
   ```
