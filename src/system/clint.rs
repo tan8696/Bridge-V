@@ -6,12 +6,14 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::plic::MAX_HARTS;
 use crate::mem::phys::Mmio;
 
+/// Per hart (Phase 10 SMP: msip @ 4·h, mtimecmp @ 0x4000 + 8·h).
 #[derive(Debug)]
 pub struct ClintState {
-    pub msip: bool,
-    pub mtimecmp: u64,
+    pub msip: [bool; MAX_HARTS],
+    pub mtimecmp: [u64; MAX_HARTS],
 }
 
 pub struct Clint {
@@ -24,8 +26,8 @@ impl Clint {
     pub fn new(mtime: Arc<AtomicU64>) -> Self {
         Clint {
             state: Arc::new(Mutex::new(ClintState {
-                msip: false,
-                mtimecmp: u64::MAX,
+                msip: [false; MAX_HARTS],
+                mtimecmp: [u64::MAX; MAX_HARTS],
             })),
             mtime,
         }
@@ -49,10 +51,13 @@ impl Mmio for Clint {
 
     fn read(&mut self, off: u64, size: u64) -> u64 {
         let s = self.state.lock().unwrap();
-        let word = match off & !7 {
-            0x0 => s.msip as u64,
-            0x4000 => s.mtimecmp,
-            0xbff8 => self.mtime.load(Ordering::Relaxed),
+        let h = |base: u64, stride: u64| ((off - base) / stride) as usize;
+        let word = match off {
+            0..0x4000 if h(0, 4) < MAX_HARTS => {
+                (s.msip[h(0, 4)] as u64) << (8 * (off & 4)) // msip words are 4 bytes
+            }
+            0x4000..0xbff8 if h(0x4000, 8) < MAX_HARTS => s.mtimecmp[h(0x4000, 8)],
+            0xbff8..0xc000 => self.mtime.load(Ordering::Relaxed),
             _ => 0,
         };
         let v = word >> (8 * (off & 7));
@@ -65,9 +70,14 @@ impl Mmio for Clint {
 
     fn write(&mut self, off: u64, size: u64, val: u64) {
         let mut s = self.state.lock().unwrap();
-        match off & !7 {
-            0x0 if off == 0 => s.msip = val & 1 != 0,
-            0x4000 => s.mtimecmp = merge(s.mtimecmp, off, size, val),
+        match off {
+            0..0x4000 if off.is_multiple_of(4) && ((off / 4) as usize) < MAX_HARTS => {
+                s.msip[(off / 4) as usize] = val & 1 != 0
+            }
+            0x4000..0xbff8 if (((off - 0x4000) / 8) as usize) < MAX_HARTS => {
+                let h = ((off - 0x4000) / 8) as usize;
+                s.mtimecmp[h] = merge(s.mtimecmp[h], off, size, val);
+            }
             _ => {} // mtime is read-only here (writes ignored)
         }
     }
@@ -92,9 +102,9 @@ mod tests {
         c.write(0xbff8, 8, 0); // mtime is not writable through the CLINT
         assert_eq!(c.read(0xbff8, 8), 0x1122_3344_5566_7788);
         c.write(0, 4, 1);
-        assert!(c.state.lock().unwrap().msip);
+        assert!(c.state.lock().unwrap().msip[0]);
         assert_eq!(c.read(0, 4), 1);
         c.write(0, 4, 2); // only bit 0 is implemented
-        assert!(!c.state.lock().unwrap().msip);
+        assert!(!c.state.lock().unwrap().msip[0]);
     }
 }

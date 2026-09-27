@@ -744,10 +744,10 @@ Pick items in this order, as budget allows. Each gets its own mini-report (`phas
 | Dynamic ELF | Load PT_INTERP (`ld-linux-riscv64-lp64d.so.1`) from a sysroot (`-L` flag like qemu) | Dynamically linked hello runs. **Done** (`phase-10-dynamic-elf.md`, D57): every C test program as a dynamic PIE |
 | Guest signals | rt_sigframe setup and rt_sigreturn; SIGSEGV delivery to guest handlers | Signal test programs pass. **Done** (`phase-10-signals.md`, D56): synchronous and self-directed signals |
 | virtio-blk | virtio-mmio transport and a block device backed by a file | Linux mounts an ext2 image. **Done** (`phase-10-virtio-blk.md`, D58) |
-| Return-address stack | Predict `ret` targets via a shadow stack in `CpuState` | Measurable speedup on call-heavy code |
-| Superblocks/traces | Hot-path trace formation across TB boundaries | Measurable speedup |
+| Return-address stack | Predict `ret` targets via a shadow stack in `CpuState` | Measurable speedup on call-heavy code. **Not pursued** (`phase-10-not-pursued.md`): a software RAS saves only the hash; host `call`/`ret` conflicts with §8.3 |
+| Superblocks/traces | Hot-path trace formation across TB boundaries | Measurable speedup. **Not pursued** (`phase-10-not-pursued.md`, D45's evidence) |
 | GDB stub | Remote serial protocol, interpreter-based single step | `gdb-multiarch` can break and step. **Done** (`phase-10-gdb-stub.md`, D59) |
-| SMP guest | Multiple harts, IPIs, per-hart TLBs | Linux boots with 2+ harts |
+| SMP guest | Multiple harts, IPIs, per-hart TLBs | Linux boots with 2+ harts. **Done, serialized** (`phase-10-smp.md`, D60): `--smp N`, built-in SBI and OpenSBI |
 
 ---
 

@@ -67,6 +67,9 @@ pub struct DirectMem {
     /// Count of code-page writes ever reported (Phase 10): a guest thread whose engine did not
     /// see a write (another thread made it) flushes its translations.
     pub smc_epoch: u64,
+    /// Every code-page write, in order (system-mode SMP, Phase 10): each hart's engine is
+    /// given the pages written since it last ran. Trimmed by the machine.
+    pub smc_log: Vec<u64>,
 }
 
 /// One device access (`val` = the value read or written).
@@ -172,6 +175,7 @@ impl DirectMem {
             smc_pages: Vec::new(),
             mmio_log: None,
             smc_epoch: 0,
+            smc_log: Vec::new(),
         })
     }
 
@@ -492,6 +496,7 @@ impl DirectMem {
         }
         self.smc_pages.push(page * PAGE_SIZE);
         self.smc_epoch += 1;
+        self.smc_log.push(page * PAGE_SIZE);
     }
 
     /// A write to `[addr, addr+len)` is about to happen (range already checked).

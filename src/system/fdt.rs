@@ -163,11 +163,16 @@ pub struct VirtConfig {
     pub sv48: bool,
     /// A virtio-blk device at `VIRTIO_BASE` (Phase 10).
     pub virtio_blk: bool,
+    /// Number of harts (Phase 10 SMP), 1..=`MAX_HARTS`.
+    pub harts: usize,
 }
 
-const PH_INTC: u32 = 1;
 const PH_PLIC: u32 = 2;
 const PH_TEST: u32 = 3;
+/// Phandle of hart h's local interrupt controller.
+fn ph_intc(h: usize) -> u32 {
+    0x10 + h as u32
+}
 
 /// The devicetree of Bridge-V's `virt`-compatible machine (§20.3): one hart (rv64imafdc,
 /// Sv39), RAM, CLINT, PLIC, one NS16550A UART on PLIC source 10, the SiFive test finisher with
@@ -198,25 +203,27 @@ pub fn virt_dtb(c: &VirtConfig) -> Vec<u8> {
     f.prop_u32("#address-cells", 1);
     f.prop_u32("#size-cells", 0);
     f.prop_u32("timebase-frequency", 10_000_000);
-    f.begin("cpu@0");
-    f.prop_str("device_type", "cpu");
-    f.prop_u32("reg", 0);
-    f.prop_str("status", "okay");
-    f.prop_str("compatible", "riscv");
-    f.prop_str("riscv,isa", "rv64imafdc_zicntr_zicsr_zifencei");
-    f.prop_str("riscv,isa-base", "rv64i");
-    f.prop_strs(
-        "riscv,isa-extensions",
-        &["i", "m", "a", "f", "d", "c", "zicntr", "zicsr", "zifencei"],
-    );
-    f.prop_str("mmu-type", if c.sv48 { "riscv,sv48" } else { "riscv,sv39" });
-    f.begin("interrupt-controller");
-    f.prop_u32("#interrupt-cells", 1);
-    f.prop_empty("interrupt-controller");
-    f.prop_str("compatible", "riscv,cpu-intc");
-    f.prop_u32("phandle", PH_INTC);
-    f.end();
-    f.end();
+    for h in 0..c.harts.max(1) {
+        f.begin(&format!("cpu@{h}"));
+        f.prop_str("device_type", "cpu");
+        f.prop_u32("reg", h as u32);
+        f.prop_str("status", "okay");
+        f.prop_str("compatible", "riscv");
+        f.prop_str("riscv,isa", "rv64imafdc_zicntr_zicsr_zifencei");
+        f.prop_str("riscv,isa-base", "rv64i");
+        f.prop_strs(
+            "riscv,isa-extensions",
+            &["i", "m", "a", "f", "d", "c", "zicntr", "zicsr", "zifencei"],
+        );
+        f.prop_str("mmu-type", if c.sv48 { "riscv,sv48" } else { "riscv,sv39" });
+        f.begin("interrupt-controller");
+        f.prop_u32("#interrupt-cells", 1);
+        f.prop_empty("interrupt-controller");
+        f.prop_str("compatible", "riscv,cpu-intc");
+        f.prop_u32("phandle", ph_intc(h));
+        f.end();
+        f.end();
+    }
     f.end();
 
     f.begin("soc");
@@ -228,7 +235,12 @@ pub fn virt_dtb(c: &VirtConfig) -> Vec<u8> {
     f.begin(&format!("clint@{CLINT_BASE:x}"));
     f.prop_strs("compatible", &["sifive,clint0", "riscv,clint0"]);
     f.prop_reg(CLINT_BASE, 0x10000);
-    f.prop_cells("interrupts-extended", &[PH_INTC, 3, PH_INTC, 7]);
+    let per_hart = |m: u32, s: u32| -> Vec<u32> {
+        (0..c.harts.max(1))
+            .flat_map(|h| [ph_intc(h), m, ph_intc(h), s])
+            .collect()
+    };
+    f.prop_cells("interrupts-extended", &per_hart(3, 7)); // MSI, MTI
     f.end();
 
     f.begin(&format!("plic@{PLIC_BASE:x}"));
@@ -238,7 +250,7 @@ pub fn virt_dtb(c: &VirtConfig) -> Vec<u8> {
     f.prop_empty("interrupt-controller");
     f.prop_reg(PLIC_BASE, 0x60_0000);
     f.prop_u32("riscv,ndev", super::plic::NDEV as u32);
-    f.prop_cells("interrupts-extended", &[PH_INTC, 11, PH_INTC, 9]);
+    f.prop_cells("interrupts-extended", &per_hart(11, 9)); // MEI, SEI
     f.prop_u32("phandle", PH_PLIC);
     f.end();
 
@@ -296,6 +308,7 @@ mod tests {
             initrd: Some((0x8800_0000, 0x8810_0000)),
             sv48: false,
             virtio_blk: true,
+            harts: 2,
         });
         let be = |o: usize| u32::from_be_bytes(dtb[o..o + 4].try_into().unwrap());
         assert_eq!(be(0), FDT_MAGIC);
@@ -334,6 +347,7 @@ mod tests {
             initrd: Some((0x9f00_0000, 0x9f40_0000)),
             sv48: false,
             virtio_blk: true,
+            harts: 2,
         });
         let path = std::env::temp_dir().join(format!("bridgev-{}.dtb", std::process::id()));
         std::fs::write(&path, &dtb).unwrap();
@@ -365,6 +379,7 @@ mod tests {
             "linux,initrd-start = <0x00 0x9f000000>;",
             "stdout-path = \"/soc/serial@10000000\";",
             "compatible = \"virtio,mmio\";",
+            "cpu@1",
         ] {
             assert!(dts.contains(want), "missing {want:?} in\n{dts}");
         }

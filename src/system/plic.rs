@@ -1,5 +1,5 @@
-//! PLIC (CLAUDE.md §20.1, P9.1): `riscv,ndev = 53` level-triggered sources, two contexts
-//! (0 = hart 0 M-mode, 1 = hart 0 S-mode). Registers: priority @ 4·src, pending @ 0x1000,
+//! PLIC (CLAUDE.md §20.1, P9.1): `riscv,ndev = 53` level-triggered sources, two contexts per
+//! hart (2h = hart h M-mode, 2h + 1 = hart h S-mode; up to `MAX_HARTS`, Phase 10 SMP). Registers: priority @ 4·src, pending @ 0x1000,
 //! enable @ 0x2000 + 0x80·ctx, threshold @ 0x200000 + 0x1000·ctx, claim/complete @ +4.
 //! A source is pending while its line is high and it is not being serviced (claimed and not
 //! yet completed). A context's interrupt output is high when a pending, enabled source has a
@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use crate::mem::phys::Mmio;
 
 pub const NDEV: usize = 53;
-const NCTX: usize = 2;
+/// Harts the machine model supports (SMP, Phase 10).
+pub const MAX_HARTS: usize = 8;
+const NCTX: usize = 2 * MAX_HARTS;
 
 #[derive(Debug)]
 pub struct PlicState {
@@ -61,9 +63,12 @@ impl PlicState {
         best.map(|(_, s)| s)
     }
 
-    /// Interrupt outputs: (M-mode context, S-mode context).
-    pub fn outputs(&self) -> (bool, bool) {
-        (self.best(0).is_some(), self.best(1).is_some())
+    /// Interrupt outputs of `hart`: (M-mode context, S-mode context).
+    pub fn outputs(&self, hart: usize) -> (bool, bool) {
+        (
+            self.best(2 * hart).is_some(),
+            self.best(2 * hart + 1).is_some(),
+        )
     }
 }
 
@@ -106,7 +111,7 @@ impl Mmio for Plic {
                 }
                 bits
             }
-            0x2000..0x2100 => {
+            0x2000..0x2800 => {
                 let (ctx, w) = ((off - 0x2000) / 0x80, (off - 0x2000) % 0x80 / 4);
                 if ctx < NCTX && w < 2 {
                     (s.enable[ctx] >> (32 * w)) & 0xffff_ffff
@@ -147,7 +152,7 @@ impl Mmio for Plic {
                     *p = val32 & 7;
                 }
             }
-            0x2000..0x2100 => {
+            0x2000..0x2800 => {
                 let (ctx, w) = ((off - 0x2000) / 0x80, (off - 0x2000) % 0x80 / 4);
                 if ctx < NCTX && w < 2 {
                     let sh = 32 * w;
@@ -188,17 +193,23 @@ mod tests {
         p.write(4 * 3, 4, 2); // priority(3) = 2
         p.write(0x2080, 4, 1 << 10 | 1 << 3); // context 1 enables 3 and 10
         p.state.lock().unwrap().set_level(10, true);
-        assert_eq!(p.state.lock().unwrap().outputs(), (false, true));
+        assert_eq!(p.state.lock().unwrap().outputs(0), (false, true));
         assert_eq!(p.read(0x1000, 4), 1 << 10);
         p.state.lock().unwrap().set_level(3, true);
         assert_eq!(p.read(0x20_1004, 4), 3, "highest priority first");
         assert_eq!(p.read(0x20_1004, 4), 10);
         assert_eq!(p.read(0x20_1004, 4), 0, "both in service");
-        assert_eq!(p.state.lock().unwrap().outputs(), (false, false));
+        assert_eq!(p.state.lock().unwrap().outputs(0), (false, false));
         p.write(0x20_1004, 4, 10); // complete: the line is still high, so pending again
-        assert_eq!(p.state.lock().unwrap().outputs(), (false, true));
+        assert_eq!(p.state.lock().unwrap().outputs(0), (false, true));
         p.write(0x20_1000, 4, 1); // threshold 1 masks priority 1
-        assert_eq!(p.state.lock().unwrap().outputs(), (false, false));
+        assert_eq!(p.state.lock().unwrap().outputs(0), (false, false));
         assert_eq!(p.read(0x20_1004, 4), 0);
+        // Hart 2's S context (5): its own enables, threshold and claim register (SMP, Phase
+        // 10). Source 10 is pending again (completed, line still high); 3 is still in service.
+        p.write(0x2000 + 0x80 * 5, 4, 1 << 10 | 1 << 3);
+        assert_eq!(p.state.lock().unwrap().outputs(2), (false, true));
+        assert_eq!(p.state.lock().unwrap().outputs(1), (false, false));
+        assert_eq!(p.read(0x20_0000 + 0x1000 * 5 + 4, 4), 10);
     }
 }

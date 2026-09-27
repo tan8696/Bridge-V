@@ -20,12 +20,13 @@ use crate::cpu::trap::prv;
 use crate::interp::{Env, Stop};
 use crate::jit::{EngineKind, JitOptions, make_engine};
 use crate::mem::direct::DirectMem;
-use crate::mem::{GuestVirt, prot};
+use crate::mem::{GuestVirt, prot, tlb};
 
 use super::clint::Clint;
 use super::fdt::{VirtConfig, virt_dtb};
+use super::plic::MAX_HARTS;
 use super::plic::Plic;
-use super::sbi::{self, SbiAction, SbiState};
+use super::sbi::{self, HartStatus, SbiAction, SbiState};
 use super::syscon::{Finish, Syscon};
 use super::uart16550::{Sink, Uart, UartState};
 use super::virtio_blk::{VIRTIO_BASE, VIRTIO_IRQ, VirtioBlk};
@@ -38,6 +39,7 @@ pub const UART_BASE: u64 = 0x1000_0000;
 /// PLIC source of the UART.
 pub const UART_IRQ: usize = 10;
 
+const MIP_SSIP: u64 = 1 << 1;
 const MIP_MSIP: u64 = 1 << 3;
 const MIP_STIP: u64 = 1 << 5;
 const MIP_MTIP: u64 = 1 << 7;
@@ -54,6 +56,8 @@ pub struct BootOptions {
     pub sv48: bool,
     /// Disk image for a virtio-blk device (`/dev/vda`), read-write (Phase 10).
     pub disk: Option<PathBuf>,
+    /// Number of harts (Phase 10 SMP, 1..=8).
+    pub harts: usize,
     pub initrd: Option<PathBuf>,
     /// Use this DTB instead of the generated one.
     pub dtb: Option<PathBuf>,
@@ -157,6 +161,7 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
             initrd,
             sv48: opts.sv48,
             virtio_blk: opts.disk.is_some(),
+            harts: opts.harts.clamp(1, MAX_HARTS),
         }),
     };
     if let Some(p) = &opts.dump_dtb {
@@ -211,50 +216,78 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
         None => None,
     };
 
-    let mut cpu = CpuState::new_machine(entry);
-    cpu.softmmu = 1;
-    cpu.x[10] = 0;
-    cpu.x[11] = dtb_addr;
-    match fw_info {
-        // Hart 0 in M-mode at the firmware, with reset CSR values: the firmware delegates.
-        Some(info) => {
-            cpu.pc = RAM_BASE;
-            cpu.x[12] = info;
+    // Harts (Phase 10 SMP): the first one boots; with the built-in SBI the others wait
+    // (stopped) for an HSM hart_start, with firmware they all enter it, as on QEMU.
+    let builtin_sbi = fw_info.is_none();
+    let n = opts.harts.clamp(1, MAX_HARTS);
+    let template = {
+        let mut c = CpuState::new_machine(entry);
+        c.softmmu = 1;
+        c.csr.deterministic_time = opts.deterministic;
+        c.csr.wfi_idle = true;
+        c.csr.sv48 = opts.sv48;
+        if builtin_sbi {
+            c.csr.medeleg = 0xb3ff & !(1 << 9); // everything delegable except ecall from S
+            c.csr.mideleg = 0x222; // SSI, STI, SEI
+            c.csr.mcounteren = 0x7;
         }
-        // Hart 0 in S-mode at the kernel entry (§20.2).
-        None => {
-            cpu.prv = prv::S;
-            cpu.csr.medeleg = 0xb3ff & !(1 << 9); // everything delegable except ecall from S
-            cpu.csr.mideleg = 0x222; // SSI, STI, SEI
-            cpu.csr.mcounteren = 0x7;
-        }
+        c
+    };
+    let mut harts = Vec::with_capacity(n);
+    for h in 0..n {
+        let mut cpu = template.clone();
+        cpu.csr.mhartid = h as u64;
+        cpu.x[10] = h as u64;
+        cpu.x[11] = dtb_addr;
+        let status = match fw_info {
+            // All harts in M-mode at the firmware, with reset CSR values: it delegates.
+            Some(info) => {
+                cpu.pc = RAM_BASE;
+                cpu.x[12] = info;
+                HartStatus::Started
+            }
+            // Hart 0 in S-mode at the kernel entry (§20.2).
+            None => {
+                cpu.prv = prv::S;
+                if h == 0 {
+                    HartStatus::Started
+                } else {
+                    HartStatus::Stopped
+                }
+            }
+        };
+        harts.push(Hart {
+            cpu,
+            engine: make_engine(opts.engine, &opts.jit)?,
+            status,
+            waiting: false,
+            smc_seen: 0,
+        });
     }
-    cpu.csr.deterministic_time = opts.deterministic;
-    cpu.csr.wfi_idle = true;
-    cpu.csr.sv48 = opts.sv48;
 
     // With firmware, S-mode ECALLs trap to it; otherwise the built-in SBI serves them.
-    let builtin_sbi = fw_info.is_none();
     let env = Env {
         user_mode: false,
         tohost: None,
         trace: false,
         sbi: builtin_sbi,
     };
-    let mut engine = make_engine(opts.engine, &opts.jit)?;
     let mut st = SbiState {
-        stimecmp: u64::MAX,
+        stimecmp: [u64::MAX; MAX_HARTS],
         console: opts.console.clone(),
         calls: 0,
     };
     let limit = opts.max_insns.unwrap_or(u64::MAX);
     let (mut idle, mut wfis) = (std::time::Duration::ZERO, 0);
+    let mut cur = 0;
     let exit = loop {
-        if cpu.icount >= limit {
+        let total: u64 = harts.iter().map(|h| h.cpu.icount).sum();
+        if total >= limit {
             break BootExit::InstructionLimit;
         }
-        // Devices → mip.
-        let now = cpu.time();
+        // Devices → mip of every hart. Hart 0's clock is the machine's (all harts share its
+        // time origin).
+        let now = harts[0].cpu.time();
         mtime.store(now, Ordering::Relaxed);
         let uart_irq = uart_state.lock().unwrap().irq();
         // Serve the disk requests the driver queued during the last slice.
@@ -262,91 +295,180 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
             b.process(&mut mem);
             b.state.lock().unwrap().irq()
         });
-        let (meip, seip) = {
+        {
             let mut p = plic_state.lock().unwrap();
             p.set_level(UART_IRQ, uart_irq);
             p.set_level(VIRTIO_IRQ, blk_irq);
-            p.outputs()
-        };
-        let (msip, mtip) = {
             let c = clint_state.lock().unwrap();
-            (c.msip, now >= c.mtimecmp)
-        };
-        // STIP is the built-in SBI's timer; with firmware it is written by M-mode software.
-        let sw_stip = if builtin_sbi {
-            0
-        } else {
-            cpu.csr.mip & MIP_STIP
-        };
-        let mut mip =
-            cpu.csr.mip & !(MIP_MSIP | MIP_MTIP | MIP_MEIP | MIP_SEIP | MIP_STIP) | sw_stip;
-        for (on, bit) in [
-            (msip, MIP_MSIP),
-            (mtip, MIP_MTIP),
-            (meip, MIP_MEIP),
-            (seip, MIP_SEIP),
-            (builtin_sbi && now >= st.stimecmp, MIP_STIP),
-        ] {
-            if on {
-                mip |= bit;
+            for (h, hart) in harts.iter_mut().enumerate() {
+                let (meip, seip) = p.outputs(h);
+                let cpu = &mut hart.cpu;
+                // STIP is the built-in SBI's timer; with firmware M-mode software writes it.
+                let sw_stip = if builtin_sbi {
+                    0
+                } else {
+                    cpu.csr.mip & MIP_STIP
+                };
+                let mut mip =
+                    cpu.csr.mip & !(MIP_MSIP | MIP_MTIP | MIP_MEIP | MIP_SEIP | MIP_STIP) | sw_stip;
+                for (on, bit) in [
+                    (c.msip[h], MIP_MSIP),
+                    (now >= c.mtimecmp[h], MIP_MTIP),
+                    (meip, MIP_MEIP),
+                    (seip, MIP_SEIP),
+                    (builtin_sbi && now >= st.stimecmp[h], MIP_STIP),
+                ] {
+                    if on {
+                        mip |= bit;
+                    }
+                }
+                cpu.csr.mip = mip;
+                // WFI ends when an interrupt is pending locally, enabled or not globally.
+                if hart.waiting && mip & cpu.csr.mie != 0 {
+                    hart.waiting = false;
+                }
             }
         }
-        cpu.csr.mip = mip;
 
-        let left = (limit - cpu.icount).min(opts.slice);
-        match engine.run(&mut cpu, &mut mem, &env, left) {
+        // The next runnable hart, round-robin.
+        let runnable = |h: &Hart| h.status == HartStatus::Started && !h.waiting;
+        let next = (1..=n)
+            .map(|k| (cur + k) % n)
+            .find(|&h| runnable(&harts[h]));
+        let Some(h) = next else {
+            // Every hart waits in WFI: idle the host until the next timer deadline, console
+            // input, a disk request or a finish request (§15).
+            let deadline = {
+                let c = clint_state.lock().unwrap();
+                (0..n)
+                    .filter(|&h| harts[h].status == HartStatus::Started)
+                    .map(|h| c.mtimecmp[h].min(st.stimecmp[h]))
+                    .min()
+                    .unwrap_or(u64::MAX)
+            };
+            let t0 = std::time::Instant::now();
+            // Firmware parks harts in WFI after writing the test finisher (poweroff): never
+            // sleep past a pending finish request.
+            while finish.lock().unwrap().is_none() {
+                let now = harts[0].cpu.time();
+                let disk = blk
+                    .as_ref()
+                    .is_some_and(|b| b.state.lock().unwrap().pending());
+                if now >= deadline || disk || !uart_state.lock().unwrap().rx.is_empty() {
+                    break;
+                }
+                // `time` ticks at 10 MHz; poll input at least every millisecond.
+                let ns = (deadline - now).saturating_mul(100).min(1_000_000);
+                std::thread::sleep(std::time::Duration::from_nanos(ns));
+            }
+            idle += t0.elapsed();
+            if let Some(f) = finish.lock().unwrap().take() {
+                break f.into();
+            }
+            // Deadlines passed or input arrived: the loop top raises the interrupts, which
+            // end the harts' WFI.
+            continue;
+        };
+        if h != cur && n > 1 {
+            // Another hart may have stored to the reserved address meanwhile.
+            harts[h].cpu.res_valid = 0;
+        }
+        cur = h;
+        let hart = &mut harts[h];
+        // Code other harts overwrote since this hart's engine last ran (D49 across harts).
+        if n > 1 {
+            let seen = hart.smc_seen.min(mem.smc_log.len());
+            let fresh: Vec<u64> = mem.smc_log[seen..].to_vec();
+            mem.smc_pages.extend(fresh);
+        }
+        let left = (limit - total).min(opts.slice);
+        let stop = hart.engine.run(&mut hart.cpu, &mut mem, &env, left);
+        hart.smc_seen = mem.smc_log.len();
+        if mem.smc_log.len() > 4096 {
+            let low = harts.iter().map(|h| h.smc_seen).min().unwrap_or(0);
+            mem.smc_log.drain(..low);
+            for hart in harts.iter_mut() {
+                hart.smc_seen -= low;
+            }
+        }
+        match stop {
             Stop::Limit => {}
             Stop::Ecall => {
+                let status: Vec<HartStatus> = harts.iter().map(|h| h.status).collect();
                 let action = {
                     let mut u = uart_state.lock().unwrap();
-                    sbi::call(&mut cpu, &mut mem, engine.as_mut(), &mut st, &mut u.rx)
+                    sbi::call(&mut harts[h].cpu, h, &status, &mut mem, &mut st, &mut u.rx)
                 };
+                let cpu = &mut harts[h].cpu;
                 cpu.pc += 4; // ECALL has no compressed form
                 cpu.icount += 1;
+                let each = |mask: u64| (0..n).filter(move |k| mask >> k & 1 == 1);
                 match action {
                     SbiAction::None => {}
                     SbiAction::Shutdown(false) => break BootExit::PowerOff,
                     SbiAction::Shutdown(true) => break BootExit::Failure(1),
                     SbiAction::Reset => break BootExit::Reset,
+                    SbiAction::Ipi(mask) => {
+                        for k in each(mask) {
+                            harts[k].cpu.csr.mip |= MIP_SSIP;
+                        }
+                    }
+                    SbiAction::RemoteFenceI(mask) => {
+                        for k in each(mask) {
+                            harts[k].engine.fence_i();
+                        }
+                    }
+                    SbiAction::RemoteSfence(mask) => {
+                        for k in each(mask) {
+                            tlb::flush_all(&mut harts[k].cpu);
+                        }
+                    }
+                    SbiAction::HartStart {
+                        hart: k,
+                        addr,
+                        opaque,
+                    } => {
+                        // SBI HSM: S-mode at `addr`, a0 = hart id, a1 = opaque, satp = 0,
+                        // interrupts off.
+                        let mut cpu = template.clone();
+                        cpu.csr.time_origin = harts[0].cpu.csr.time_origin;
+                        cpu.csr.mhartid = k as u64;
+                        cpu.prv = prv::S;
+                        cpu.pc = addr;
+                        cpu.x[10] = k as u64;
+                        cpu.x[11] = opaque;
+                        harts[k].cpu = cpu;
+                        harts[k].status = HartStatus::Started;
+                        harts[k].waiting = false;
+                    }
+                    SbiAction::HartStop => harts[h].status = HartStatus::Stopped,
                 }
             }
             Stop::Wfi => {
-                // Idle the host until the next timer deadline or console input (§15). An
-                // interrupt that became pending during the slice is taken at the loop top.
                 wfis += 1;
-                let deadline = clint_state.lock().unwrap().mtimecmp.min(st.stimecmp);
-                let t0 = std::time::Instant::now();
-                // Firmware parks the hart in WFI after writing the test finisher (poweroff):
-                // never sleep past a pending finish request.
-                while finish.lock().unwrap().is_none() {
-                    let now = cpu.time();
-                    let disk = blk
-                        .as_ref()
-                        .is_some_and(|b| b.state.lock().unwrap().pending());
-                    if now >= deadline || disk || !uart_state.lock().unwrap().rx.is_empty() {
-                        break;
-                    }
-                    // `time` ticks at 10 MHz; poll input at least every millisecond.
-                    let ns = (deadline - now).saturating_mul(100).min(1_000_000);
-                    std::thread::sleep(std::time::Duration::from_nanos(ns));
-                }
-                idle += t0.elapsed();
+                harts[h].waiting = true;
             }
             Stop::Diverged => bail!("lockstep divergence (see above)"),
             other => bail!("unexpected stop in system mode: {other:?}"),
         }
-        match finish.lock().unwrap().take() {
-            Some(Finish::Pass) => break BootExit::PowerOff,
-            Some(Finish::Fail(c)) => break BootExit::Failure(c),
-            Some(Finish::Reset) => break BootExit::Reset,
-            None => {}
+        if let Some(f) = finish.lock().unwrap().take() {
+            break f.into();
         }
     };
+    let icount = harts.iter().map(|h| h.cpu.icount).sum();
+    let per_hart = if n > 1 {
+        let counts: Vec<String> = harts.iter().map(|h| h.cpu.icount.to_string()).collect();
+        format!("\nharts: {n}, instructions per hart {}", counts.join(" / "))
+    } else {
+        String::new()
+    };
+    let tlb_fills: u64 = harts.iter().map(|h| h.cpu.tlb_fills).sum();
     Ok(BootRun {
         exit,
-        icount: cpu.icount,
-        engine_stats: engine.stats()
-            + &format!("\nsoftmmu: {} TLB fills", cpu.tlb_fills)
+        icount,
+        engine_stats: harts[0].engine.stats()
+            + &format!("\nsoftmmu: {tlb_fills} TLB fills")
+            + &per_hart
             + &blk.map_or(String::new(), |b| {
                 let s = b.state.lock().unwrap();
                 format!(
@@ -358,6 +480,27 @@ pub fn boot(opts: &BootOptions, uart: Uart) -> Result<BootRun> {
         idle,
         wfis,
     })
+}
+
+/// One hart of the machine (Phase 10 SMP).
+struct Hart {
+    cpu: Box<CpuState>,
+    engine: Box<dyn crate::interp::Engine>,
+    status: HartStatus,
+    /// Stopped in WFI with nothing pending: skipped until an interrupt is pending.
+    waiting: bool,
+    /// Length of `DirectMem::smc_log` when this hart's engine last ran.
+    smc_seen: usize,
+}
+
+impl From<Finish> for BootExit {
+    fn from(f: Finish) -> Self {
+        match f {
+            Finish::Pass => BootExit::PowerOff,
+            Finish::Fail(c) => BootExit::Failure(c),
+            Finish::Reset => BootExit::Reset,
+        }
+    }
 }
 
 /// Build an initramfs (`newc` cpio) holding BusyBox and an `/init` script, without needing

@@ -5,9 +5,8 @@
 use std::collections::VecDeque;
 
 use crate::cpu::state::CpuState;
-use crate::interp::Engine;
 use crate::mem::direct::DirectMem;
-use crate::mem::{GuestVirt, prot, tlb};
+use crate::mem::{GuestVirt, prot};
 
 use super::uart16550::Sink;
 
@@ -28,19 +27,42 @@ const ERR_ALREADY_AVAILABLE: i64 = -6;
 const MIP_SSIP: u64 = 1 << 1;
 const MIP_STIP: u64 = 1 << 5;
 
-/// What an SBI call asks the machine to do besides returning.
+/// What an SBI call asks the machine to do besides returning. Hart sets are bit masks over
+/// hart ids (Phase 10 SMP); the machine applies them, the calling hart included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SbiAction {
     None,
     /// Shut down: `true` = the guest reported a failure.
     Shutdown(bool),
     Reset,
+    /// Set SSIP on these harts.
+    Ipi(u64),
+    /// FENCE.I on these harts.
+    RemoteFenceI(u64),
+    /// SFENCE.VMA (all addresses) on these harts.
+    RemoteSfence(u64),
+    /// HSM hart_start: start `hart` in S-mode at `addr` with a0 = hart, a1 = `opaque`.
+    HartStart {
+        hart: usize,
+        addr: u64,
+        opaque: u64,
+    },
+    /// HSM hart_stop of the calling hart (the call does not return).
+    HartStop,
+}
+
+/// HSM state of a hart (SBI spec §9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HartStatus {
+    Started = 0,
+    Stopped = 1,
+    StartPending = 2,
 }
 
 /// Firmware state the SBI needs.
 pub struct SbiState {
-    /// S-mode timer deadline (`time` units); `u64::MAX` = disarmed.
-    pub stimecmp: u64,
+    /// S-mode timer deadline per hart (`time` units); `u64::MAX` = disarmed.
+    pub stimecmp: [u64; super::plic::MAX_HARTS],
     pub console: Sink,
     /// Calls served, by extension (statistics).
     pub calls: u64,
@@ -58,11 +80,29 @@ fn write_console(sink: &Sink, bytes: &[u8]) {
     }
 }
 
-/// Serve the SBI call in `cpu`'s registers. `rx` is the console input queue.
+/// The harts named by an SBI hart mask (`mask` relative to `base`; `base` = -1: all harts).
+fn hart_set(mask: u64, base: u64, harts: usize) -> u64 {
+    let all = if harts >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << harts) - 1
+    };
+    if base == u64::MAX {
+        all
+    } else if base >= 64 {
+        0
+    } else {
+        (mask << base) & all
+    }
+}
+
+/// Serve the SBI call in `cpu`'s registers, made by hart `hart` of a machine whose harts are in
+/// `status`. `rx` is the console input queue.
 pub fn call(
     cpu: &mut CpuState,
+    hart: usize,
+    status: &[HartStatus],
     mem: &mut DirectMem,
-    engine: &mut dyn Engine,
     st: &mut SbiState,
     rx: &mut VecDeque<u8>,
 ) -> SbiAction {
@@ -71,17 +111,20 @@ pub fn call(
     let a = [
         cpu.x[10], cpu.x[11], cpu.x[12], cpu.x[13], cpu.x[14], cpu.x[15],
     ];
+    let n = status.len();
+    let all = hart_set(0, u64::MAX, n);
     let mut action = SbiAction::None;
     let ret = |cpu: &mut CpuState, err: i64, val: u64| {
         cpu.x[10] = err as u64;
         cpu.x[11] = val;
     };
     let set_timer = |cpu: &mut CpuState, st: &mut SbiState, t: u64| {
-        st.stimecmp = t;
+        st.stimecmp[hart] = t;
         cpu.csr.mip &= !MIP_STIP;
     };
     match eid {
-        // Legacy extensions (v0.1): a0 only.
+        // Legacy extensions (v0.1): a0 only. Their hart masks are pointers into S-mode virtual
+        // memory; Linux uses the v0.2 extensions, so these act on every hart.
         0x00 => {
             set_timer(cpu, st, a[0]);
             cpu.x[10] = 0;
@@ -96,15 +139,15 @@ pub fn call(
             cpu.x[10] = 0;
         }
         0x04 => {
-            cpu.csr.mip |= MIP_SSIP; // single hart: any IPI targets us
+            action = SbiAction::Ipi(all);
             cpu.x[10] = 0;
         }
         0x05 => {
-            engine.fence_i();
+            action = SbiAction::RemoteFenceI(all);
             cpu.x[10] = 0;
         }
         0x06 | 0x07 => {
-            tlb::flush_all(cpu);
+            action = SbiAction::RemoteSfence(all);
             cpu.x[10] = 0;
         }
         0x08 => action = SbiAction::Shutdown(false),
@@ -127,28 +170,42 @@ pub fn call(
             ret(cpu, SUCCESS, 0)
         }
         EXT_IPI if fid == 0 => {
-            // hart_mask a0 relative to hart_mask_base a1 (u64::MAX = all harts).
-            if a[1] == u64::MAX || (a[1] == 0 && a[0] & 1 == 1) {
-                cpu.csr.mip |= MIP_SSIP;
-            }
+            action = SbiAction::Ipi(hart_set(a[0], a[1], n));
             ret(cpu, SUCCESS, 0)
         }
         EXT_RFENCE => match fid {
             0 => {
-                engine.fence_i();
+                action = SbiAction::RemoteFenceI(hart_set(a[0], a[1], n));
                 ret(cpu, SUCCESS, 0)
             }
             1..=6 => {
-                tlb::flush_all(cpu);
+                action = SbiAction::RemoteSfence(hart_set(a[0], a[1], n));
                 ret(cpu, SUCCESS, 0)
             }
             _ => ret(cpu, ERR_NOT_SUPPORTED, 0),
         },
         EXT_HSM => match fid {
-            0 => ret(cpu, ERR_ALREADY_AVAILABLE, 0), // hart_start: only hart 0, running
-            1 => ret(cpu, ERR_FAILED, 0),            // hart_stop of the only hart
-            2 if a[0] == 0 => ret(cpu, SUCCESS, 0),  // hart_get_status: STARTED
-            2 => ret(cpu, ERR_INVALID_PARAM, 0),
+            0 => {
+                let h = a[0] as usize;
+                match status.get(h) {
+                    None => ret(cpu, ERR_INVALID_PARAM, 0),
+                    Some(HartStatus::Stopped) => {
+                        action = SbiAction::HartStart {
+                            hart: h,
+                            addr: a[1],
+                            opaque: a[2],
+                        };
+                        ret(cpu, SUCCESS, 0)
+                    }
+                    Some(_) => ret(cpu, ERR_ALREADY_AVAILABLE, 0),
+                }
+            }
+            1 if n > 1 => action = SbiAction::HartStop,
+            1 => ret(cpu, ERR_FAILED, 0), // stopping the only hart
+            2 => match status.get(a[0] as usize) {
+                Some(&s) => ret(cpu, SUCCESS, s as u64),
+                None => ret(cpu, ERR_INVALID_PARAM, 0),
+            },
             _ => ret(cpu, ERR_NOT_SUPPORTED, 0),
         },
         EXT_SRST if fid == 0 => match a[0] {

@@ -232,6 +232,9 @@ enum Command {
         /// Disk image served as a virtio-blk device (/dev/vda), read-write.
         #[arg(long)]
         disk: Option<PathBuf>,
+        /// Number of harts (1-8); they run one at a time, round-robin per slice.
+        #[arg(long, default_value_t = 1)]
+        smp: usize,
         /// Virtual-memory modes offered to the guest (sv48 also allows Sv39).
         #[arg(long, value_enum, default_value = "sv39")]
         mmu: MmuArg,
@@ -501,6 +504,7 @@ fn main() -> ExitCode {
             kernel,
             firmware,
             disk,
+            smp,
             mmu,
             initrd,
             dtb,
@@ -534,6 +538,7 @@ fn main() -> ExitCode {
                 firmware,
                 sv48: mmu == MmuArg::Sv48,
                 disk,
+                harts: smp,
                 initrd,
                 dtb,
                 dump_dtb,

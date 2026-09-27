@@ -47,12 +47,31 @@ fn wait_for(out: &Arc<Mutex<Vec<u8>>>, from: usize, pat: &str, timeout: Duration
 const OPENSBI: &str = "/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin";
 
 fn boot_to_shell(engine: &str) {
-    boot_to_shell_with(engine, None, false, None);
+    boot_to_shell_with(&Boot {
+        engine,
+        ..Boot::default()
+    });
+}
+
+/// A machine configuration for `boot_to_shell_with` (Phase 10 options).
+#[derive(Default)]
+struct Boot<'a> {
+    engine: &'a str,
+    /// M-mode firmware instead of the built-in SBI.
+    firmware: Option<&'a str>,
+    /// Offer Sv48; /proc/cpuinfo must then show it.
+    sv48: bool,
+    /// A virtio-blk disk image with /hello.txt ("hello from the host").
+    disk: Option<&'a Path>,
+    /// Number of harts (0 = 1); /proc/cpuinfo must list them all.
+    harts: usize,
 }
 
 /// Boot with the built-in SBI, or with `firmware` in M-mode, and with Sv48 offered (Phase 10);
 /// /proc/cpuinfo must show the paging mode Linux chose.
-fn boot_to_shell_with(engine: &str, firmware: Option<&str>, sv48: bool, disk: Option<&Path>) {
+fn boot_to_shell_with(b: &Boot) {
+    let (engine, firmware, sv48, disk) = (b.engine, b.firmware, b.sv48, b.disk);
+    let harts = b.harts.max(1);
     let Some((kernel, initrd)) = images() else {
         return;
     };
@@ -75,6 +94,7 @@ fn boot_to_shell_with(engine: &str, firmware: Option<&str>, sv48: bool, disk: Op
                 .into_iter()
                 .flatten(),
         )
+        .args(["--smp", &harts.to_string()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -108,13 +128,11 @@ fn boot_to_shell_with(engine: &str, firmware: Option<&str>, sv48: bool, disk: Op
         *at = wait_for(&out, *at, "/ # ", limit);
     };
     cmd("uname -a", &["Linux", "riscv64"], &mut at);
+    // Matched in order: the last hart's block, then its ISA and MMU lines.
+    let last_cpu = format!("processor\t: {}", harts - 1);
     cmd(
         "cat /proc/cpuinfo",
-        &[
-            "processor",
-            "rv64imafdc",
-            if sv48 { "sv48" } else { "sv39" },
-        ],
+        &[&last_cpu, "rv64imafdc", if sv48 { "sv48" } else { "sv39" }],
         &mut at,
     );
     cmd("ls /", &["bin", "proc", "sys"], &mut at);
@@ -185,13 +203,21 @@ fn linux_boots_to_busybox_shell_lockstep() {
 #[test]
 #[ignore = "needs tools/fetch-guest-images.sh and QEMU's OpenSBI; slow"]
 fn linux_boots_via_opensbi_jit() {
-    boot_to_shell_with("jit", Some(OPENSBI), false, None);
+    boot_to_shell_with(&Boot {
+        engine: "jit",
+        firmware: Some(OPENSBI),
+        ..Boot::default()
+    });
 }
 
 #[test]
 #[ignore = "needs tools/fetch-guest-images.sh and QEMU's OpenSBI; slow"]
 fn linux_boots_via_opensbi_lockstep() {
-    boot_to_shell_with("lockstep", Some(OPENSBI), false, None);
+    boot_to_shell_with(&Boot {
+        engine: "lockstep",
+        firmware: Some(OPENSBI),
+        ..Boot::default()
+    });
 }
 
 /// Phase 10: the machine offers Sv48 (satp mode 9, `mmu-type = "riscv,sv48"`) and Linux uses
@@ -199,7 +225,11 @@ fn linux_boots_via_opensbi_lockstep() {
 #[test]
 #[ignore = "needs tools/fetch-guest-images.sh; slow"]
 fn linux_boots_with_sv48_jit() {
-    boot_to_shell_with("jit", None, true, None);
+    boot_to_shell_with(&Boot {
+        engine: "jit",
+        sv48: true,
+        ..Boot::default()
+    });
 }
 
 /// Phase 10: a virtio-blk disk (`--disk`) holding an ext2 file system made on the host: the
@@ -225,7 +255,11 @@ fn linux_mounts_a_virtio_disk_jit() {
         eprintln!("skipping: mke2fs (e2fsprogs) not available");
         return;
     }
-    boot_to_shell_with("jit", None, false, Some(&img));
+    boot_to_shell_with(&Boot {
+        engine: "jit",
+        disk: Some(&img),
+        ..Boot::default()
+    });
     let out = Command::new("debugfs")
         .args(["-R", "cat /new.txt"])
         .arg(&img)
@@ -236,4 +270,28 @@ fn linux_mounts_a_virtio_disk_jit() {
         "written by the guest\n"
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Phase 10: SMP. Linux brings up 4 harts (built-in SBI HSM hart_start), and /proc/cpuinfo
+/// lists them all.
+#[test]
+#[ignore = "needs tools/fetch-guest-images.sh; slow"]
+fn linux_boots_with_4_harts_jit() {
+    boot_to_shell_with(&Boot {
+        engine: "jit",
+        harts: 4,
+        ..Boot::default()
+    });
+}
+
+/// SMP through OpenSBI: all harts enter the firmware, which starts the secondaries for Linux.
+#[test]
+#[ignore = "needs tools/fetch-guest-images.sh and QEMU's OpenSBI; slow"]
+fn linux_boots_with_4_harts_via_opensbi_jit() {
+    boot_to_shell_with(&Boot {
+        engine: "jit",
+        firmware: Some(OPENSBI),
+        harts: 4,
+        ..Boot::default()
+    });
 }
