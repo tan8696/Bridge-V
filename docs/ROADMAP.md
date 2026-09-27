@@ -657,29 +657,29 @@ The CSR coverage table, walker test matrix, a TLB fast-path disassembly from a r
 **Entry criteria:** Phase 7 done.
 
 ### P8.1 Code-page tracking (S), `src/mem/smc.rs`
-- [ ] `page_tbs: phys_page → [TbId]` is populated at translation time. Mark the pages.
+- [x] `page_tbs: phys_page → [TbId]` is populated at translation time. Mark the pages.
 
 ### P8.2 SoftMMU write detection (S)
-- [ ] The `TLB_CODE` flag on `addr_write` for code pages. The store slow path detects it.
+- [x] The `TLB_CODE` flag on `addr_write` for code pages. The store slow path detects it.
 
 ### P8.3 Direct-mode write protection (M)
-- [ ] `mprotect(PROT_READ)` on host pages backing code pages. The SIGSEGV handler distinguishes an SMC trap from a genuine guest fault using the tracked guest protections (§14.1). For an SMC trap: invalidate, unprotect, return and retry.
+- [x] `mprotect(PROT_READ)` on host pages backing code pages. The SIGSEGV handler distinguishes an SMC trap from a genuine guest fault using the tracked guest protections (§14.1). For an SMC trap: invalidate, unprotect, return and retry. *As built (D49): the fault leaves JIT code like any host fault; the dispatcher rebuilds the state at the store, retires the store in the interpreter (which unprotects the page), and invalidates. It does not return from the handler, because the rest of the running TB may be stale.*
 
 ### P8.4 Invalidation (M)
-- [ ] Remove the TBs from `tb_map` and the jump cache, unlink every incoming chain, and clear the tracking. If the running TB is affected, `SMC_SELF` makes it exit after the store (§16).
+- [x] Remove the TBs from `tb_map` and the jump cache, unlink every incoming chain, and clear the tracking. If the running TB is affected, `SMC_SELF` makes it exit after the store (§16).
 
 ### P8.5 FENCE.I and flush syscall (S)
-- [ ] FENCE.I ends the TB and flushes the jump cache. `riscv_flush_icache` (259) does the same. `--smc=flush-on-fence` provides the debug cross-check.
+- [x] FENCE.I ends the TB and flushes the jump cache. `riscv_flush_icache` (259) does the same. `--smc=flush-on-fence` provides the debug cross-check.
 
 ### P8.6 SMC test programs (M)
-- [ ] (a) Write a function into an RWX guest mmap, call it, rewrite it, and call it again (with FENCE.I).
-- [ ] (b) The same without FENCE.I, which must still be correct thanks to eager invalidation.
-- [ ] (c) A loop that patches its own next iteration.
-- [ ] (d) A tiny "JIT inside the guest" that generates and runs code repeatedly.
-- [ ] (e) A chained-predecessor case: A→B chained, B's page rewritten, A must not jump into stale code.
+- [x] (a) Write a function into an RWX guest mmap, call it, rewrite it, and call it again (with FENCE.I).
+- [x] (b) The same without FENCE.I, which must still be correct thanks to eager invalidation.
+- [x] (c) A loop that patches its own next iteration.
+- [x] (d) A tiny "JIT inside the guest" that generates and runs code repeatedly.
+- [x] (e) A chained-predecessor case: A→B chained, B's page rewritten, A must not jump into stale code.
 
 ### Phase 8 acceptance criteria
-All SMC programs pass under the direct and softmmu backends, jit and lockstep, with chaining enabled.
+✅ All SMC programs pass under the direct and softmmu backends, jit and lockstep, with chaining enabled (`guest/c/smc.c` cases a–e, byte-exact against qemu-riscv64 in `tests/user_programs.rs`; softmmu fuzzer with a code-page alias; `tests/jit_lowering.rs::link_then_invalidate_unlinks`).
 
 ### Phase 8 report must include
 Walkthroughs of the invalidation sequence (with logs), the test matrix, and the overhead of SMC tracking on CoreMark (should be about zero).

@@ -495,6 +495,13 @@ impl DirectMem {
     pub fn mmio_write(&mut self, pa: u64, size: u64, val: u64) -> Option<()> {
         let i = self.device_at(pa)?;
         let d = &mut self.devices[i];
+        // Devices see exactly the stored bytes (found by tests/softmmu.rs: the interpreter
+        // passed the whole register, the JIT a size-truncated constant).
+        let val = if size < 8 {
+            val & ((1 << (8 * size)) - 1)
+        } else {
+            val
+        };
         d.dev.write(pa - d.base, size, val);
         Some(())
     }
