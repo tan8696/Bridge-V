@@ -273,7 +273,7 @@ Everything else stays on the fast path.
   - **The fully optimized JIT against the other configurations:**
     - QEMU: 1.49× on CoreMark, 4.36× on Dhrystone and 5.83× on the FP benchmark.
     - Native x86-64: 52.5%, 45.5% and 22.4% of native speed.
-  - **Against the interpreter:** 29.5× on CoreMark. The interpreter itself became about 10% slower during Phases 8–10, so the Phase 5 figure (26.5×, measured against a faster interpreter) is the fairer one.
+  - **Against the interpreter:** 29.5× on CoreMark in this run. That run used an interpreter with a small slowdown from Phase 8, since fixed (`docs/bench/2026-09-27-interp-fix/`), so the Phase 5 figure (26.5×) is the fairer one.
   - **Each JIT technique's share** (Phase 5):
     - Chaining alone is 13.8× the interpreter.
     - Pinning four registers takes it to 19.9×.

@@ -163,6 +163,9 @@ pub enum Flow {
     Flush,
     /// WFI with nothing to wake it (`Csrs::wfi_idle`): retired; the machine may idle.
     Wfi,
+    /// A store retired and hit a page holding decoded or translated code (`mem.smc_pages` is
+    /// not empty, D49): continue at the next instruction, but only after re-decoding.
+    Smc,
 }
 
 /// How `exec_block` ended.
@@ -199,12 +202,14 @@ pub fn exec_block(
             Flow::Next => {
                 pc = pc.wrapping_add(d.len as u64);
                 cpu.icount += 1;
-                // A store hit a page holding translated or decoded code: stop after it, so
-                // the rest of the block is decoded again (D49).
-                if !mem.smc_pages.is_empty() {
-                    cpu.pc = pc;
-                    return BlockExit::Continue;
-                }
+            }
+            Flow::Smc => {
+                // Stop after the write, so the rest of the block is decoded again (D49). Only
+                // stores (and softmmu loads, whose page walk may set A/D bits) report this, so
+                // other instructions pay nothing for SMC detection (D61).
+                cpu.icount += 1;
+                cpu.pc = pc.wrapping_add(d.len as u64);
+                return BlockExit::Continue;
             }
             Flow::Jump(target) => {
                 cpu.icount += 1;
@@ -266,6 +271,17 @@ pub fn forget_smc_pages(cpu: &mut CpuState, mem: &mut DirectMem) {
     }
 }
 
+/// `Flow` of a retired instruction that may have written guest memory: `Smc` if it hit a code
+/// page.
+#[inline(always)]
+fn stored(mem: &DirectMem) -> Flow {
+    if mem.smc_pages.is_empty() {
+        Flow::Next
+    } else {
+        Flow::Smc
+    }
+}
+
 /// ECALL cause for the current privilege level.
 pub fn ecall_cause(cpu: &CpuState) -> u64 {
     match cpu.prv {
@@ -283,6 +299,16 @@ impl Interp {
     /// Drop all cached blocks (after code may have changed).
     pub fn flush(&mut self) {
         self.cache.clear();
+    }
+
+    /// Code this cache decoded was written (D49): decode everything again. Called after every
+    /// block and when `run` starts, so pages are never left for another engine to drain.
+    #[inline]
+    fn drain_smc(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) {
+        if !mem.smc_pages.is_empty() {
+            self.flush();
+            forget_smc_pages(cpu, mem);
+        }
     }
 
     fn block(&mut self, cpu: &mut CpuState, mem: &mut DirectMem) -> Rc<Block> {
@@ -326,6 +352,8 @@ impl Interp {
         max_insns: u64,
     ) -> Stop {
         let limit = cpu.icount.saturating_add(max_insns);
+        // Code pages written between runs (a syscall, device DMA, another hart).
+        self.drain_smc(cpu, mem);
         loop {
             if cpu.icount >= limit {
                 return Stop::Limit;
@@ -345,11 +373,7 @@ impl Interp {
             if exit == BlockExit::Flush {
                 self.flush();
             }
-            if !mem.smc_pages.is_empty() {
-                // Code this cache decoded was written (D49): decode everything again.
-                self.flush();
-                forget_smc_pages(cpu, mem);
-            }
+            self.drain_smc(cpu, mem);
             if let Err(stop) = deliver(exit, env, cpu) {
                 return stop;
             }
@@ -548,6 +572,11 @@ pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Fl
                 Ok(v) => cpu.set_x(rd, v),
                 Err(e) => return Flow::Trap(e),
             }
+            if cpu.softmmu != 0 {
+                // The page walk may have set A/D bits in a code page (D49). The JIT stops
+                // after such a load too (`helper_mmu_access`); direct loads write nothing.
+                return stored(mem);
+            }
         }
         Inst::Store { op, rs1, rs2, imm } => {
             let addr = cpu.x[rs1 as usize].wrapping_add(imm as u64);
@@ -561,6 +590,7 @@ pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Fl
             if let Err(e) = mmu::store(cpu, mem, addr, size, v) {
                 return Flow::Trap(e);
             }
+            return stored(mem);
         }
         Inst::OpImm { op, rd, rs1, imm } => {
             let v = alu(op, cpu.x[rs1 as usize], imm as u64);
@@ -671,8 +701,23 @@ pub fn step(cpu: &mut CpuState, mem: &mut DirectMem, d: &Decoded, pc: u64) -> Fl
             if let Err(e) = exec_amo(cpu, mem, op, width, rd, rs1, rs2) {
                 return Flow::Trap(e);
             }
+            return stored(mem);
         }
-        Inst::FLoad { .. } | Inst::FStore { .. } | Inst::Fma { .. } | Inst::Fp { .. } => {
+        Inst::FStore { .. } => {
+            if let Err(e) = fp::exec(cpu, mem, &d.inst, d.raw) {
+                return Flow::Trap(e);
+            }
+            return stored(mem);
+        }
+        Inst::FLoad { .. } => {
+            if let Err(e) = fp::exec(cpu, mem, &d.inst, d.raw) {
+                return Flow::Trap(e);
+            }
+            if cpu.softmmu != 0 {
+                return stored(mem); // as for integer loads
+            }
+        }
+        Inst::Fma { .. } | Inst::Fp { .. } => {
             if let Err(e) = fp::exec(cpu, mem, &d.inst, d.raw) {
                 return Flow::Trap(e);
             }
@@ -755,6 +800,46 @@ fn exec_amo(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Code rewritten outside the engine between two runs (a syscall such as `read`, device
+    /// DMA) is decoded again before anything executes, not after the first stale instruction
+    /// (D49, D61).
+    #[test]
+    fn code_written_between_runs_is_redecoded() {
+        use crate::mem::{GuestVirt, prot};
+        const ADDI_A0_1: u32 = 0x0010_0513; // addi a0, zero, 1
+        const ADDI_A0_2: u32 = 0x0020_0513; // addi a0, zero, 2
+        const ECALL: u32 = 0x0000_0073;
+        let mut mem = DirectMem::new().unwrap();
+        mem.map(GuestVirt(0x10000), 0x1000, prot::R | prot::W | prot::X)
+            .unwrap();
+        let code = |insns: &[u32]| {
+            insns
+                .iter()
+                .flat_map(|w| w.to_le_bytes())
+                .collect::<Vec<_>>()
+        };
+        mem.write_bytes(GuestVirt(0x10000), &code(&[ADDI_A0_1, ECALL]))
+            .unwrap();
+        mem.smc_pages.clear(); // loader writes
+        let env = Env {
+            user_mode: true,
+            ..Env::default()
+        };
+        let mut cpu = CpuState::new_user(0x10000);
+        let mut interp = Interp::new();
+        assert_eq!(interp.run(&mut cpu, &mut mem, &env, 100), Stop::Ecall);
+        assert_eq!(cpu.x[10], 1);
+        assert!(mem.is_code(0x10000), "decoding marked the page as code");
+
+        mem.write_bytes(GuestVirt(0x10000), &code(&[ADDI_A0_2]))
+            .unwrap();
+        assert_eq!(mem.smc_pages, vec![0x10000]);
+        cpu.pc = 0x10000;
+        assert_eq!(interp.run(&mut cpu, &mut mem, &env, 100), Stop::Ecall);
+        assert_eq!(cpu.x[10], 2, "the rewritten instruction ran");
+        assert!(mem.smc_pages.is_empty());
+    }
 
     #[test]
     fn division_edge_cases() {

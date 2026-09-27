@@ -31,7 +31,8 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(ROOT, "guest", "build", "bench")
-BRIDGEV = os.path.join(ROOT, "target", "release", "bridgev")
+# BRIDGEV_BIN measures another build (same-session A/B runs); the results record it.
+BRIDGEV = os.environ.get("BRIDGEV_BIN") or os.path.join(ROOT, "target", "release", "bridgev")
 
 # name -> (kind, extra bridgev arguments). kind: bridgev | qemu | native
 CONFIGS = {
@@ -297,6 +298,7 @@ def host_info(cpu):
         "qemu": sh("qemu-riscv64 --version | head -1"),
         "commit": sh(f"git -C {ROOT} rev-parse --short HEAD"),
         "dirty": bool(sh(f"git -C {ROOT} status --porcelain --untracked-files=no")),
+        "bridgev_bin": os.environ.get("BRIDGEV_BIN", ""),
         "buildinfo": open(os.path.join(BENCH, "BUILDINFO.txt")).read()
         if os.path.exists(os.path.join(BENCH, "BUILDINFO.txt")) else "",
     }
@@ -316,7 +318,9 @@ def markdown(res):
     h = res["host"]
     out = [f"Host: {h['cpu_model']} ({h['nproc']} vCPU, pinned to CPU {h['pinned_cpu']}), kernel "
            f"{h['kernel']}, {h['rustc']}, {h['qemu']}. Commit `{h['commit']}`"
-           f"{' (dirty tree)' if h['dirty'] else ''}, {h['date']}. {res['params']['runs']} measured "
+           f"{' (dirty tree)' if h['dirty'] else ''}"
+           f"{'; bridgev binary ' + h['bridgev_bin'] if h.get('bridgev_bin') else ''}"
+           f", {h['date']}. {res['params']['runs']} measured "
            f"run(s) after {res['params']['warmup']} warm-up, median (min–max)"
            f"{'; QUICK smoke run, not a measurement' if res['params']['quick'] else ''}. "
            f"Shared cloud VM: expect noise of several percent."]

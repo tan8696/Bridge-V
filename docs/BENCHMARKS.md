@@ -20,7 +20,10 @@ Host: Intel(R) Xeon(R) Processor @ 2.10GHz (4 vCPU, pinned to CPU 2), kernel 6.1
 | Dhrystone | 6,955 | 4.36× | 0.455 | 2.13× | 0.49 | 43.9× |
 | fpbench | 2,600 | 5.83× | 0.224 | 4.17× | 0.72 | 31.5× |
 
-- **The interpreter is about 10% slower than at Phase 7** (CoreMark 520 → 454–471 it/s). This was confirmed with a clean re-run and in same-batch A/B runs of the old and new builds ([`interp-ab.md`](bench/2026-09-27-567255a-final/interp-ab.md)). The loss came a few percent at a time over Phases 8–10. The "vs interp" ratios at this commit are therefore about 10% higher than against the Phase 7 interpreter. Phase 5's 26.5× (CoreMark) and 39.6× (Dhrystone) are the conservative figures.
+- **The interpreter at `567255a` had a code regression, since fixed.** Two Phase 8 SMC checks ran on every instruction and every store, costing about 10% on Dhrystone and 3–5% on CoreMark. The same day's host was also about 10% slower than in the Phase 7 session, so the gap looked larger than it was (CoreMark 520 → 454–471 it/s).
+  - After the fix, back-to-back harness runs put the interpreter at Phase 7 speed: 503 vs 473 CoreMark it/s, 483,244 vs 496,761 Dhrystones/s and 120 vs 123 FP units/s, all within noise. In an earlier batch, the build before the fix measured 429,099 Dhrystones/s against Phase 7's 475,051.
+  - Details: [`bench/2026-09-27-interp-fix/`](bench/2026-09-27-interp-fix/README.md) and [`interp-ab.md`](bench/2026-09-27-567255a-final/interp-ab.md).
+  - The "vs interp" ratios in the tables above use the pre-fix interpreter and are up to about 10% high (Dhrystone). Phase 5's 26.5× (CoreMark) and 39.6× (Dhrystone) are the conservative figures.
 - The JIT matches its earlier measurements (CoreMark 13,498 at Phase 5, 13,789–14,144 in the Phase 7 sessions). The spread between sessions is host variance.
 
 **Linux boot to a BusyBox shell** (`python3 tools/boot-bench.py --configs jit,interp,qemu --runs 5`, same code as `567255a`; [`bench/2026-09-27-567255a-boot/`](bench/2026-09-27-567255a-boot/)):

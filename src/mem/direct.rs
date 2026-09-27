@@ -310,20 +310,30 @@ impl DirectMem {
     /// Check that every page of `[addr, addr+len)` has all permissions in `need`.
     #[inline]
     fn check(&self, addr: u64, len: u64, need: u8, access: Access) -> Result<(), MemFault> {
+        self.check_bits(addr, len, need, access).map(|_| ())
+    }
+
+    /// `check`, returning the OR of the pages' permission bytes, so a store learns whether it
+    /// hits a code page from the same lookup (D49).
+    #[inline]
+    fn check_bits(&self, addr: u64, len: u64, need: u8, access: Access) -> Result<u8, MemFault> {
         let fault = MemFault { access, addr };
         let last = addr.checked_add(len - 1).ok_or(fault)?;
         if last >= GUEST_SPACE {
             return Err(fault);
         }
+        let mut bits = 0;
         for page in addr / PAGE_SIZE..=last / PAGE_SIZE {
-            if self.prot.get(page) & need != need {
+            let b = self.prot.get(page);
+            if b & need != need {
                 return Err(MemFault {
                     access,
                     addr: addr.max(page * PAGE_SIZE),
                 });
             }
+            bits |= b;
         }
-        Ok(())
+        Ok(bits)
     }
 
     /// Load `size` (1, 2, 4 or 8) bytes, zero-extended. Misaligned accesses are allowed.
@@ -346,8 +356,9 @@ impl DirectMem {
     /// Store the low `size` bytes of `val`. Misaligned accesses are allowed.
     #[inline]
     pub fn store(&mut self, addr: u64, size: u64, val: u64) -> Result<(), MemFault> {
-        self.check(addr, size, prot::W, Access::Store)?;
-        self.uncode_range(addr, size);
+        if self.check_bits(addr, size, prot::W, Access::Store)? & CODE != 0 {
+            self.uncode_range(addr, size);
+        }
         let old = self.write_log.is_some().then(|| self.peek(addr, size));
         if let (Some(log), Some(old)) = (self.write_log.as_mut(), old) {
             log.push((addr, size, old));

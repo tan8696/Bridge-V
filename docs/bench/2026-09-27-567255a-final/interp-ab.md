@@ -25,3 +25,5 @@ Conclusion: the interpreter is about 10% slower than at Phase 7, lost a few perc
 Phases 8–10 rather than in one commit. The JIT is unaffected (CoreMark 13,409 vs 13,498 at Phase 5).
 Ratios "vs interp" at `567255a` are therefore about 10% higher than they would be against the
 Phase 7 interpreter.
+
+**Update (same day): fixed.** The regression came from two Phase 8 SMC checks: a `smc_pages` test after every interpreted instruction, and duplicated page lookups on every store. Both are gone (D61). Same-session harness runs of the Phase 7 build, the pre-fix build and the fixed build ([`../2026-09-27-interp-fix/`](../2026-09-27-interp-fix/README.md)) show the fixed interpreter at Phase 7 speed. They also show that about half of the gap measured above was the host: the Phase 7 binary scored 465 CoreMark it/s there, against 520 in its own session.

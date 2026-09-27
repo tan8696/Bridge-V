@@ -22,7 +22,7 @@ Phase 11 turned the finished translator into something that can be shown and def
 - Linux 6.8 reaches a shell in 1.48 s, against QEMU's 1.54 s.
 
 **Two measurement surprises**, both investigated with same-batch A/B runs (§7):
-- **The reference interpreter is about 10% slower than at Phase 7**, lost gradually over Phases 8–10. This is real, and a follow-up task was queued.
+- **The reference interpreter measured about 10% slower than at Phase 7.** Part of this was a real code regression from two Phase 8 SMC checks (about 10% on Dhrystone, 3–5% on CoreMark), fixed after this report (§7.2). The rest was the host.
 - **The Linux boot measured slower than in Phase 9** (1.48 s against 1.25 s). This turned out to be the host, not the code.
 
 ## 2. Planned vs delivered
@@ -109,13 +109,20 @@ All raw data is in `docs/bench/2026-09-27-567255a-final/` and `docs/bench/2026-0
 - **Translate time:** 0.07–0.12% of each run.
 - **Dispatcher entries:** 10 per million guest instructions.
 
-### 7.2 The interpreter slowdown (real)
+### 7.2 The interpreter slowdown (real, fixed)
 - **Final matrix:** interp CoreMark 454 it/s, against 520 in the Phase 7 session (`2da741e`). Two builds of mine were running during the first measurement, so the interp cells were re-run on an idle machine: 471 it/s and 465,530 Dhrystones/s, still about 10% down.
 - **Same-batch A/B** (`dhrystone-rv64.elf 1500000`, interleaved runs): Phase 7 took 2.84–2.99 s, HEAD 3.13–3.48 s.
 - **Five builds interleaved:** f488d24 2.92–3.13, 41fbfee 3.14–3.21, 6b5a7c2 3.10–3.40, 25c9ffd 3.25–3.38, HEAD 3.00–3.29.
 - **Conclusion:** a gradual loss of a few percent per phase, likely from the SMC, WFI/interrupt and thread/signal checks added to the interpreter's store and block paths. There is no single culprit commit.
 - **Impact:** the JIT is unaffected (13,409 vs 13,498 at Phase 5). Only "vs interp" ratios change, by about 10%.
-- **Follow-up:** queued as a separate task ("Recover the interpreter slowdown from Phases 8–10"). Evidence: `bench/2026-09-27-567255a-final/interp-ab.md`, `interp-rerun.md`.
+- **Follow-up, done** (the commit after this report):
+  - **Cause:** two Phase 8 checks. `exec_block` tested `mem.smc_pages` after every instruction, and `DirectMem::store` repeated its page lookups to find the CODE bit.
+  - **Fix:** stores (and softmmu loads) report `Flow::Smc`, the store path reads CODE from its permission lookup, and `Interp::run` also drains on entry (D61).
+  - **Result:** back-to-back harness runs put the fixed interpreter at Phase 7 speed: Dhrystone 483,244 vs 496,761/s, CoreMark 503 vs 473 it/s, fpbench 120 vs 123, all within noise. The build before the fix measured 429,099 Dhrystones/s against 475,051 in an earlier batch.
+  - **The "−10%" above was partly the host.** The same Phase 7 binary scored 465–473 CoreMark it/s here against 520 in its own session. The code regression was about 10% on Dhrystone and 3–5% on CoreMark.
+  - **Latent bug fixed at the same time:** after code was written outside the engine, the old per-instruction check let the first stale instruction run. New regression test: `interp::tests::code_written_between_runs_is_redecoded`.
+  - **Evidence:** `bench/2026-09-27-interp-fix/README.md`, `bench/2026-09-27-567255a-final/interp-ab.md`, `interp-rerun.md`.
+- **Correction to the "gradual loss" conclusion above:** the per-phase timings were within noise of each other after Phase 8. The two Phase 8 checks explain the regression.
 
 ### 7.3 The boot "slowdown" (host, not code)
 **`tools/boot-bench.py --configs jit,interp,qemu --runs 5`:**
@@ -144,7 +151,7 @@ No code bugs were found in this phase.
 - **The optional write-up is this report's §13 plus `WHITEBOARD.md`,** not a separate blog post.
 
 ## 10. Known limitations and technical debt
-- **The interpreter's 10% slowdown since Phase 7** (§7.2) is not fixed in this phase. The follow-up task is queued.
+- **The interpreter slowdown** (§7.2) was fixed right after this phase (D61).
 - **The standing limitations from Phase 10** are unchanged:
   - guest threads and SMP harts run one at a time;
   - no return-address stack or superblocks;
@@ -164,9 +171,8 @@ target/release/bridgev run --engine jit --dump-x86 /tmp/d --dump-ir /tmp/d guest
 
 ## 12. Next steps
 The roadmap is complete. Candidates, in order of value:
-1. Recover the interpreter slowdown (the queued task).
-2. Parallel guest execution: threads and harts. This needs a shared, synchronized translation cache and `DirectMem`, plus atomic AMOs (D55's list).
-3. Settle the open owner questions in `docs/ROADMAP.md` §18 (license first).
+1. Parallel guest execution: threads and harts. This needs a shared, synchronized translation cache and `DirectMem`, plus atomic AMOs (D55's list).
+2. Settle the open owner questions in `docs/ROADMAP.md` §18 (license first).
 
 ## 13. Lessons learned
 - **An oracle for every layer paid for itself.** Every layer had an independent reference:

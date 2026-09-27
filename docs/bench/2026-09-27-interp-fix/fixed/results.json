@@ -1,0 +1,304 @@
+{
+ "host": {
+  "date": "2026-09-27T12:18:16+00:00",
+  "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "nproc": 4,
+  "pinned_cpu": 2,
+  "kernel": "6.18.44-fc-v37",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "qemu": "qemu-riscv64 version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+  "commit": "47fd507",
+  "dirty": true,
+  "bridgev_bin": "",
+  "buildinfo": "# Bridge-V benchmark builds (tools/build-bench.sh), 2026-09-27T11:29:26Z\nriscv cc: riscv64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nhost cc:  gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\ncoremark: 1f483d5b8316753a742cbf5590caf5bd0a4e4777 make PORT_DIR=linux, PORT_CFLAGS=-O2, XCFLAGS='<arch> -static -DPERFORMANCE_RUN=1' (rv64: -march=rv64gc -mabi=lp64d)\ndhrystone: riscv-tests bcffa2b3188b040c611f90dc0b6e422f54775a09 benchmarks/dhrystone + guest/bench/dhrystone; flags: -O2 -static -std=gnu89 -w -I/home/user/Bridge-V/guest/bench/dhrystone -I/home/user/Bridge-V/third_party/riscv-tests/benchmarks/dhrystone, main: -Ddebug_printf=bridgev_dhry_printf, dhrystone.c: -DPASS2 (rv64: + -march=rv64gc -mabi=lp64d)\nfpbench: guest/bench/fp/fpbench.c; flags: -O2 -static -lm (rv64: + -march=rv64gc -mabi=lp64d)\ntlbbench: guest/bench/tlb/tlbbench.c + riscv-tests benchmarks/common; flags: -march=rv64gc -mabi=lp64d -DPREALLOCATE=1 -mcmodel=medany -static -std=gnu99 -O2 -fno-common -fno-builtin-printf   -fno-tree-loop-distribute-patterns -no-pie -fno-pic -Wl,--build-id=none -nostdlib -nostartfiles\n99bfd194b22b50dd901afbb7de5ce627a5f31c18b31c93d10911569bd53fe646  coremark-rv64.elf\na620cc327885b03d7192f1c8903230108142ae52fbd5c3bfb4ce785a2c3337b2  coremark-native\n270f2ef3dbed158a22f5af94af575e9bff69e4df1206b49c6251c2a02d3c3340  dhrystone-rv64.elf\n814582f7206a91542ffeb1f3a366954da5493bdcdf0a7a990c4aa9b4ef160374  dhrystone-native\nea586d23e8b487888127260f19559a591843c6d2d7e55c8a035079884b81ef44  fpbench-rv64.elf\nc8bf0c50fb17a7bcb8273e309c976fb2653f37bbda3109be38ba0ccdc6b4be31  fpbench-native\nac6aac46a87440a66d3201e0e4db8812a3aab705f9a1d61b89491386b367d4c3  tlbbench.riscv\n54954c19b412007f24ce7e6072dcf9ad460b0cafe570bbbe0812c1d3ce86e6d4  tlbuser-rv64.elf\n"
+ },
+ "params": {
+  "runs": 5,
+  "warmup": 1,
+  "target": 13.0,
+  "quick": false
+ },
+ "results": {
+  "coremark": {
+   "interp": {
+    "median": 502.779923,
+    "min": 492.511346,
+    "max": 512.757915,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 6511,
+    "mips": 180.4,
+    "guest_insns": 2336440357,
+    "secs": 12.954,
+    "insns_per_unit": 358845.08631546615
+   }
+  },
+  "dhrystone": {
+   "interp": {
+    "median": 483244.0,
+    "min": 460016.0,
+    "max": 489757.0,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 3241043,
+    "mips": 162.3,
+    "guest_insns": 1089217044,
+    "secs": 6.711,
+    "insns_per_unit": 336.06991453060016
+   }
+  },
+  "fpbench": {
+   "interp": {
+    "median": 120.333,
+    "min": 119.053,
+    "max": 124.73,
+    "valid_runs": 5,
+    "runs": 5,
+    "n": 785,
+    "mips": 84.4,
+    "guest_insns": 551232627,
+    "secs": 6.528,
+    "insns_per_unit": 702207.1681528662
+   }
+  }
+ },
+ "raw": {
+  "coremark": {
+   "interp": [
+    {
+     "n": 6511,
+     "wall": 12.958108433002053,
+     "score": 502.779923,
+     "secs": 12.95,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2336440559,
+      "secs": 12.954,
+      "mips": 180.4,
+      "blocks_decoded": 1608
+     }
+    },
+    {
+     "n": 6511,
+     "wall": 12.705843850999372,
+     "score": 512.757915,
+     "secs": 12.698,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2336440357,
+      "secs": 12.702,
+      "mips": 183.9,
+      "blocks_decoded": 1615
+     }
+    },
+    {
+     "n": 6511,
+     "wall": 13.028469397002482,
+     "score": 500.076805,
+     "secs": 13.02,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2336440279,
+      "secs": 13.025,
+      "mips": 179.4,
+      "blocks_decoded": 1610
+     }
+    },
+    {
+     "n": 6511,
+     "wall": 12.892937454002094,
+     "score": 505.316259,
+     "secs": 12.885,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2336440504,
+      "secs": 12.889,
+      "mips": 181.3,
+      "blocks_decoded": 1608
+     }
+    },
+    {
+     "n": 6511,
+     "wall": 13.23069996599952,
+     "score": 492.511346,
+     "secs": 13.22,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 2336440268,
+      "secs": 13.226,
+      "mips": 176.7,
+      "blocks_decoded": 1603
+     }
+    }
+   ]
+  },
+  "dhrystone": {
+   "interp": [
+    {
+     "n": 3241043,
+     "wall": 6.714546027000324,
+     "score": 483244.0,
+     "secs": 6.706845817019973,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1089217044,
+      "secs": 6.711,
+      "mips": 162.3,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3241043,
+     "wall": 6.6261398880014895,
+     "score": 489757.0,
+     "secs": 6.6176552861929485,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1089217044,
+      "secs": 6.622,
+      "mips": 164.5,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3241043,
+     "wall": 6.7668580829995335,
+     "score": 479530.0,
+     "secs": 6.758790899422351,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1089217044,
+      "secs": 6.763,
+      "mips": 161.1,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3241043,
+     "wall": 7.053277802999219,
+     "score": 460016.0,
+     "secs": 7.045500591283782,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1089217044,
+      "secs": 7.05,
+      "mips": 154.5,
+      "blocks_decoded": 1090
+     }
+    },
+    {
+     "n": 3241043,
+     "wall": 6.669933061999473,
+     "score": 486522.0,
+     "secs": 6.661657643436474,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 1089217044,
+      "secs": 6.666,
+      "mips": 163.4,
+      "blocks_decoded": 1090
+     }
+    }
+   ]
+  },
+  "fpbench": {
+   "interp": [
+    {
+     "n": 785,
+     "wall": 6.532444430002215,
+     "score": 120.333,
+     "secs": 6.523583,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 551232614,
+      "secs": 6.528,
+      "mips": 84.4,
+      "blocks_decoded": 1279
+     }
+    },
+    {
+     "n": 785,
+     "wall": 6.604892696999741,
+     "score": 119.053,
+     "secs": 6.593718,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 551232627,
+      "secs": 6.6,
+      "mips": 83.5,
+      "blocks_decoded": 1283
+     }
+    },
+    {
+     "n": 785,
+     "wall": 6.587411593998695,
+     "score": 119.326,
+     "secs": 6.578617,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 551232625,
+      "secs": 6.583,
+      "mips": 83.7,
+      "blocks_decoded": 1279
+     }
+    },
+    {
+     "n": 785,
+     "wall": 6.302384188002179,
+     "score": 124.73,
+     "secs": 6.293608,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 551232631,
+      "secs": 6.299,
+      "mips": 87.5,
+      "blocks_decoded": 1281
+     }
+    },
+    {
+     "n": 785,
+     "wall": 6.453457953997713,
+     "score": 121.824,
+     "secs": 6.443711,
+     "valid": true,
+     "errors": [],
+     "too_short": false,
+     "stats": {
+      "guest_insns": 551232627,
+      "secs": 6.45,
+      "mips": 85.5,
+      "blocks_decoded": 1280
+     }
+    }
+   ]
+  }
+ }
+}

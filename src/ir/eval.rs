@@ -78,7 +78,8 @@ pub fn eval(b: &Block, cpu: &mut CpuState, mem: &mut DirectMem) -> BlockExit {
                 let d =
                     decode_parts::<()>(raw as u16, || Ok((raw >> 16) as u16)).expect("infallible");
                 match step(cpu, mem, &d, p) {
-                    Flow::Next => {}
+                    // The IR evaluator does not split blocks at code-page writes.
+                    Flow::Next | Flow::Smc => {}
                     Flow::Jump(t) => {
                         cpu.icount += 1;
                         cpu.pc = t;
