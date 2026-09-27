@@ -81,7 +81,7 @@ See `docs/WHITEBOARD.md` §1. The short version, for the self-loop at 0x10990 (`
 
 ## 6. Tests and verification
 - **New test:** `interview_examples_28_5` passes.
-- **`cargo test`** (full suite; totals from the run before the final commit): see the "Test run" line under §11.
+- **`cargo test`** (full suite, at the Phase 11 commits): `134 passed; 0 failed; 9 ignored` over 16 test binaries. The 9 ignored tests are the Linux boot tests (`tests/linux_boot.rs`), which the CI `linux-boot` job runs with `--ignored`.
 - **`cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`:** clean, with and without `--features disasm`.
 - **Acceptance criteria (ROADMAP Phase 11):**
   - ✅ README demo and quick-start commands (transcripts are real output; commands in §11).
@@ -161,7 +161,6 @@ cargo test --test emitter_golden interview_examples_28_5
 cargo build --release --features disasm
 target/release/bridgev run --engine jit --dump-x86 /tmp/d --dump-ir /tmp/d guest/build/fib-O2.elf 20   # whiteboard TBs
 ```
-Test run (before the final commit): see the commit message of the commit adding this report.
 
 ## 12. Next steps
 The roadmap is complete. Candidates, in order of value:
