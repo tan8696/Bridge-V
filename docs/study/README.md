@@ -70,6 +70,12 @@ Each file starts with **"What you will learn"** and ends with **"Check yourself"
 |---|---|---|---|
 | 23 | [Tiered translation](23-tiered-translation.md) | Phase 12: new code runs in the interpreter first and is translated only after 32 runs, because most boot code runs only a few times. The break-even math (the ski-rental problem), the code, the tests and the measured result: Linux boots 18% faster, 1.33× QEMU. | 1 h |
 
+### Part H: your brag doc
+
+| # | File | What it covers | Time |
+|---|---|---|---|
+| 24 | [Brag doc](24-brag-doc.md) | Everything Bridge-V achieved, each item with its proof: the scoreboard, what each technique bought, how correctness was proven, what the repository shows you did, ready-made resume and interview lines, and how to say honestly who wrote the code. | 30 min |
+
 Total: about 21 hours of reading. Take it slowly; one or two files a day works well.
 
 ---

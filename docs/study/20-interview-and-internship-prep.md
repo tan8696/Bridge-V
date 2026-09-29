@@ -16,9 +16,9 @@ This file assumes you have read files 01–19 and 23. Every number here comes fr
 
 ## 1. The 30-second version
 
-> "Bridge-V is a dynamic binary translator I built in Rust. It runs RISC-V Linux programs, and even boots a whole RISC-V Linux system, on an ordinary x86 PC. It works like QEMU or Apple's Rosetta 2: it translates blocks of RISC-V machine code into x86 machine code while the program runs. I wrote the x86 encoder by hand, chained the translated blocks together, pinned hot registers, and emulated the RISC-V virtual memory with a software TLB. It runs CoreMark at 4.8 billion guest instructions a second, 1.5× faster than QEMU. It boots Linux to a shell faster than QEMU too. I checked it against a reference interpreter on every block of a full Linux boot."
+> "Bridge-V is a dynamic binary translator in Rust that I built with Claude Code, an AI coding agent. It runs RISC-V Linux programs, and even boots a whole RISC-V Linux system, on an ordinary x86 PC. It works like QEMU or Apple's Rosetta 2: it translates blocks of RISC-V machine code into x86 machine code while the program runs. It has a hand-written x86 encoder, chains the translated blocks together, pins hot registers, and emulates the RISC-V virtual memory with a software TLB. It runs CoreMark at 4.8 billion guest instructions a second, 1.5× faster than QEMU. It boots Linux to a shell faster than QEMU too. It was checked against a reference interpreter on every block of a full Linux boot."
 
-Practise this until it takes 30 seconds without notes. It answers *what*, *how*, *how well* and *how do you know*.
+Practise this until it takes 30 seconds without notes. It answers *what*, *how*, *how well* and *how do you know*. It also says who wrote the code before the interviewer has to ask: the git history shows it, so say it first ([file 24 §0](24-brag-doc.md#0-read-this-first-say-how-bridge-v-was-built)).
 
 ---
 
@@ -53,17 +53,17 @@ Interviewers usually let you choose. Pick one of these, and know it to the byte:
 | **Software MMU** | the Sv39 walk, the TLB entry, the 9-instruction hit path | 11 |
 | **Tiered translation** | the counter, the break-even formula, the U-shaped boot-time curve | 23 |
 
-Structure for any deep dive: **problem → naive solution → why it's slow or wrong → what I built → how I measured it → what I'd do next.**
+Structure for any deep dive: **problem → naive solution → why it's slow or wrong → what Bridge-V does → how it was measured → what I'd do next.**
 
 ---
 
 ## 4. Resume bullets (all measured)
 
-The canonical list is in CLAUDE.md §28.1. Short versions:
+The canonical list is in CLAUDE.md §28.1. Short versions (file 24 §8 has more, all worded honestly):
 
-- *Built a RISC-V (RV64GC) to x86-64 dynamic binary translator in Rust. It runs unmodified Linux binaries at 4.8 billion guest instructions/s on CoreMark, 1.49× `qemu-riscv64` and 52.5% of native, and boots Linux 6.8 to a shell.* [Phase 11, `567255a`]
+- *Built, with Claude Code as the coding agent, a RISC-V (RV64GC) to x86-64 dynamic binary translator in Rust. It runs unmodified Linux binaries at 4.8 billion guest instructions/s on CoreMark, 1.49× `qemu-riscv64` and 52.5% of native, and boots Linux 6.8 to a shell.* [Phase 11, `567255a`]
 - *Cut dispatcher round trips from 180,762 to 10 per million instructions by hot-patching aligned rel32 jumps between translated blocks: CoreMark 8.9× faster than unchained.* [Phase 5]
-- *Hand-wrote the x86-64 encoder and a linear-scan register allocator with 4 pinned registers and precise-fault state maps: 1.9× on CoreMark over the chained baseline.* [Phase 5]
+- *Hand-written x86-64 encoder (no assembler library) and a linear-scan register allocator with 4 pinned registers and precise-fault state maps: 1.9× on CoreMark over the chained baseline.* [Phase 5]
 - *Implemented Sv39/Sv48 virtual memory with an inline software TLB: 0.34 ns per hit (throughput) against 28 ns per page walk.* [Phase 7]
 - *Added an interpreter tier: measured that 31% of the blocks in a Linux boot run once, then translated only blocks that run 32+ times (the ski-rental break-even). Boot 18% faster (1.33× `qemu-system-riscv64`) with 72% less generated code.* [Phase 12, GitHub runner]
 - *Verified with all 244 riscv-tests, lockstep differential execution over a full Linux boot (84 M blocks, no divergence) and 10⁶-case fuzzers.* [Phases 4, 6, 9]
@@ -169,7 +169,7 @@ Use the STAR shape: **S**ituation, **T**ask, **A**ction, **R**esult.
 
 Good, defensible differences:
 - **A hand-written x86 encoder.** No JIT library; golden-tested against an independent decoder.
-- **An interpreter tier** that QEMU's TCG doesn't have: QEMU translates every block on first use. *But* the idea is old (Java HotSpot, JavaScript V8, HP Dynamo), so say "I applied and measured it", not "I invented it".
+- **An interpreter tier** that QEMU's TCG doesn't have: QEMU translates every block on first use. *But* the idea is old (Java HotSpot, JavaScript V8, HP Dynamo), so say "Bridge-V applies and measures it", not "I invented it".
 - **Lockstep over a full Linux boot**, with device accesses recorded and replayed. It is an unusually strong correctness check for a hobby-scale project.
 - **Every design decision is logged with a measured reason** (63 entries), including ideas that were rejected because the numbers said no.
 
